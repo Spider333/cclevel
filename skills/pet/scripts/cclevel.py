@@ -810,7 +810,7 @@ def render(r):
 # Nothing above this line touches the network. Everything below runs only
 # when the user asks for it by flag.
 
-DEFAULT_SERVER = ""      # set once a public board exists; until then pass --server
+DEFAULT_SERVER = "https://cclevel-board.cclevel.workers.dev"   # the public board; --server or $CCLEVEL_SERVER picks another
 RULES_VERSION = 1        # must match RULES in server/src/index.js
 MAX_REPLY = 256 * 1024
 MAX_COUNT = 10 ** 9      # no honest number from the board is larger than this

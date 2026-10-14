@@ -19,8 +19,8 @@
 		{
 			"binding": "DB",
 			"database_name": "cclevel-board",
-			// Replace with the id printed by `wrangler d1 create cclevel-board` before the first deploy.
-			"database_id": "00000000-0000-0000-0000-000000000000"
+			// Created with `wrangler d1 create cclevel-board`. A self-hosted board uses its own id here.
+			"database_id": "42d83eb6-b05d-42db-9821-0eab43d81e22"
 		}
 	],
 	// One new creature a minute per network, ten group or GitHub requests a minute per creature, and twenty

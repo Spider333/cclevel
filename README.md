@@ -2,7 +2,7 @@
 
 Your Claude Code setup as a creature that grows. cclevel reads your local Claude Code folder, scores how old, well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next.
 
-Status: pre-launch. The scanner works; the public board is not open yet. The name is a working name.
+Status: early. The scanner works and the board runs at https://cclevel-board.cclevel.workers.dev. The name is a working name.
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
