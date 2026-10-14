@@ -1030,6 +1030,40 @@ def place(listing, mine):
     return "below the top {:,}".format(len(xp))
 
 
+def rival(listing, mine):
+    """The next place up, from the board file alone: (XP needed, its place, its index in the list), or None when nobody is ahead.
+    Below the published rows the place is unknown, so it is the gap to the last of them: (XP needed, None, None)."""
+    ranked, xp, _ = listing
+    if len(xp) < ranked and xp and mine < xp[-1]:
+        return xp[-1] - mine, None, None
+    above = [x for x in xp if x > mine]
+    if not above:
+        return None
+    target = min(above)
+    return target - mine + 1, 1 + sum(1 for x in xp if x > target), xp.index(target)
+
+
+def spelled(text):
+    """A name from the public list, taken only when this copy's own word lists can spell it, and then spelled by them."""
+    m = re.fullmatch(r"([A-Za-z]+) ([A-Za-z]+) ([0-9]{4})", text) if isinstance(text, str) else None
+    if not m or m.group(1) not in ADJECTIVES or m.group(2) not in ANIMALS:
+        return None
+    return name_of([ADJECTIVES.index(m.group(1)), ANIMALS.index(m.group(2)), int(m.group(3))])
+
+
+def rival_line(listing, mine, rows):
+    """'1,240 XP to pass #12 (Mossy Falcon 4821)'. The name comes from the public list only when its row has that XP."""
+    found = rival(listing, mine)
+    if found is None:
+        return "    Nobody is ahead of you." if listing[0] else None
+    need, at, index = found
+    if at is None:
+        return "    {:,} XP to reach the top {:,}".format(need, len(listing[1]))
+    row = as_dict(rows[index]) if isinstance(rows, list) and index < len(rows) else {}
+    name = spelled(row.get("name")) if row.get("xp") == listing[1][index] else None
+    return "    {:,} XP to pass #{:,}{}".format(need, at, " (%s)" % name if name else "")
+
+
 def name_of(key):
     """A creature's name from the three numbers the board sends, spelled with this copy's own word lists."""
     if not (isinstance(key, list) and len(key) == 3 and all(type(n) is int for n in key)):
@@ -1045,7 +1079,7 @@ def member(m):
     m = as_dict(m)
     stats = m.get("stats")
     ok = (name_of(m.get("name")) and type(m.get("level")) is int and 1 <= m["level"] <= LEVEL_MAX
-          and sane(m.get("witnessed_xp")) and sane(m.get("season_xp")) and type(m.get("sus")) is bool
+          and sane(m.get("witnessed_xp")) and sane(m.get("season_xp")) and sane(m.get("week_xp")) and type(m.get("sus")) is bool
           and type(m.get("you")) is bool and isinstance(stats, list) and len(stats) == len(STAT_ORDER)
           and all(type(n) is int and 0 <= n <= 100 for n in stats))
     return m if ok else None
@@ -1201,14 +1235,18 @@ def group_command(args, cdir, server, ident, data, result):
     code = ident.get("group")
     title = group_name(code) if isinstance(code, str) and GROUP_RE.fullmatch(code) else "Your group"
     print("%s · %d member%s · ranked by XP since joining" % (title, len(checked), "" if len(checked) == 1 else "s"))
-    print("   #  %-24s %3s  %12s  %10s  %4s" % ("Creature", "Lv", "XP joined", "Season XP", "Aura"))
+    print("   #  %-24s %3s  %12s  %10s  %8s  %4s" % ("Creature", "Lv", "XP joined", "Season XP", "Week XP", "Aura"))
+    # The weekly crown: most XP the board credited this ISO week (Monday 00:00 UTC on). Ties share it; nobody wears it at zero.
+    best = max(m["week_xp"] for m in checked)
     place = 0
     for i, m in enumerate(checked):
         if i == 0 or m["witnessed_xp"] != checked[i - 1]["witnessed_xp"]:
             place = i + 1
-        tags = (" (you)" if m["you"] else "") + (" sus" if m["sus"] else "")
-        print("  %2d  %-24s %3d  %12s  %10s  %4d%s" % (place, name_of(m["name"]), m["level"], "{:,}".format(m["witnessed_xp"]),
-                                                     "{:,}".format(m["season_xp"]), sum(m["stats"]), tags))
+        tags = (" ♛" if best > 0 and m["week_xp"] == best else "") + (" (you)" if m["you"] else "") + (" sus" if m["sus"] else "")
+        print("  %2d  %-24s %3d  %12s  %10s  %8s  %4d%s" % (place, name_of(m["name"]), m["level"], "{:,}".format(m["witnessed_xp"]),
+                                                          "{:,}".format(m["season_xp"]), "{:,}".format(m["week_xp"]), sum(m["stats"]), tags))
+    if best > 0:
+        print("♛ most XP this week. Weeks start Monday, 00:00 UTC.")
     return 0
 
 
@@ -1301,13 +1339,27 @@ def show_rank(server, ident, result):
         listed = ident.get("world") is True
         if not listed:
             print("You are not on the world lists (turn them on with --world on). With your numbers you would be:")
+        in_season = sane(season) and ident.get("month") == this_month() and board.get("month") == this_month() and season > 0
+        mine = [("all", witnessed)] + ([("season", season)] if in_season else [])
+        public = {}
+        if any((rival(lists[name], xp) or (0, None))[1] is not None for name, xp in mine):
+            # Only to name the creature ahead: the public list, downloaded without the token, used only if built with the board file.
+            status, top = call(server, "GET", "/top.json")
+            if status == 200 and top.get("generated") == board.get("generated"):
+                public = top
         print("  All-time: %s · {:,} XP the board witnessed · {:,} ranked".format(witnessed, lists["all"][0])
               % place(lists["all"], witnessed))
-        if not sane(season) or ident.get("month") != this_month() or board.get("month") != this_month() or season == 0:
+        line = rival_line(lists["all"], witnessed, public.get("all"))
+        if line:
+            print(line)
+        if not in_season:
             print("  Season:   no XP this month yet")
         else:
             print("  Season:   %s · {:,} XP this month · {:,} ranked".format(season, lists["season"][0])
                   % place(lists["season"], season))
+            line = rival_line(lists["season"], season, public.get("season"))
+            if line:
+                print(line)
         if listed:
             print("  As of the board's last update; it updates every six hours.")
     total, totals = board.get("creatures"), as_dict(board.get("totals"))
@@ -1320,6 +1372,13 @@ def show_rank(server, ident, result):
             buckets = as_dict(totals.get("stats")).get(name)
             if counts(buckets, 10):
                 print("  %-9s ahead of %d%%" % (name.capitalize(), ahead(sum(buckets[:min(result["stats"][name] // 10, 9)]))))
+        # Badge rarity: how many of the counted creatures hold each of this creature's badges, rarest first.
+        held = as_dict(totals.get("badges"))
+        badges = [b for b in result["badges"] if b in BADGE_NAMES and sane(held.get(b))]
+        if badges:
+            print("Your badges, rarest first (share of creatures that hold each):")
+            for b in sorted(badges, key=lambda b: (held[b], BADGE_NAMES[b])):
+                print("  %-20s %d%%" % (BADGE_NAMES[b], ahead(held[b])))
     else:
         print("Not enough creatures on the board yet for totals.")
     print("Nothing was uploaded.")

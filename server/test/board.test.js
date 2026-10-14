@@ -327,6 +327,27 @@ describe("growth rules", () => {
 		expect(await row()).toMatchObject({ xp: 16000, season: "2026-11" });
 	});
 
+	it("keeps a week's XP for the group crown and starts it again each ISO week, in the same write", async () => {
+		goTo("2026-10-17"); // a Saturday
+		await checkin(score());
+		expect(await row()).toMatchObject({ week: "2026-W42", week_xp: 0 });
+		goTo("2026-10-18"); // Sunday: same week
+		await checkin(score({ xp: 1400, xp_days: 6 }));
+		expect(await row()).toMatchObject({ week: "2026-W42", week_xp: 400 });
+		goTo("2026-10-19"); // Monday: a new week starts from that day's credit only
+		await checkin(score({ xp: 1700, xp_days: 7 }));
+		expect(await row()).toMatchObject({ week: "2026-W43", week_xp: 300, season_xp: 700, witnessed_xp: 700 });
+	});
+
+	it("numbers weeks the ISO way across the turn of the year", async () => {
+		const cases = [["2026-01-01", "2026-W01"], ["2025-12-29", "2026-W01"], ["2027-01-01", "2026-W53"], ["2027-01-04", "2027-W01"]];
+		for (const [i, [day, week]] of cases.entries()) {
+			goTo(day);
+			await checkin(score(), token(900 + i));
+			expect((await row(token(900 + i))).week).toBe(week);
+		}
+	});
+
 	it("witnesses nothing at joining, whatever history is reported", async () => {
 		const res = await checkin(score({ xp: 300000, xp_days: 590, badges: ALL_BADGES }));
 		expect(await res.json()).toMatchObject({ accepted: true, level: 86, witnessed_xp: 0, season_xp: 0 });
@@ -550,6 +571,19 @@ describe("totals", () => {
 		expect(totals.stats.brains).toEqual([0, 0, 0, 0, 0, 0, 100, 0, 0, 0]);
 		expect(totals.badges).toMatchObject({ first_skill: 100, first_hook: 0 });
 		expect(totals.sus).toBe(10);
+		// Class wars: this season's credited XP per class (rows 1..100 hold 10, 20 … 1,000).
+		expect(totals.class_xp).toEqual({
+			Shipper: 0, "AFK Farmer": 0, "Loot Goblin": 50500, Tokenmaxxer: 0, "Perfectly Balanced": 0, Noob: 0, Unhatched: 0,
+		});
+	});
+
+	it("count only this season's XP in the class wars", async () => {
+		await crowd(100);
+		await crowd(5, { from: 101, day: "2026-09-29" }); // counted until idle, but their XP belongs to September
+		goTo("2026-10-15");
+		const { totals } = await rebuild();
+		expect(totals.classes["Loot Goblin"]).toBe(105);
+		expect(totals.class_xp["Loot Goblin"]).toBe(50500);
 	});
 
 	it("leave only numbers in board.json, apart from a date and a month", async () => {
@@ -673,7 +707,7 @@ describe("private groups", () => {
 		walk(reply);
 		expect(strings).toEqual([]);
 		expect(reply.members[0]).toEqual({
-			name: expect.any(Array), level: 5, witnessed_xp: 0, season_xp: 0, stats: [10, 20, 30, 60, 5, 15], sus: false, you: true,
+			name: expect.any(Array), level: 5, witnessed_xp: 0, season_xp: 0, week_xp: 0, stats: [10, 20, 30, 60, 5, 15], sus: false, you: true,
 		});
 		const [a, b, n] = reply.members[0].name;
 		expect((await row(TOKEN)).name).toBe(`${ADJ[a]} ${ANI[b]} ${String(n).padStart(4, "0")}`);

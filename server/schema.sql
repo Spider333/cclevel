@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS entries (
 	gh_commits   INTEGER,                    -- its public commits co-signed by Claude, as GitHub counted them
 	gh_day       TEXT,                       -- UTC date of that count
 	gh_code      TEXT,                       -- SHA-256 of the verification code, kept while the badge exists
-	gh_code_day  TEXT                        -- UTC date that code was sent, cleared once verified
+	gh_code_day  TEXT,                       -- UTC date that code was sent, cleared once verified
+	week         TEXT,                       -- ISO week in UTC ("2026-W42") that week_xp belongs to
+	week_xp      INTEGER NOT NULL DEFAULT 0  -- daily XP the board credited in that week: the group's weekly crown
 );
 -- No index on any column a check-in changes: each one would cost an extra written row per check-in.
 -- A check-in never changes grp, so members are found through this index at no cost to check-ins.

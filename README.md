@@ -112,13 +112,13 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--json` | The numbers behind the card. |
 | `--no-save` | Score without touching the ledger. |
 | `--preview` | Print exactly what a check-in would send. Sends and saves nothing. |
-| `--rank` | Your place on the world lists, worked out locally from the public numbers. Uploads nothing. |
+| `--rank` | Your place on the world lists, the XP to pass the next place, and how rare your badges are, worked out locally from the public files. Uploads nothing. |
 | `--join` | Join the board. Shows the payload and asks first. If already joined, it sends nothing. |
 | `--sync` | Check in. One accepted check-in per day. |
 | `--world on` / `--world off` | Be ranked on the public world lists, or not. Off at joining; on asks first; off works at once. |
 | `--group-create` | Start a private group (asks first) and print its invite link. |
 | `--group-join LINK` | Join a friend's group with its invite link or code (asks first). If you are not on the board yet, one yes joins the board and the group. Without LINK, type it at a hidden prompt. |
-| `--group` | Show your group: names, levels, XP since joining, season XP, Aura, sus marks. |
+| `--group` | Show your group: names, levels, XP since joining, season XP, this week's XP with the ♛ weekly crown, Aura, sus marks. |
 | `--group-leave` | Leave your group at once. |
 | `--group-code` | Show your group's invite link again. Sends nothing. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
@@ -154,6 +154,13 @@ The full rules, every name and the known limits are in [docs/scoring.md](docs/sc
 - **Listing is a choice.** Joining does not list you; `--world on` does, from your second day of check-ins.
 - **Sus** marks a creature whose witnessed days nearly all hit the daily maximum. It changes nothing else.
 - **Totals** for analysis (creatures per level, class, stat range and badge) appear once 100 creatures are counted.
+- **Four reasons to come back:**
+  - **Weekly crown:** ♛ marks the group member with the most XP this week. Weeks start Monday, 00:00 UTC.
+  - **Rival:** `--rank` says how much XP you need to pass the next place, and names that creature when it is in the top 1,000.
+  - **Badge rarity:** `--rank` and the page show how rare each badge is.
+  - **Class wars:** this season's XP added up per class, on the page.
+
+  Badge rarity and class wars start at 100 creatures, like the totals.
 
 The board is a small Cloudflare Worker with a D1 database and static pages, in `server/`. It runs with request logging switched off. To run your own, see [docs/self-hosting.md](docs/self-hosting.md).
 
