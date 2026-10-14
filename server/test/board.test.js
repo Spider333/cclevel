@@ -1088,7 +1088,8 @@ describe("the board's first address", () => {
 		expect(config.observability).toEqual({ enabled: false });
 		expect(config.workers_dev).toBe(true);
 		expect(config.services).toEqual([{ binding: "BOARD", service: main.name }]);
-		for (const key of ["routes", "route", "logpush", "tail_consumers", "d1_databases", "triggers", "ratelimits"]) {
+		expect(config.triggers).toEqual({ crons: [] });
+		for (const key of ["routes", "route", "logpush", "tail_consumers", "d1_databases", "ratelimits"]) {
 			expect(config).not.toHaveProperty(key);
 		}
 	});

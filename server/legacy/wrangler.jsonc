@@ -10,7 +10,12 @@
 	"observability": {
 		"enabled": false
 	},
-	// The board itself: no database, no schedule and no secrets here.
+	// No schedule: an empty list clears the one this Worker had when it was the board itself.
+	"triggers": {
+		"crons": []
+	},
+	// The board itself: no database and no secrets here. Secrets survive a deploy, so remove any old one by hand:
+	// npx wrangler secret delete GITHUB_TOKEN --name cclevel-board (and put it on the board: npx wrangler secret put GITHUB_TOKEN)
 	"services": [
 		{
 			"binding": "BOARD",
