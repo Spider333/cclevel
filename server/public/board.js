@@ -248,25 +248,23 @@
 		el("state").hidden = true;
 	}
 
+	// Three counts in one strip, and the world totals on a line beneath them.
 	function world() {
 		var items = [];
-		var add = function (label, value, cls) {
-			var div = make("div", cls);
-			var dd = make("dd");
-			if (typeof value === "object") dd.append.apply(dd, value);
-			else dd.textContent = value;
-			div.append(make("dt", null, label), dd);
+		var add = function (label, value) {
+			var div = make("div");
+			div.append(make("dt", null, label), make("dd", null, value));
 			items.push(div);
 		};
 		add("creatures", n(board.creatures));
 		add("listed all-time", n(board.all.ranked));
-		add("listed season", n(board.season.ranked));
+		add("listed this season", n(board.season.ranked));
+		el("world").replaceChildren.apply(el("world"), items);
 		var t = board.totals;
 		if (t) {
 			var classes = Object.keys(t.classes).sort(function (a, b) {
 				return t.classes[b] - t.classes[a];
 			});
-			add("top class " + Math.round((100 * t.classes[classes[0]]) / board.creatures) + "%", classes[0]);
 			var half = board.creatures / 2;
 			var seen = 0;
 			var median = 1;
@@ -277,8 +275,17 @@
 					break;
 				}
 			}
-			add("median level", median);
-			add("marked sus", n(t.sus));
+			var line = make("span");
+			line.append(
+				"Most common class ",
+				make("b", null, classes[0]),
+				" (" + Math.round((100 * t.classes[classes[0]]) / board.creatures) + "%) · median level ",
+				make("b", null, String(median)),
+				" · ",
+				make("b", null, n(t.sus)),
+				" marked sus",
+			);
+			el("totals").replaceChildren(line);
 		} else {
 			var have = Math.max(0, Math.min(TOTALS_FLOOR, Number(board.creatures) || 0));
 			var meter = make("span", "meter");
@@ -287,9 +294,8 @@
 			meter.append(fill);
 			meter.setAttribute("role", "img");
 			meter.setAttribute("aria-label", have + " of " + TOTALS_FLOOR + " creatures counted");
-			add("world totals", [make("span", null, "unlock at " + TOTALS_FLOOR + " creatures (" + have + "/" + TOTALS_FLOOR + ")"), meter], "unlock");
+			el("totals").replaceChildren(make("span", null, "World totals unlock at " + TOTALS_FLOOR + " creatures"), meter, make("b", null, have + "/" + TOTALS_FLOOR));
 		}
-		el("world").replaceChildren.apply(el("world"), items);
 	}
 
 	// One labelled bar per entry: [label node, share 0..1, value text, class for the colour].
@@ -434,14 +440,14 @@
 		.then(function (data) {
 			top = data[0];
 			board = data[1];
-			el("meta").textContent = "season " + board.month + " · built " + board.generated;
+			el("meta").textContent = "season " + board.month + " · updated " + board.generated;
 			world();
 			games();
 			draw();
 		})
 		.catch(function () {
 			el("meta").textContent = "board offline";
-			el("world").replaceChildren();
+			el("readout").hidden = true;
 			say("The board could not be loaded.", " Try again in a few minutes.");
 		});
 })();

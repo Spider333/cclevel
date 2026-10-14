@@ -7,7 +7,7 @@
 <meta name="description" content="Claude Code, gamified. Your setup as a creature that levels up. Compare it on the world board or with friends. No account, nine numbers.">
 <link rel="stylesheet" href="/board.css">
 </head>
-<body>
+<body class="landing">
 <nav class="nav" aria-label="Site">
 <a class="brand" href="/"><span class="hl">CC</span> level</a>
 <ul>
@@ -21,20 +21,13 @@
 <div class="hero-text">
 <p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> cclevel --flex<span class="cursor">▌</span></p>
 <p class="eyebrow">Claude Code, gamified</p>
-<h1>How big is your <span class="hl">Claude&nbsp;Code</span>?</h1>
-<p class="tagline">Measure it. Compare it. Stay nameless.</p>
+<h1>How big is your<br><span class="hl">Claude&nbsp;Code</span>?</h1>
+<p class="tagline"><span>Measure it.</span> <span>Compare it.</span> <span>Stay nameless.</span></p>
 <p class="lede">CC level turns your setup into a creature that levels up as you actually use it. Put it on the world board, or race your friends in private.</p>
 <div class="ctas">
-<a class="btn primary" href="/how">Get started →</a>
+<a class="btn primary" href="#install">Install it ↓</a>
 <a class="btn" href="#board">See the board ↓</a>
 </div>
-<ul class="badges" aria-label="In short">
-<li>privacy friendly</li>
-<li>pseudonymous</li>
-<li><a href="https://github.com/Spider333/cclevel">open source · MIT</a></li>
-<li>no account</li>
-<li>9 numbers leave your machine</li>
-</ul>
 </div>
 <figure class="evolve" role="img" aria-label="A creature evolving from Egg at level 1 to Final Boss at level 60">
 <pre id="evo-art" aria-hidden="true">*\.-^-./*
@@ -44,9 +37,27 @@
 <figcaption aria-hidden="true"><b id="evo-stage">Final Boss</b><span id="evo-level">Lv 60</span></figcaption>
 <span class="xpbar" aria-hidden="true"><span id="evo-bar"></span></span>
 </figure>
+<ul class="checks" aria-label="In short">
+<li>privacy friendly</li>
+<li>pseudonymous</li>
+<li><a href="https://github.com/Spider333/cclevel">open source · MIT</a></li>
+<li>no account</li>
+<li>9 numbers leave your machine</li>
+</ul>
 </header>
 
-<section class="tiles" aria-label="What you get">
+<section class="get" id="install" aria-labelledby="get-title">
+<h2 id="get-title"><span class="slash">//</span> one line to install</h2>
+<div class="term">
+<div class="term-bar" aria-hidden="true"><span></span><span></span><span></span><b>terminal</b></div>
+<div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
+</div>
+<p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
+</section>
+
+<section class="what" aria-labelledby="what-title">
+<h2 id="what-title"><span class="slash">//</span> what you get</h2>
+<div class="tiles">
 <article>
 <span class="tile-num">01</span>
 <h3>The card</h3>
@@ -56,22 +67,31 @@
 <article>
 <span class="tile-num">02</span>
 <h3>The world board</h3>
-<p>Season and all-time lists, ranked only on XP the board watched you earn. Max 550 a day.</p>
+<p>Season and all-time lists, ranked only on XP the board watched you earn. Max 550 a day, and a rival to beat.</p>
 <span class="tag">only if you join</span>
 </article>
 <article>
 <span class="tile-num">03</span>
 <h3>Your crew</h3>
-<p>Up to 25 friends compare in private. One invite link, one yes, and you're in.</p>
+<p>Up to 25 friends compare in private. One invite link, one yes, and you're in. Top week wears the ♛.</p>
 <span class="tag">only if you start or join one</span>
 </article>
+</div>
 </section>
 
 <section class="world" id="board" aria-labelledby="world-title">
-<h2 id="world-title">// the world right now</h2>
-<div class="meta" id="meta">Loading the board…</div>
-<dl id="world"><div><dt>status</dt><dd>loading</dd></div></dl>
-</section>
+<div class="world-head">
+<h2 id="world-title"><span class="slash">//</span> the world right now</h2>
+<p class="stamp" id="meta">Loading the board…</p>
+</div>
+<div class="readout" id="readout">
+<dl id="world">
+<div><dt>creatures</dt><dd>–</dd></div>
+<div><dt>listed all-time</dt><dd>–</dd></div>
+<div><dt>listed this season</dt><dd>–</dd></div>
+</dl>
+<p class="totals" id="totals">Counting the world…</p>
+</div>
 
 <div class="controls">
 <div class="tabs" role="tablist" aria-label="List">
@@ -100,21 +120,22 @@
 <p class="bands" id="bands" hidden></p>
 </div>
 
-<section class="games" aria-label="Class wars and badge rarity">
+<div class="games">
 <div class="game">
-<h2 id="war-title">// class wars</h2>
+<h3 id="war-title"><span class="slash">//</span> class wars</h3>
 <p class="lead" id="war-lead">Season XP per class. Unlocks at 100 creatures.</p>
 <ol class="bars" id="war" aria-labelledby="war-title" hidden></ol>
 </div>
 <div class="game">
-<h2 id="rarity-title">// badge rarity</h2>
+<h3 id="rarity-title"><span class="slash">//</span> badge rarity</h3>
 <p class="lead" id="rarity-lead">Share of creatures holding each badge. Unlocks at 100 creatures.</p>
 <ul class="bars" id="rarity" aria-labelledby="rarity-title" hidden></ul>
+</div>
 </div>
 </section>
 
 <section class="faq" aria-labelledby="faq-title">
-<h2 id="faq-title">// faq</h2>
+<h2 id="faq-title"><span class="slash">//</span> faq</h2>
 <details>
 <summary>Is it anonymous?</summary>
 <p>Almost. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you.</p>
