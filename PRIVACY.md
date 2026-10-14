@@ -121,4 +121,8 @@ A creature is on the world lists only while its owner keeps the world ranking on
 
 ## Operator and contact
 
-To be named before the public board opens.
+The public board at https://cclevel-board.cclevel.workers.dev is run by Amagi Labs LLC, 30 N Gould St Ste R, Sheridan, WY 82801, USA.
+
+Questions about your data: cclevel.grimace562@passmail.net.
+
+We hold no e-mail address or account for any creature, so we can find a row only by its creature name. If you lost your token, your row deletes itself 180 days after its last check-in (7 days if it checked in only once).
