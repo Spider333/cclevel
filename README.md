@@ -47,6 +47,8 @@ CC level (`cclevel` for short: the plugin, the script and this repository) turns
 
 ## Install
 
+Needs Claude Code. Works in any editor's terminal.
+
 Inside Claude Code:
 
 ```
