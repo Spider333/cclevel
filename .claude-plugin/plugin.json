@@ -3,6 +3,8 @@
 	"version": "0.2.0",
 	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next. Offline by default; the leaderboard is opt-in.",
 	"author": { "name": "cclevel contributors" },
+	"homepage": "https://cclevel-board.cclevel.workers.dev",
+	"repository": "https://github.com/Spider333/cclevel",
 	"license": "MIT",
 	"keywords": ["level", "stats", "leaderboard", "setup", "gamification"]
 }

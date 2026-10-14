@@ -8,15 +8,49 @@
 </head>
 <body>
 <main>
-<header>
-<div class="meta" id="meta">Loading the board</div>
-<h1>cclevel board</h1>
-<p class="lede">Claude Code setups, scored and shown as creatures. A creature ranks only on XP this board saw it earn after joining, at most 550 per active day. Nothing claimed before joining counts, and nobody is listed unless they turned the world ranking on.</p>
+<header class="hero">
+<p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> cclevel --board<span class="cursor">▌</span></p>
+<h1>cclevel<span class="dot">.</span>board</h1>
+<p class="tagline">How big is your Claude Code? <em>Measure it. Compare it. Stay nameless.</em></p>
+<p class="lede">Your setup becomes a creature, ranked only on XP the board <em>watched</em> it earn: 550 a day, max.</p>
+<ul class="badges" aria-label="In short">
+<li><a href="https://github.com/Spider333/cclevel">open source · MIT</a></li>
+<li>no account</li>
+<li>9 numbers leave your machine</li>
+<li>ranking is opt-in</li>
+</ul>
+<div class="meta" id="meta">Loading the board…</div>
+<ol class="evo" aria-label="Stages, by level">
+<li><pre aria-hidden="true">   ___
+  /   \
+ |  .  |
+  \___/  </pre><b>Egg</b><span>Lv 1</span></li>
+<li><pre aria-hidden="true">   ___
+  /o o\
+ _\_^_/_
+  '   '  </pre><b>Hatchling</b><span>Lv 5</span></li>
+<li><pre aria-hidden="true">  .-^-.
+ ( o o )
+  \ ~ /
+  /| |\  </pre><b>Lil Guy</b><span>Lv 15</span></li>
+<li><pre aria-hidden="true">  .-^-.
+ ( o o )
+ /\ ~ /\
+  /| |\  </pre><b>Main Character</b><span>Lv 30</span></li>
+<li><pre aria-hidden="true"> \.-^-./
+ ( o o )
+ /\ = /\
+ _/| |\_ </pre><b>Giga</b><span>Lv 45</span></li>
+<li><pre aria-hidden="true">*\.-^-./*
+ ( @ @ )
+&lt;/\ = /\&gt;
+ _/| |\_ </pre><b>Final Boss</b><span>Lv 60</span></li>
+</ol>
 </header>
 
 <section class="world" aria-labelledby="world-title">
-<h2 id="world-title">The world right now</h2>
-<dl id="world"><div><dt>Totals</dt><dd>Loading</dd></div></dl>
+<h2 id="world-title">// the world right now</h2>
+<dl id="world"><div><dt>status</dt><dd>loading</dd></div></dl>
 </section>
 
 <div class="controls">
@@ -24,9 +58,9 @@
 <button type="button" role="tab" id="tab-season" aria-selected="true" aria-controls="panel">Season</button>
 <button type="button" role="tab" id="tab-all" aria-selected="false" aria-controls="panel">All-time</button>
 </div>
-<label for="class">Class
+<label for="class">class
 <select id="class">
-<option value="">All</option>
+<option value="">all</option>
 <option>Shipper</option><option>AFK Farmer</option><option>Loot Goblin</option>
 <option>Tokenmaxxer</option><option>Perfectly Balanced</option><option>Noob</option><option>Unhatched</option>
 </select>
@@ -34,10 +68,11 @@
 </div>
 
 <div id="panel" role="tabpanel" aria-labelledby="tab-season" aria-live="polite">
-<div class="state" id="state"><b>Loading the board.</b></div>
+<div class="state" id="state"><b>Loading the board…</b></div>
+<ol class="podium" id="podium" aria-label="Top three" hidden></ol>
 <div class="scroll" id="wrap" hidden>
 <table>
-<thead><tr><th>#</th><th>Creature</th><th>Stage and class</th><th class="num">Level</th><th class="num" id="xp-head">Season XP</th><th class="num">Aura</th></tr></thead>
+<thead><tr><th>#</th><th>Creature</th><th>Class</th><th class="num">Lv</th><th class="num" id="xp-head">Season XP</th><th class="num">Aura</th></tr></thead>
 <tbody id="rows"></tbody>
 </table>
 </div>
@@ -45,12 +80,55 @@
 <p class="bands" id="bands" hidden></p>
 </div>
 
+<section class="how" aria-labelledby="how-title">
+<h2 id="how-title">// how it works</h2>
+<ol class="steps">
+<li><b>Install</b> in Claude Code:
+<ul class="cmds">
+<li><code data-copy>/plugin marketplace add Spider333/cclevel</code></li>
+<li><code data-copy>/plugin install cclevel@cclevel</code></li>
+</ul></li>
+<li><b>Meet your creature</b> with <code>/pet</code>. Offline: nothing is sent.</li>
+<li><b>Join the board</b> with <code>/pet join the leaderboard</code>. It shows you exactly what it would send and asks first.</li>
+</ol>
+<div class="payload">
+<h3>Everything the board gets from you</h3>
+<pre>{
+  "v": 1,
+  "xp": 21480,
+  "xp_days": 94,
+  "stats": { "grind": 55, "appetite": 45, "arsenal": 50,
+             "brains": 70, "autonomy": 25, "craft": 55 },
+  "badges": ["first_hook", "first_skill", "streak_7"]
+}</pre>
+<p><b>Never sent:</b> your name, e-mail, prompts, code, file paths, or the names of your projects and skills. The board stores no IP address. Your creature's name is made up from a random key on your machine.</p>
+<p>Don't trust us, read it: <a href="https://github.com/Spider333/cclevel">the code</a> and <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">every field the board stores</a>.</p>
+</div>
+</section>
+
+<section class="rules" aria-labelledby="rules-title">
+<h2 id="rules-title">// the fine print</h2>
+<details>
+<summary>How ranking works</summary>
+<p>Season is the XP a creature earned this month; All-time is everything since it joined. Both count only daily XP the board credited itself, at most 550 per active day, without badge XP. Level is shown as each owner's own scanner reports it, and does not set the order. Equal XP shares a place. The top 1,000 are listed; below them the board publishes the XP needed for each band, and <code>--rank</code> works out your place on your own machine. Lists are rebuilt every six hours.</p>
+</details>
+<details>
+<summary>What <span class="sus">sus</span> means</summary>
+<p>A creature with at least 14 witnessed days of which 80% or more were credited at the full 550 XP. It changes nothing else: not the place, not the XP, not the listing. It cannot catch a script that claims a little less, and does not pretend to.</p>
+</details>
+<details>
+<summary>The GitHub badge</summary>
+<p>Optional. <span class="gh">✓ login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
+</details>
+<details>
+<summary>Privacy</summary>
+<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears here only while its owner keeps the world ranking on; <code>--world off</code> and <code>--leave</code> take it off at once. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
+</details>
+</section>
+
 <footer>
-<p><b>How ranking works.</b> Season is the XP a creature earned this month; All-time is everything since it joined. Both count only daily XP the board credited itself, at most 550 per active day, without badge XP. Level is shown as each owner's own scanner reports it, and does not set the order. Equal XP shares a place. The top 1,000 are listed; below them the board publishes the XP needed for each band, and <code>--rank</code> works out your place on your own machine. Lists are rebuilt every six hours.</p>
-<p><b><span class="sus">sus</span></b> marks a creature with at least 14 witnessed days of which 80% or more were credited at the full 550 XP. It changes nothing else: not the place, not the XP, not the listing. It cannot catch a script that claims a little less, and does not pretend to.</p>
-<p><b>GitHub badge.</b> Optional. <span class="gh">&#10003; login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
-<p><b>Privacy.</b> The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears here only while its owner keeps the world ranking on; <code>--world off</code> and <code>--leave</code> take it off at once. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <code>PRIVACY.md</code> in the project repository lists every field.</p>
-<p><b>Run by</b> Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+<p><a href="https://github.com/Spider333/cclevel">Source on GitHub</a> (MIT). Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+<p class="eof" aria-hidden="true">-- EOF --</p>
 </footer>
 </main>
 <script src="/board.js"></script>

@@ -2,7 +2,7 @@
 
 Your Claude Code setup as a creature that grows. cclevel reads your local Claude Code folder, scores how old, well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next.
 
-Status: early. The scanner works and the board runs at https://cclevel-board.cclevel.workers.dev. The name is a working name.
+Status: early. The scanner works and the board runs at https://cclevel-board.cclevel.workers.dev. The source is at https://github.com/Spider333/cclevel. The name is a working name.
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
@@ -32,16 +32,16 @@ What is used counts far more than what is installed. Installing a hundred skills
 
 ## Install
 
-As a Claude Code plugin (replace `OWNER` once the repository is public), from a shell:
+As a Claude Code plugin, from a shell:
 
 ```
-claude plugin install cclevel --marketplace OWNER/cclevel
+claude plugin install cclevel --marketplace Spider333/cclevel
 ```
 
 or inside a session:
 
 ```
-/plugin marketplace add OWNER/cclevel
+/plugin marketplace add Spider333/cclevel
 /plugin install cclevel@cclevel
 ```
 
