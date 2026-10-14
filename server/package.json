@@ -1,0 +1,15 @@
+{
+	"name": "cclevel-board",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.80.0"
+	}
+}

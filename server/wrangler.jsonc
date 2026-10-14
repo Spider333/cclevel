@@ -1,0 +1,54 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cclevel-board",
+	"main": "src/index.js",
+	"compatibility_date": "2026-03-01",
+	// Served from workers.dev on purpose: a custom domain adds sampled request logs with IP addresses.
+	"workers_dev": true,
+	// Privacy: this Worker keeps no request logs. Do not switch this on.
+	"observability": {
+		"enabled": false
+	},
+	"assets": {
+		"directory": "./public",
+		// Unknown paths get the static 404 page and do not wake the Worker.
+		"not_found_handling": "404-page",
+		"run_worker_first": ["/api/*", "/board.json", "/top.json"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "cclevel-board",
+			// Replace with the id printed by `wrangler d1 create cclevel-board` before the first deploy.
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	],
+	// One new creature a minute per network, ten group or GitHub requests a minute per creature, and twenty
+	// GitHub checks a minute for the whole board.
+	// The Worker refuses those requests if a binding is missing.
+	"ratelimits": [
+		{
+			"name": "NEW_ROWS",
+			"namespace_id": "7421",
+			"simple": { "limit": 1, "period": 60 }
+		},
+		{
+			"name": "PER_CREATURE",
+			"namespace_id": "7422",
+			"simple": { "limit": 10, "period": 60 }
+		},
+		{
+			// One budget for the whole board's GitHub checks, about 2 calls each: far under GitHub's 5,000 an hour.
+			"name": "GITHUB_CALLS",
+			"namespace_id": "7423",
+			"simple": { "limit": 20, "period": 60 }
+		}
+	],
+	// The GitHub badge needs a GitHub key with no permissions: `npx wrangler secret put GITHUB_TOKEN`.
+	// Without it, the badge answers "not available" and everything else works.
+	// The public files are rebuilt four times a day, which also keeps check-in times vague on them.
+	// Members of a private group see each other's check-ins at once.
+	"triggers": {
+		"crons": ["0 */6 * * *"]
+	}
+}

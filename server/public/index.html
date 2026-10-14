@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cclevel board</title>
+<link rel="stylesheet" href="/board.css">
+</head>
+<body>
+<main>
+<header>
+<div class="meta" id="meta">Loading the board</div>
+<h1>cclevel board</h1>
+<p class="lede">Claude Code setups, scored and shown as creatures. A creature ranks only on XP this board saw it earn after joining, at most 550 per active day. Nothing claimed before joining counts, and nobody is listed unless they turned the world ranking on.</p>
+</header>
+
+<section class="world" aria-labelledby="world-title">
+<h2 id="world-title">The world right now</h2>
+<dl id="world"><div><dt>Totals</dt><dd>Loading</dd></div></dl>
+</section>
+
+<div class="controls">
+<div class="tabs" role="tablist" aria-label="List">
+<button type="button" role="tab" id="tab-season" aria-selected="true" aria-controls="panel">Season</button>
+<button type="button" role="tab" id="tab-all" aria-selected="false" aria-controls="panel">All-time</button>
+</div>
+<label for="class">Class
+<select id="class">
+<option value="">All</option>
+<option>Shipper</option><option>AFK Farmer</option><option>Loot Goblin</option>
+<option>Tokenmaxxer</option><option>Perfectly Balanced</option><option>Noob</option><option>Unhatched</option>
+</select>
+</label>
+</div>
+
+<div id="panel" role="tabpanel" aria-labelledby="tab-season" aria-live="polite">
+<div class="state" id="state"><b>Loading the board.</b></div>
+<div class="scroll" id="wrap" hidden>
+<table>
+<thead><tr><th>#</th><th>Creature</th><th>Stage and class</th><th class="num">Level</th><th class="num" id="xp-head">Season XP</th><th class="num">Aura</th></tr></thead>
+<tbody id="rows"></tbody>
+</table>
+</div>
+<button type="button" class="more" id="more" hidden>Show all</button>
+<p class="bands" id="bands" hidden></p>
+</div>
+
+<footer>
+<p><b>How ranking works.</b> Season is the XP a creature earned this month; All-time is everything since it joined. Both count only daily XP the board credited itself, at most 550 per active day, without badge XP. Level is shown as each owner's own scanner reports it, and does not set the order. Equal XP shares a place. The top 1,000 are listed; below them the board publishes the XP needed for each band, and <code>--rank</code> works out your place on your own machine. Lists are rebuilt every six hours.</p>
+<p><b><span class="sus">sus</span></b> marks a creature with at least 14 witnessed days of which 80% or more were credited at the full 550 XP. It changes nothing else: not the place, not the XP, not the listing. It cannot catch a script that claims a little less, and does not pretend to.</p>
+<p><b>GitHub badge.</b> Optional. <span class="gh">&#10003; login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
+<p><b>Privacy.</b> The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears here only while its owner keeps the world ranking on; <code>--world off</code> and <code>--leave</code> take it off at once. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <code>PRIVACY.md</code> in the project repository lists every field.</p>
+</footer>
+</main>
+<script src="/board.js"></script>
+</body>
+</html>

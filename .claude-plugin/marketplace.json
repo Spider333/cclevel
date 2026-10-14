@@ -1,0 +1,13 @@
+{
+	"name": "cclevel",
+	"owner": { "name": "cclevel contributors" },
+	"description": "cclevel: your Claude Code setup as a creature that grows.",
+	"plugins": [
+		{
+			"name": "cclevel",
+			"source": "./",
+			"description": "Scores your Claude Code setup and shows it as a creature that grows. Offline by default; the leaderboard is opt-in.",
+			"category": "productivity"
+		}
+	]
+}
