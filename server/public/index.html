@@ -7,7 +7,7 @@
 <meta name="description" content="Claude Code, gamified. Your setup as a creature that levels up. Compare it on the world board or with friends. No account, nine numbers.">
 <link rel="stylesheet" href="/board.css">
 </head>
-<body>
+<body class="landing">
 <nav class="nav" aria-label="Site">
 <a class="brand" href="/"><span class="hl">CC</span> level</a>
 <ul>
@@ -25,10 +25,10 @@
 <p class="tagline">Measure it. Compare it. Stay nameless.</p>
 <p class="lede">CC level turns your setup into a creature that levels up as you actually use it. Put it on the world board, or race your friends in private.</p>
 <div class="ctas">
-<a class="btn primary" href="/how">Get started →</a>
+<a class="btn primary" href="#install">Install it ↓</a>
 <a class="btn" href="#board">See the board ↓</a>
 </div>
-<ul class="badges" aria-label="In short">
+<ul class="checks" aria-label="In short">
 <li>privacy friendly</li>
 <li>pseudonymous</li>
 <li><a href="https://github.com/Spider333/cclevel">open source · MIT</a></li>
@@ -46,7 +46,18 @@
 </figure>
 </header>
 
-<section class="tiles" aria-label="What you get">
+<section class="get" id="install" aria-labelledby="get-title">
+<h2 id="get-title">// one line to install</h2>
+<div class="term">
+<div class="term-bar" aria-hidden="true"><span></span><span></span><span></span><b>terminal</b></div>
+<div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
+</div>
+<p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
+</section>
+
+<section class="what" aria-labelledby="what-title">
+<h2 id="what-title">// what you get</h2>
+<div class="tiles">
 <article>
 <span class="tile-num">01</span>
 <h3>The card</h3>
@@ -65,13 +76,22 @@
 <p>Up to 25 friends compare in private. One invite link, one yes, and you're in.</p>
 <span class="tag">only if you start or join one</span>
 </article>
+</div>
 </section>
 
 <section class="world" id="board" aria-labelledby="world-title">
+<div class="world-head">
 <h2 id="world-title">// the world right now</h2>
-<div class="meta" id="meta">Loading the board…</div>
-<dl id="world"><div><dt>status</dt><dd>loading</dd></div></dl>
-</section>
+<p class="stamp" id="meta">Loading the board…</p>
+</div>
+<div class="readout" id="readout">
+<dl id="world">
+<div><dt>creatures</dt><dd>–</dd></div>
+<div><dt>listed all-time</dt><dd>–</dd></div>
+<div><dt>listed this season</dt><dd>–</dd></div>
+</dl>
+<p class="totals" id="totals">Counting the world…</p>
+</div>
 
 <div class="controls">
 <div class="tabs" role="tablist" aria-label="List">
@@ -99,6 +119,7 @@
 <button type="button" class="more" id="more" hidden>Show all</button>
 <p class="bands" id="bands" hidden></p>
 </div>
+</section>
 
 <section class="faq" aria-labelledby="faq-title">
 <h2 id="faq-title">// faq</h2>
