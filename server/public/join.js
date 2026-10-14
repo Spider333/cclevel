@@ -32,6 +32,7 @@
 		copy.className = "copy";
 		copy.type = "button";
 		copy.textContent = "copy";
+		copy.setAttribute("aria-label", "Copy: " + code.textContent);
 		copy.addEventListener("click", function () {
 			var text = code.textContent;
 			var done = function () {
@@ -83,7 +84,7 @@
 			em.className = "dot";
 			em.textContent = ".";
 			el("title").replaceChildren("Join " + name, em);
-			document.title = "Join " + name + " · cclevel board";
+			document.title = "Join " + name + " · CC level";
 		},
 		function () {
 			// No Web Crypto (a very old browser): the page still works without the name.

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works · CC level</title>
+<meta name="description" content="Install cclevel, meet your creature, join the board and bring friends. What it sends, how it scores, and the fine print.">
+<link rel="stylesheet" href="/board.css">
+</head>
+<body>
+<nav class="nav" aria-label="Site">
+<a class="brand" href="/"><span class="hl">CC</span> level</a>
+<ul>
+<li><a href="/#board">Board</a></li>
+<li><a href="/how" aria-current="page">How it works</a></li>
+<li><a href="https://github.com/Spider333/cclevel">GitHub ↗</a></li>
+</ul>
+</nav>
+<main class="guide">
+<header class="hero-plain">
+<p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> man cclevel<span class="cursor">▌</span></p>
+<h1>How it works<span class="dot">.</span></h1>
+<p class="lede">Four steps from zero to flexing, then everything it sends, how it scores, and the fine print.</p>
+<ol class="toc" aria-label="On this page">
+<li><a href="#install">Install</a></li>
+<li><a href="#meet">Meet your creature</a></li>
+<li><a href="#join">Join the board</a></li>
+<li><a href="#friends">Bring friends</a></li>
+<li><a href="#talk">Talk to /pet</a></li>
+<li><a href="#sent">What gets sent</a></li>
+<li><a href="#score">How it scores</a></li>
+<li><a href="#fine-print">Fine print</a></li>
+</ol>
+</header>
+
+<section class="step" id="install" aria-labelledby="install-title">
+<span class="step-num" aria-hidden="true">01</span>
+<h2 id="install-title">Install</h2>
+<p>In Claude Code, paste these two lines:</p>
+<ul class="cmds">
+<li><code data-copy>/plugin marketplace add Spider333/cclevel</code></li>
+<li><code data-copy>/plugin install cclevel@cclevel</code></li>
+</ul>
+<p class="note">Needs Python 3.9 or newer, nothing else. From a shell instead: <code>claude plugin install cclevel --marketplace Spider333/cclevel</code></p>
+</section>
+
+<section class="step" id="meet" aria-labelledby="meet-title">
+<span class="step-num" aria-hidden="true">02</span>
+<h2 id="meet-title">Meet your creature</h2>
+<p>Run <code>/pet</code>. It reads your Claude Code folder on your machine and prints your card. Nothing goes to the board.</p>
+<pre class="card-demo" id="card-demo" aria-label="An example card with invented numbers">    .-^-.     Lil Guy Shipper · Lv 23
+   ( o o )    XP 21,480 · 1,560 to Lv 24 · today so far +310
+    \ ~ /     Mood: Vibing · Health 72 · Aura 300
+    /| |\     212 days old · 94 active days (61 estimated) · streak 4
+
+  Grind     ###########---------  55
+  Appetite  #########-----------  45
+  Arsenal   ##########----------  50
+  Brains    ##############------  70  Big Brain
+  Autonomy  #####---------------  25
+  Craft     ###########---------  55
+
+  Needs
+   1. 14 own skills unused for 90 days. Skill issue: archive them (Health +11)
+   2. missing: a second model doing real work (2% of replies or more) (Brains +10)
+
+  Badges: Hooked, Skill issue: solved, Not my job, gm x7, Loadout</pre>
+<p class="note">An example card with invented numbers. The one rule: what you use counts far more than what you install.</p>
+</section>
+
+<section class="step" id="join" aria-labelledby="join-title">
+<span class="step-num" aria-hidden="true">03</span>
+<h2 id="join-title">Join the board</h2>
+<p>Say <code>/pet join the leaderboard</code>. It shows you exactly what it would send and asks first. Joining doesn't list you publicly. To be ranked on the world lists, say <code>/pet put me on the world list</code>. You show up after check-ins on two different days.</p>
+<p>Check in once a day with <code>/pet check in</code>. The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
+</section>
+
+<section class="step" id="friends" aria-labelledby="friends-title">
+<span class="step-num" aria-hidden="true">04</span>
+<h2 id="friends-title">Bring friends</h2>
+<ol class="flow">
+<li><b>Start a group:</b> <code>/pet start a group</code>. You get an invite link and a made-up crew name, like <i>Stormy Lemur Crew</i>.</li>
+<li><b>Send the link</b> to friends. Opening it shows the crew's name and how to join. The code after <code>#</code> stays in the browser.</li>
+<li><b>They paste it</b> into Claude Code: <code>/pet join &lt;link&gt;</code>. One yes joins the board and the group.</li>
+<li><b>Compare:</b> <code>/pet show my group</code>. Up to 25 members see each other's names, levels, XP and stats. Nobody else does.</li>
+</ol>
+<p class="note">Anyone with the link can join until the group is full, so share it with friends only. If it leaks, start a new group.</p>
+</section>
+
+<section class="step" id="talk" aria-labelledby="talk-title">
+<span class="step-num" aria-hidden="true">05</span>
+<h2 id="talk-title">Talk to /pet</h2>
+<p>Just say what you want. Anything that sends something asks first.</p>
+<div class="scroll">
+<table class="cheat">
+<thead><tr><th>Say</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td><code>/pet</code></td><td>Your card. Offline.</td></tr>
+<tr><td><code>/pet join the leaderboard</code></td><td>Join the board (shows the data, asks first)</td></tr>
+<tr><td><code>/pet check in</code></td><td>Update your row, once a day</td></tr>
+<tr><td><code>/pet put me on the world list</code></td><td>Be ranked publicly; <code>off</code> works at once</td></tr>
+<tr><td><code>/pet rank me</code></td><td>Your place, worked out on your machine; uploads nothing</td></tr>
+<tr><td><code>/pet start a group</code></td><td>A private group and its invite link</td></tr>
+<tr><td><code>/pet join &lt;link&gt;</code></td><td>Join a friend's group</td></tr>
+<tr><td><code>/pet show my group</code></td><td>Your crew's leaderboard</td></tr>
+<tr><td><code>/pet leave the board</code></td><td>Delete your row at once</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="step" id="sent" aria-labelledby="sent-title">
+<span class="step-num" aria-hidden="true">06</span>
+<h2 id="sent-title">What gets sent</h2>
+<div class="payload">
+<h3>Everything the board gets from you</h3>
+<pre>{
+  "v": 1,
+  "xp": 21480,
+  "xp_days": 94,
+  "stats": { "grind": 55, "appetite": 45, "arsenal": 50,
+             "brains": 70, "autonomy": 25, "craft": 55 },
+  "badges": ["first_hook", "first_skill", "streak_7"]
+}</pre>
+<p><b>Plus a random key</b> made on your machine, so your check-ins land on the same row. The board keeps only its hash.</p>
+<p><b>Only if you ask for them:</b> a private group's invite code (the board keeps only its hash) and the GitHub login for the badge.</p>
+<p><b>Never sent:</b> your name, e-mail, prompts, code, file paths, or the names of your projects and skills. The board stores no IP address. Your creature's name is made up from a random key on your machine.</p>
+<p>Don't trust us, read it: <a href="https://github.com/Spider333/cclevel">the code</a> and <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">every field the board stores</a>.</p>
+</div>
+</section>
+
+<section class="step" id="score" aria-labelledby="score-title">
+<span class="step-num" aria-hidden="true">07</span>
+<h2 id="score-title">How it scores</h2>
+<p>XP is earned per finished day, at most 550 a day, and sets your level from 1 to 99. Six stats from 0 to 100 add up to your <b>Aura</b>:</p>
+<div class="scroll">
+<table class="cheat">
+<thead><tr><th>Stat</th><th>What it measures</th></tr></thead>
+<tbody>
+<tr><td>Grind</td><td>Days used out of the last 30, and streaks</td></tr>
+<tr><td>Appetite</td><td>Weighted tokens over the last 30 days</td></tr>
+<tr><td>Arsenal</td><td>Skills, connectors and subagent types actually used</td></tr>
+<tr><td>Brains</td><td>Ten checks of wiring that is in use</td></tr>
+<tr><td>Autonomy</td><td>Sessions that ran without you, and scheduled jobs that call Claude</td></tr>
+<tr><td>Craft</td><td>Edits, commits, pull requests and published pages</td></tr>
+</tbody>
+</table>
+</div>
+<ol class="evo" aria-label="Stages, by level">
+<li><pre aria-hidden="true">   ___
+  /   \
+ |  .  |
+  \___/  </pre><b>Egg</b><span>Lv 1</span></li>
+<li><pre aria-hidden="true">   ___
+  /o o\
+ _\_^_/_
+  '   '  </pre><b>Hatchling</b><span>Lv 5</span></li>
+<li><pre aria-hidden="true">  .-^-.
+ ( o o )
+  \ ~ /
+  /| |\  </pre><b>Lil Guy</b><span>Lv 15</span></li>
+<li><pre aria-hidden="true">  .-^-.
+ ( o o )
+ /\ ~ /\
+  /| |\  </pre><b>Main Character</b><span>Lv 30</span></li>
+<li><pre aria-hidden="true"> \.-^-./
+ ( o o )
+ /\ = /\
+ _/| |\_ </pre><b>Giga</b><span>Lv 45</span></li>
+<li><pre aria-hidden="true">*\.-^-./*
+ ( @ @ )
+&lt;/\ = /\&gt;
+ _/| |\_ </pre><b>Final Boss</b><span>Lv 60</span></li>
+</ol>
+<p>Your <b>class</b> comes from your strongest working stat: <span class="chip" data-class="Shipper">Shipper</span> <span class="chip" data-class="AFK Farmer">AFK Farmer</span> <span class="chip" data-class="Loot Goblin">Loot Goblin</span> <span class="chip" data-class="Tokenmaxxer">Tokenmaxxer</span> <span class="chip" data-class="Perfectly Balanced">Perfectly Balanced</span> <span class="chip" data-class="Noob">Noob</span>. Full rules in <a href="https://github.com/Spider333/cclevel/blob/main/docs/scoring.md">docs/scoring.md</a>.</p>
+</section>
+
+<section class="step" id="fine-print" aria-labelledby="fine-title">
+<span class="step-num" aria-hidden="true">08</span>
+<h2 id="fine-title">Fine print</h2>
+<details>
+<summary>How ranking works</summary>
+<p>Season is the XP a creature earned this month; All-time is everything since it joined. Both count only daily XP the board credited itself, at most 550 per active day, without badge XP. Level is shown as each owner's own scanner reports it, and does not set the order. Equal XP shares a place. The top 1,000 are listed; below them the board publishes the XP needed for each band, and <code>--rank</code> works out your place on your own machine. Lists are rebuilt every six hours.</p>
+</details>
+<details>
+<summary>What <span class="sus">sus</span> means</summary>
+<p>A creature with at least 14 witnessed days of which 80% or more were credited at the full 550 XP. It changes nothing else: not the place, not the XP, not the listing. It cannot catch a script that claims a little less, and does not pretend to.</p>
+</details>
+<details>
+<summary>The GitHub badge</summary>
+<p>Optional. <span class="gh">✓ login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
+</details>
+<details>
+<summary>Privacy</summary>
+<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists only while its owner keeps the world ranking on; <code>--world off</code> and <code>--leave</code> take it off at once. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
+</details>
+</section>
+
+<div class="ctas end">
+<a class="btn primary" href="#install">Install it ↑</a>
+<a class="btn" href="/#board">See the board →</a>
+</div>
+
+<footer>
+<p><a href="/">The board</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> (MIT) · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a></p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+<p class="eof" aria-hidden="true">-- EOF --</p>
+</footer>
+</main>
+<script src="/how.js"></script>
+</body>
+</html>

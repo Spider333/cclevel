@@ -117,7 +117,13 @@
 		el("state").replaceChildren(
 			art("Egg", "egg"),
 			make("b", null, title),
-			make("p", null, "Be the first. Install the plugin (how it works, below), then in Claude Code:"),
+			(function () {
+				var p = make("p", null, "Be the first. Install the plugin (");
+				var a = make("a", null, "how it works");
+				a.href = "/how#install";
+				p.append(a, "), then in Claude Code:");
+				return p;
+			})(),
 			list,
 			make("p", null, "You show up after check-ins on two different days."),
 		);
@@ -311,6 +317,49 @@
 			first.focus();
 		}
 	});
+
+	// The hero creature evolves from Egg to Final Boss while its level counts up, then hatches again.
+	// Under reduced motion it stays as written in the page: one still Final Boss.
+	(function evolve() {
+		var pre = el("evo-art");
+		if (!pre || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
+		var stages = [["Egg", 1], ["Hatchling", 5], ["Lil Guy", 15], ["Main Character", 30], ["Giga", 45], ["Final Boss", 60]];
+		var max = stages[stages.length - 1][1];
+		var i = 0;
+		var level = 1;
+		var show = function () {
+			pre.textContent = ART[stages[i][0]].join("\n");
+			el("evo-stage").textContent = stages[i][0];
+			pre.classList.remove("pop");
+			void pre.offsetWidth; // restart the pop animation
+			pre.classList.add("pop");
+		};
+		var paint = function () {
+			el("evo-level").textContent = "Lv " + level;
+			el("evo-bar").style.width = (100 * level) / max + "%";
+		};
+		var step = function () {
+			if (level >= max) {
+				setTimeout(restart, 2200);
+				return;
+			}
+			level += 1;
+			if (i + 1 < stages.length && level >= stages[i + 1][1]) {
+				i += 1;
+				show();
+			}
+			paint();
+			setTimeout(step, 70);
+		};
+		var restart = function () {
+			i = 0;
+			level = 1;
+			show();
+			paint();
+			setTimeout(step, 900);
+		};
+		restart();
+	})();
 
 	var load = function (path) {
 		return fetch(path).then(function (res) {

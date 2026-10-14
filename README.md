@@ -1,13 +1,13 @@
-# cclevel
+# CC level
 
-**How big is your Claude Code? Measure it. Compare it. Stay nameless.**
+**Claude Code, gamified. How big is your Claude Code? Measure it. Compare it. Stay nameless.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-d97757)](LICENSE)
 [![Board](https://img.shields.io/badge/board-live-d97757)](https://cclevel-board.cclevel.workers.dev)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d97757)](#install)
 [![Privacy](https://img.shields.io/badge/sends-9_numbers-d97757)](PRIVACY.md)
 
-cclevel turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. If you like, you can put the creature on a public board or compare it with friends in a private group. No account, no name, nine numbers.
+CC level (`cclevel` for short: the plugin, the script and this repository) turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. If you like, you can put the creature on a public board or compare it with friends in a private group. No account, no name, nine numbers.
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
@@ -160,7 +160,7 @@ The board is a small Cloudflare Worker with a D1 database and static pages, in `
 ## FAQ
 
 **Is it anonymous?**
-No, and we don't say it is. It is pseudonymous: no account, no name and no e-mail, but your row stays linked to a random key on your machine. If you post your card or creature name publicly, people can match it to your row.
+Almost. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you.
 
 **Can people cheat?**
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
