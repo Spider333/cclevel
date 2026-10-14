@@ -131,7 +131,7 @@ USED_WINDOW_DAYS, RECENT_WINDOW_DAYS = 90, 30
 # ------------------------------------------------------------------ names
 # The arithmetic above is plain. The names are internet, on purpose. They never travel over the
 # network as text the client must understand, so any of them can be changed here at any time.
-STAGES = [(60, "Final Boss"), (45, "Giga"), (30, "Main Character"), (15, "Lil Guy"), (5, "Hatchling"), (1, "Egg")]
+STAGES = [(60, "GOAT"), (45, "Gigachad"), (30, "Big Guy"), (15, "Lil Guy"), (5, "Hatchling"), (1, "Egg")]
 # The class is the strongest of the four things a setup does. Grind and Brains never set it.
 CLASSES = {"craft": "Shipper", "autonomy": "AFK Farmer", "arsenal": "Loot Goblin", "appetite": "Tokenmaxxer"}
 BALANCED, NOOB, UNHATCHED = "Perfectly Balanced", "Noob", "Unhatched"
@@ -158,9 +158,9 @@ ART = {
     "Egg": [r"   ___   ", r"  /   \  ", r" |  .  | ", r"  \___/  "],
     "Hatchling": [r"   ___   ", r"  /o o\  ", r" _\_^_/_ ", r"  '   '  "],
     "Lil Guy": [r"  .-^-.  ", r" ( o o ) ", r"  \ ~ /  ", r"  /| |\  "],
-    "Main Character": [r"  .-^-.  ", r" ( o o ) ", r" /\ ~ /\ ", r"  /| |\  "],
-    "Giga": [r" \.-^-./ ", r" ( o o ) ", r" /\ = /\ ", r" _/| |\_ "],
-    "Final Boss": [r"*\.-^-./*", r" ( @ @ ) ", r"</\ = /\>", r" _/| |\_ "],
+    "Big Guy": [r"  .-^-.  ", r" ( o o ) ", r" /\ ~ /\ ", r"  /| |\  "],
+    "Gigachad": [r" \.-^-./ ", r" ( o o ) ", r" /\ = /\ ", r" _/| |\_ "],
+    "GOAT": [r"*\.-^-./*", r" ( @ @ ) ", r"</\ = /\>", r" _/| |\_ "],
 }
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}

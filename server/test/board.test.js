@@ -363,9 +363,9 @@ describe("stage and class", () => {
 		[{ appetite: 20, arsenal: 30, autonomy: 5, craft: 15 }, 1000, "Hatchling", "Loot Goblin"],
 		[{ appetite: 80, arsenal: 40, autonomy: 30, craft: 20 }, 0, "Egg", "Tokenmaxxer"],
 		[{ appetite: 40, arsenal: 40, autonomy: 30, craft: 90 }, 9000, "Lil Guy", "Shipper"],
-		[{ appetite: 10, arsenal: 20, autonomy: 70, craft: 30 }, 36000, "Main Character", "AFK Farmer"],
-		[{ appetite: 60, arsenal: 65, autonomy: 60, craft: 70 }, 81000, "Giga", "Perfectly Balanced"],
-		[{ appetite: 60, arsenal: 65, autonomy: 55, craft: 70 }, 144000, "Final Boss", "Shipper"],
+		[{ appetite: 10, arsenal: 20, autonomy: 70, craft: 30 }, 36000, "Big Guy", "AFK Farmer"],
+		[{ appetite: 60, arsenal: 65, autonomy: 60, craft: 70 }, 81000, "Gigachad", "Perfectly Balanced"],
+		[{ appetite: 60, arsenal: 65, autonomy: 55, craft: 70 }, 144000, "GOAT", "Shipper"],
 		[{ appetite: 30, arsenal: 25, autonomy: 25, craft: 25 }, 0, "Egg", "Tokenmaxxer"],
 		[{ appetite: 25, arsenal: 25, autonomy: 25, craft: 25 }, 0, "Egg", "Noob"],
 		[{ appetite: 5, arsenal: 0, autonomy: 5, craft: 5 }, 0, "Egg", "Noob"],
@@ -566,7 +566,7 @@ describe("totals", () => {
 		const { totals } = board;
 		expect(totals.levels).toHaveLength(100);
 		expect(totals.levels[5]).toBe(100);
-		expect(totals.stages).toEqual({ Egg: 0, Hatchling: 100, "Lil Guy": 0, "Main Character": 0, Giga: 0, "Final Boss": 0 });
+		expect(totals.stages).toEqual({ Egg: 0, Hatchling: 100, "Lil Guy": 0, "Big Guy": 0, Gigachad: 0, "GOAT": 0 });
 		expect(totals.classes["Loot Goblin"]).toBe(100);
 		expect(totals.stats.brains).toEqual([0, 0, 0, 0, 0, 0, 100, 0, 0, 0]);
 		expect(totals.badges).toMatchObject({ first_skill: 100, first_hook: 0 });

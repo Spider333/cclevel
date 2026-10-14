@@ -23,7 +23,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 
 | Name | Means |
 |---|---|
-| Egg, Hatchling, Lil Guy, Main Character, Giga, Final Boss | The stage: levels 1, 5, 15, 30, 45 and 60 |
+| Egg, Hatchling, Lil Guy, Big Guy, Gigachad, GOAT | The stage: levels 1, 5, 15, 30, 45 and 60 |
 | Shipper | Class: Craft is the strongest of the four working stats |
 | AFK Farmer | Class: Autonomy is strongest. AFK farming is earning in a game while away from the keyboard |
 | Loot Goblin | Class: Arsenal is strongest. A player who picks up every item in sight |

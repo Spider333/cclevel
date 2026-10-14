@@ -7,9 +7,9 @@
 		Egg: ["   ___   ", "  /   \\  ", " |  .  | ", "  \\___/  "],
 		Hatchling: ["   ___   ", "  /o o\\  ", " _\\_^_/_ ", "  '   '  "],
 		"Lil Guy": ["  .-^-.  ", " ( o o ) ", "  \\ ~ /  ", "  /| |\\  "],
-		"Main Character": ["  .-^-.  ", " ( o o ) ", " /\\ ~ /\\ ", "  /| |\\  "],
-		Giga: [" \\.-^-./ ", " ( o o ) ", " /\\ = /\\ ", " _/| |\\_ "],
-		"Final Boss": ["*\\.-^-./*", " ( @ @ ) ", "</\\ = /\\>", " _/| |\\_ "],
+		"Big Guy": ["  .-^-.  ", " ( o o ) ", " /\\ ~ /\\ ", "  /| |\\  "],
+		Gigachad: [" \\.-^-./ ", " ( o o ) ", " /\\ = /\\ ", " _/| |\\_ "],
+		"GOAT": ["*\\.-^-./*", " ( @ @ ) ", "</\\ = /\\>", " _/| |\\_ "],
 	};
 	// The same names as BADGE_NAMES in skills/pet/scripts/cclevel.py.
 	var BADGE_NAMES = {
@@ -387,12 +387,12 @@
 		}
 	});
 
-	// The hero creature evolves from Egg to Final Boss while its level counts up, then hatches again.
-	// Under reduced motion it stays as written in the page: one still Final Boss.
+	// The hero creature evolves from Egg to GOAT while its level counts up, then hatches again.
+	// Under reduced motion it stays as written in the page: one still GOAT.
 	(function evolve() {
 		var pre = el("evo-art");
 		if (!pre || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
-		var stages = [["Egg", 1], ["Hatchling", 5], ["Lil Guy", 15], ["Main Character", 30], ["Giga", 45], ["Final Boss", 60]];
+		var stages = [["Egg", 1], ["Hatchling", 5], ["Lil Guy", 15], ["Big Guy", 30], ["Gigachad", 45], ["GOAT", 60]];
 		var max = stages[stages.length - 1][1];
 		var i = 0;
 		var level = 1;

@@ -496,7 +496,7 @@ class Framework(unittest.TestCase):
                 self.assertEqual(cclevel.class_of(dict(shape, grind=grind, brains=brains)), expected)
         stage = lambda level: next(name for floor, name in cclevel.STAGES if level >= floor)
         self.assertEqual([stage(n) for n in (1, 5, 15, 30, 45, 60, 99)],
-                         ["Egg", "Hatchling", "Lil Guy", "Main Character", "Giga", "Final Boss", "Final Boss"])
+                         ["Egg", "Hatchling", "Lil Guy", "Big Guy", "Gigachad", "GOAT", "GOAT"])
         self.assertEqual(set(cclevel.ART), {name for _, name in cclevel.STAGES})
         self.assertEqual(set(cclevel.BADGE_NAMES), set(cclevel.BADGES))
 

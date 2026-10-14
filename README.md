@@ -145,7 +145,7 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
   | Craft | Edits, commits, pull requests and published pages |
 
   Together they add up to **Aura**.
-- **Stage** follows level: Egg → Hatchling → Lil Guy → Main Character → Giga → Final Boss. **Class** comes from your strongest working stat: Shipper, AFK Farmer, Loot Goblin, Tokenmaxxer, Perfectly Balanced or Noob.
+- **Stage** follows level: Egg → Hatchling → Lil Guy → Big Guy → Gigachad → GOAT. **Class** comes from your strongest working stat: Shipper, AFK Farmer, Loot Goblin, Tokenmaxxer, Perfectly Balanced or Noob.
 - **Health and mood** drop for unused skills, connectors waiting for sign-in, a heavy start-up context and failing tool calls. The Needs list tells you what to fix.
 
 The full rules, every name and the known limits are in [docs/scoring.md](docs/scoring.md).

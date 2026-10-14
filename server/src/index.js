@@ -15,7 +15,7 @@ const BADGES = {
 const STATS = ["grind", "appetite", "arsenal", "brains", "autonomy", "craft"];
 const STAT_STEP = 5; // stats arrive in steps of 5
 // Names are for the board page only. Clients never read them: they get numbers and name things themselves.
-const STAGES = [[60, "Final Boss"], [45, "Giga"], [30, "Main Character"], [15, "Lil Guy"], [5, "Hatchling"], [1, "Egg"]];
+const STAGES = [[60, "GOAT"], [45, "Gigachad"], [30, "Big Guy"], [15, "Lil Guy"], [5, "Hatchling"], [1, "Egg"]];
 // The class is the strongest of the four things a setup does. Grind and Brains never set it.
 const CLASSES = { craft: "Shipper", autonomy: "AFK Farmer", arsenal: "Loot Goblin", appetite: "Tokenmaxxer" };
 const CLASS_FLOOR = 30;

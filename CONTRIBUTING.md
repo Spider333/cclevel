@@ -31,7 +31,7 @@ These are the promises users rely on. A change that breaks one needs a very good
 
 - Keep changes focused, and add or update tests for behaviour you change.
 - Both test suites and plugin validation must pass.
-- Write user-facing text in plain language. The names (Tokenmaxxer, Final Boss, gm x7) are internet on purpose; the explanations are not.
+- Write user-facing text in plain language. The names (Tokenmaxxer, GOAT, gm x7) are internet on purpose; the explanations are not.
 
 ## Issues
 
