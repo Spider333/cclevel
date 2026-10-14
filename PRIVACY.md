@@ -8,7 +8,7 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 |---|---|---|
 | the card (default) | none | nothing |
 | `--preview` | none | nothing; it prints what a check-in would send |
-| `--rank` | one download of the public numbers file | nothing about you is uploaded |
+| `--rank` | one download of the public numbers file, and of the public list when someone in it is ahead of you (to name your rival) | nothing about you is uploaded |
 | `--join`, `--sync` | one request to the board | the payload below, and a random token |
 | `--world on`, `--world off` | one request to the board | the token, and `{"on": true}` or `{"on": false}` |
 | `--group-create`, `--group-join LINK` | one request to the board (two when joining from an invite before you are on the board: the first check-in, then the group) | the token and the group's invite code (and, to start a group, `"new": true`); never the address in a link |
@@ -70,6 +70,7 @@ One row per creature, with exactly these columns (`server/schema.sql`):
 | `first_day`, `last_day` | UTC dates of your first and latest check-in, no time of day |
 | `days_seen` | how many different days you have checked in |
 | `season`, `season_xp` | the current month and the XP the board credited you in it |
+| `week`, `week_xp` | the current ISO week (from Monday, UTC) and the XP the board credited you in it: your group's weekly crown |
 | `witnessed_xp` | the XP the board credited you since joining: what ranks |
 | `capped_days` | how many of those days were credited at the full 550: the sus rule |
 | `world` | whether you have the world ranking on |
@@ -91,11 +92,11 @@ It does not store IP addresses or user agents, and the service writes no request
 
 - **`/top.json`**, for the board page: the creatures on the world lists, and only those. For each: generated name, stage, class, level, the XP the board witnessed (all-time list) or credited this month (season list), Aura, and whether it is marked sus; for a creature whose owner chose the GitHub badge, also that GitHub login and its count of public commits co-signed by Claude. At most 1,000 per list.
 - **`/board.json`**, for `--rank`: numbers only. The XP values of the listed rows in order, the XP needed for each "top X%" band once more than 1,000 are listed, how many are listed, and the totals.
-- **Totals** count every creature with check-ins on two different days, listed or not: how many there are per level, stage, class, stat range (0-9, 10-19 and so on) and badge, and how many are marked sus. They are worked out once a day and published only from 100 creatures. They are counts, not records, but a count of one still says that one such creature exists.
+- **Totals** count every creature with check-ins on two different days, listed or not: how many there are per level, stage, class, stat range (0-9, 10-19 and so on) and badge, how many are marked sus, and, for the class wars, the season XP the board credited per class added up (`class_xp`). They are worked out once a day and published only from 100 creatures. They are counts and sums, not records, but a count of one still says that one such creature exists.
 
 A creature is on the world lists only while its owner keeps the world ranking on (it starts off) and after check-ins on two different days.
 
-**Private groups are never published.** A group is up to 25 creatures that share an invite code. Only a creature in the group can read it, with its own token; the code alone shows nothing. Members see each other's generated name, level, XP since joining, season XP, six stats and sus mark, as soon as each one checks in. Being in a group does not put anyone on the world lists. A creature is in at most one group, and two creatures with the same generated name cannot be in the same group. Anyone who has the invite link or code can join until the group is full, so share it only with friends. Nobody can remove another member. If a code leaks, or someone fills the group or takes a seat to keep a friend out, start a new group and have your friends join that one.
+**Private groups are never published.** A group is up to 25 creatures that share an invite code. Only a creature in the group can read it, with its own token; the code alone shows nothing. Members see each other's generated name, level, XP since joining, season XP, this week's XP, six stats and sus mark, as soon as each one checks in. Being in a group does not put anyone on the world lists. A creature is in at most one group, and two creatures with the same generated name cannot be in the same group. Anyone who has the invite link or code can join until the group is full, so share it only with friends. Nobody can remove another member. If a code leaks, or someone fills the group or takes a seat to keep a friend out, start a new group and have your friends join that one.
 
 **The GitHub badge is opt-in and public.** It links your creature to a GitHub account you prove is yours, and shows how many of that account's public commits carry Claude Code's co-author line (`noreply@anthropic.com`). It never changes a place, XP or the sus mark. The count has known limits: it sees public default branches only, a squash merge counts once, anyone can type the line by hand, and people who switched the line off are undercounted. The board recounts a few verified accounts at each rebuild, looking the account up by its number so a renamed account keeps its badge; a deleted account loses it. A code proves an account once: only the creature that sent it first can use it, only with a gist made on or after the day that creature started, and not again for two days after it was let go, so copying a code from someone's gist does not work. The badge opens after check-ins on two different days. `--unverify-github` removes every GitHub field and takes the login off the public file at once.
 

@@ -53,6 +53,13 @@ const json = (data, status = 200, headers = {}) =>
 const today = () => new Date().toISOString().slice(0, 10);
 const daysBetween = (from, to) => Math.round((Date.parse(to) - Date.parse(from)) / 86400000);
 const daysBefore = (day, n) => new Date(Date.parse(day) - n * 86400000).toISOString().slice(0, 10);
+// ISO week in UTC, "2026-W42": weeks start on Monday, and a week belongs to the year of its Thursday.
+const isoWeek = (day) => {
+	const t = new Date(Date.parse(day));
+	t.setUTCDate(t.getUTCDate() + 3 - ((t.getUTCDay() + 6) % 7));
+	const year = t.getUTCFullYear();
+	return `${year}-W${String(1 + Math.floor((t - Date.UTC(year, 0, 1)) / 604800000)).padStart(2, "0")}`;
+};
 const badgeXp = (list) => list.reduce((sum, b) => sum + BADGES[b], 0);
 const isInt = (x, low, high) => Number.isInteger(x) && x >= low && x <= high;
 
@@ -178,12 +185,12 @@ async function checkin(request, env) {
 		};
 		const inserted = await env.DB.prepare(
 			`INSERT OR IGNORE INTO entries (id, name, xp, xp_days, base_days, level, stage, class,
-				grind, appetite, arsenal, brains, autonomy, craft, badges, first_day, last_day, days_seen, season, season_xp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0)`,
+				grind, appetite, arsenal, brains, autonomy, craft, badges, first_day, last_day, days_seen, season, season_xp, week, week_xp)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, ?, 0)`,
 		)
 			.bind(
 				id, row.name, body.xp, body.xp_days, body.xp_days, row.level, row.stage, row.cls,
-				...STATS.map((s) => body.stats[s]), JSON.stringify(body.badges), day, day, season,
+				...STATS.map((s) => body.stats[s]), JSON.stringify(body.badges), day, day, season, isoWeek(day),
 			)
 			.run();
 		if (inserted.meta.changes > 0) {
@@ -213,6 +220,9 @@ async function checkin(request, env) {
 	// daily cap applies. Days from an earlier month do not buy a place on the season either.
 	const daily = Math.max(0, Math.min(xp - prev.xp - newBadgeXp, earnable));
 	const seasonXp = Math.min((prev.season === season ? prev.season_xp : 0) + daily, DAY_CAP * Number(day.slice(8)));
+	// The group's weekly crown: the same daily XP, starting again at zero each ISO week.
+	const week = isoWeek(day);
+	const weekXp = (prev.week === week ? prev.week_xp : 0) + daily;
 	// Every new day counts as capped when the whole cap was taken: the sus rule counts days, not check-ins.
 	const cappedDays = prev.capped_days + (earnable > 0 && daily === earnable ? xpDays - prev.xp_days : 0);
 	const next = {
@@ -222,12 +232,12 @@ async function checkin(request, env) {
 	await env.DB.prepare(
 		`UPDATE entries SET xp = ?, xp_days = ?, level = ?, stage = ?, class = ?,
 			grind = ?, appetite = ?, arsenal = ?, brains = ?, autonomy = ?, craft = ?,
-			badges = ?, last_day = ?, days_seen = ?, season = ?, season_xp = ?, witnessed_xp = ?, capped_days = ?
+			badges = ?, last_day = ?, days_seen = ?, season = ?, season_xp = ?, witnessed_xp = ?, capped_days = ?, week = ?, week_xp = ?
 		WHERE id = ?`,
 	)
 		.bind(
 			xp, xpDays, next.level, next.stage, next.cls, ...STATS.map((s) => body.stats[s]),
-			JSON.stringify(badges), day, next.days_seen, season, seasonXp, next.witnessed_xp, cappedDays, id,
+			JSON.stringify(badges), day, next.days_seen, season, seasonXp, next.witnessed_xp, cappedDays, week, weekXp, id,
 		)
 		.run();
 	return json({ ...view(next, true, season), capped: xp < body.xp });
@@ -355,6 +365,7 @@ async function readGroup(request, env) {
 	const busy = await perCreature(env, id);
 	if (busy) return busy;
 	const month = today().slice(0, 7);
+	const week = isoWeek(today());
 	const { results } = await env.DB.prepare(
 		`SELECT m.* FROM entries me JOIN entries m ON m.grp = me.grp
 		WHERE me.id = ?1 AND me.grp IS NOT NULL ORDER BY m.witnessed_xp DESC, m.id`,
@@ -371,6 +382,7 @@ async function readGroup(request, env) {
 			level: r.level,
 			witnessed_xp: r.witnessed_xp,
 			season_xp: r.season === month ? r.season_xp : 0,
+			week_xp: r.week === week ? r.week_xp : 0,
 			stats: STATS.map((s) => r[s]),
 			sus: isSus(r),
 			you: r.id === id,
@@ -631,10 +643,13 @@ async function dailyTotals(env, day, counted, args) {
 
 	const buckets = STATS.flatMap((s) => [...Array(10).keys()].map((k) => `SUM(MIN(${s} / 10, 9) = ${k}) AS ${s}_${k}`));
 	const badges = Object.keys(BADGES).map((b) => `SUM(instr(badges, '"${b}"') > 0) AS badge_${b}`);
-	const [byLevel, sums] = await env.DB.batch([
+	const [byLevel, sums, bySeason] = await env.DB.batch([
 		env.DB.prepare(`SELECT level, class, COUNT(*) AS n FROM entries WHERE ${counted} GROUP BY level, class`).bind(...args),
 		env.DB.prepare(`SELECT COUNT(*) AS n, SUM(${SUS_SQL}) AS sus, ${[...buckets, ...badges].join(", ")} FROM entries WHERE ${counted}`)
 			.bind(...args),
+		// Class wars: the season XP the board credited, summed per class.
+		env.DB.prepare(`SELECT class, SUM(season_xp) AS xp FROM entries WHERE ${counted} AND season = ?3 GROUP BY class`)
+			.bind(...args, day.slice(0, 7)),
 	]);
 	const s = sums.results[0];
 	const creatures = s.n;
@@ -642,6 +657,8 @@ async function dailyTotals(env, day, counted, args) {
 	if (creatures >= MIN_ROWS_FOR_TOTALS) {
 		const levels = Array(LEVEL_MAX + 1).fill(0);
 		const classes = Object.fromEntries([...Object.values(CLASSES), "Perfectly Balanced", "Noob", "Unhatched"].map((c) => [c, 0]));
+		const classXp = { ...classes };
+		for (const r of bySeason.results) classXp[r.class] += r.xp || 0;
 		const stages = Object.fromEntries(STAGES.map(([, name]) => [name, 0]).reverse());
 		for (const r of byLevel.results) {
 			levels[r.level] += r.n;
@@ -649,7 +666,7 @@ async function dailyTotals(env, day, counted, args) {
 			stages[STAGES.find(([floor]) => r.level >= floor)[1]] += r.n;
 		}
 		totals = {
-			levels, stages, classes,
+			levels, stages, classes, class_xp: classXp,
 			stats: Object.fromEntries(STATS.map((st) => [st, [...Array(10).keys()].map((k) => s[`${st}_${k}`] || 0)])),
 			badges: Object.fromEntries(Object.keys(BADGES).map((b) => [b, s[`badge_${b}`] || 0])),
 			sus: s.sus || 0,

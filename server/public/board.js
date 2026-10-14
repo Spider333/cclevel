@@ -11,6 +11,12 @@
 		Giga: [" \\.-^-./ ", " ( o o ) ", " /\\ = /\\ ", " _/| |\\_ "],
 		"Final Boss": ["*\\.-^-./*", " ( @ @ ) ", "</\\ = /\\>", " _/| |\\_ "],
 	};
+	// The same names as BADGE_NAMES in skills/pet/scripts/cclevel.py.
+	var BADGE_NAMES = {
+		first_hook: "Hooked", first_skill: "Skill issue: solved", first_subagent: "Not my job", first_loop: "AFK gains",
+		streak_7: "gm x7", streak_30: "No days off", streak_100: "Terminally online",
+		skills_10: "Loadout", skills_50: "Full kit", skills_100: "Maxed out",
+	};
 	var JOIN = [
 		["1", "/pet join the leaderboard"],
 		["2", "/pet put me on the world list"],
@@ -286,6 +292,63 @@
 		el("world").replaceChildren.apply(el("world"), items);
 	}
 
+	// One labelled bar per entry: [label node, share 0..1, value text, class for the colour].
+	function bars(list, rows) {
+		list.replaceChildren.apply(
+			list,
+			rows.map(function (r) {
+				var li = make("li");
+				var label = make("span", "label");
+				label.append(r[0]);
+				var meter = make("span", "meter");
+				var fill = make("span");
+				fill.style.width = Math.max(0, Math.min(100, Math.round(r[1] * 100))) + "%";
+				meter.append(fill);
+				meter.setAttribute("aria-hidden", "true");
+				if (r[3]) meter.dataset.class = r[3];
+				li.append(label, meter, make("span", "value", r[2]));
+				return li;
+			}),
+		);
+		list.hidden = false;
+	}
+
+	// Class wars and badge rarity: both come from the totals, so both wait for 100 creatures.
+	function games() {
+		var t = board.totals;
+		if (!t || !t.class_xp || !t.badges || !(board.creatures > 0)) return;
+		var classes = Object.keys(t.class_xp).sort(function (a, b) {
+			return t.class_xp[b] - t.class_xp[a] || (a < b ? -1 : 1);
+		});
+		var most = t.class_xp[classes[0]] || 0;
+		var lead = el("war-lead");
+		if (most > 0) {
+			lead.replaceChildren(make("b", null, classes[0]), " leads season " + board.month + ".");
+		} else {
+			lead.textContent = "No season XP yet this month. The first check-in starts the war.";
+		}
+		bars(
+			el("war"),
+			classes.map(function (c) {
+				return [chip(c), most > 0 ? t.class_xp[c] / most : 0, n(t.class_xp[c]) + " XP", c];
+			}),
+		);
+		var codes = Object.keys(BADGE_NAMES).filter(function (b) {
+			return typeof t.badges[b] === "number";
+		});
+		codes.sort(function (a, b) {
+			return t.badges[a] - t.badges[b] || (BADGE_NAMES[a] < BADGE_NAMES[b] ? -1 : 1);
+		});
+		el("rarity-lead").textContent = "Share of " + n(board.creatures) + " creatures holding each badge, rarest first.";
+		bars(
+			el("rarity"),
+			codes.map(function (b) {
+				var share = Math.min(1, t.badges[b] / board.creatures);
+				return [BADGE_NAMES[b], share, Math.round(share * 100) + "%"];
+			}),
+		);
+	}
+
 	var pick = function (name) {
 		view = name;
 		everything = false;
@@ -373,6 +436,7 @@
 			board = data[1];
 			el("meta").textContent = "season " + board.month + " · built " + board.generated;
 			world();
+			games();
 			draw();
 		})
 		.catch(function () {
