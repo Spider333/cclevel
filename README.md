@@ -96,7 +96,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 
 | | |
 |---|---|
-| **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. No hooks, no background process, no telemetry. |
+| **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running, no telemetry. The one hook does nothing unless you turn on auto check-in. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
 | **Never sent** | Your name, e-mail, prompts, code, file paths, or the names of your projects, skills or connectors. |
 | **The board stores** | No account, no e-mail, no IP address, and no request logs. A creature is its score, a generated name, the key's hash and a few dates and counters. |
@@ -117,6 +117,7 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--rank` | Your place on the world lists, the XP to pass the next place, and how rare your badges are, worked out locally from the public files. Uploads nothing. |
 | `--join` | Join the board. Shows the payload and asks first. If already joined, it sends nothing. |
 | `--sync` | Check in. One accepted check-in per day. |
+| `--auto on` / `--auto off` | Check in by itself once a day, in the background, when a Claude Code session starts (on asks first). Off by default; sends nothing when you switch it. |
 | `--world on` / `--world off` | Be ranked on the public world lists, or not. Off at joining; on asks first; off works at once. |
 | `--group-create` | Start a private group (asks first) and print its invite link. |
 | `--group-join LINK` | Join a friend's group with its invite link or code (asks first). If you are not on the board yet, one yes joins the board and the group. Without LINK, type it at a hidden prompt. |
@@ -175,7 +176,7 @@ Almost. It's pseudonymous: no account, no name, no e-mail, and the board never s
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
 
 **Does it slow down Claude Code or run in the background?**
-No. There are no hooks and no background process. It runs only when you call `/pet`.
+No. Nothing keeps running: it works when you call `/pet`. The one exception is opt-in: with auto check-in on (`/pet check in automatically`), a hook starts one quick check-in a day when Claude Code starts, without holding it up. While it is off, that hook sends nothing.
 
 **Does it read my prompts?**
 It reads your Claude Code folder to count things (days, tokens, tools used, prompt timestamps). Nothing from your prompts, code or file names is printed, stored or sent.

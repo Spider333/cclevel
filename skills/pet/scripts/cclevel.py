@@ -6,10 +6,14 @@ Reads the local Claude Code folder. Writes nothing except its own files in
 
 The card is fully offline. The network is used only by --join, --sync,
 --world, the --group commands, the GitHub badge commands, --leave and
---rank, and only for what payload() returns, the world choice, a group
-invite code and a GitHub login with the hash of a code.
+--rank, and by the plugin's session-start hook (--auto-run) once a day
+after the user turned it on with --auto on; and only for what payload()
+returns, the world choice, a group invite code and a GitHub login with
+the hash of a code.
 """
 import argparse
+import contextlib
+import fcntl
 import getpass
 import glob
 import hashlib
@@ -21,7 +25,9 @@ import plistlib
 import re
 import secrets
 import subprocess
+import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -609,7 +615,8 @@ def score(cdir, machine_jobs, save):
     unused = [n for n in own if n not in used_skills and own[n]["age_days"] >= USED_WINDOW_DAYS]
 
     ledger_path = os.path.join(cdir, "cclevel", "ledger.json")
-    ledger = load_dict(ledger_path)
+    # Only a plain file is read: a pipe or a device there would block, and the daily auto check-in runs this unattended.
+    ledger = load_dict(ledger_path) if os.path.isfile(ledger_path) and not os.path.islink(ledger_path) else {}
     # A hand-edited ledger cannot lift a day above the cap, bank a future day or hold a badge that does not exist.
     banked = {d: min(int(x), DAY_CAP) for d, x in as_dict(ledger.get("days")).items()
               if is_day(d) and d < today_s and num(x) > 0}
@@ -722,11 +729,13 @@ def score(cdir, machine_jobs, save):
 
     kept = {"days": banked, "estimated": sorted(estimated), "badges": badges}
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        tmp = ledger_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(dict(kept, version=3, first_seen=ledger.get("first_seen") or today_s), f, indent=1, sort_keys=True)
-        os.replace(tmp, ledger_path)
+        try:
+            os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+            # Written to a fresh private file and swapped in: never through a link, never half written.
+            write_private(ledger_path, json.dumps(dict(kept, version=3, first_seen=ledger.get("first_seen") or today_s),
+                                                  indent=1, sort_keys=True))
+        except OSError:
+            pass   # the card still shows; the day is banked at the next run
 
     raw.update({
         "idle_days": idle, "skills_own": len(own), "skills_plugin": setup["plugin_skills"],
@@ -809,7 +818,8 @@ def render(r):
 
 # ------------------------------------------------------------ leaderboard
 # Nothing above this line touches the network. Everything below runs only
-# when the user asks for it by flag.
+# when the user asks for it by flag, or from the plugin's session-start hook
+# after the user turned auto check-in on with --auto on.
 
 DEFAULT_SERVER = "https://go.cclevel.workers.dev"   # the public board; --server or $CCLEVEL_SERVER picks another
 MOVED_FROM = ("https://cclevel-board.cclevel.workers.dev",)   # the public board's earlier addresses: same board
@@ -913,22 +923,101 @@ def identity_path(cdir):
     return os.path.join(cdir, "cclevel", "identity.json")
 
 
+def left_path(cdir):
+    return os.path.join(os.path.dirname(identity_path(cdir)), "left")
+
+
+def write_private(path, text):
+    """A small private file, replaced in one step: readers see the old one or the new one, never half of it."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            clear_odd(path)   # only cclevel's own file belongs here; a folder or link in the way would stop the swap
+    except OSError:
+        pass
+    for _ in range(5):
+        tmp = "%s-%s.tmp" % (path, secrets.token_hex(8))   # a fresh name each time: nothing can sit in its way
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(path)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def has_left(cdir, token):
+    """True once --leave has deleted this token's row: the note is written right after the board confirms it."""
+    try:
+        if not stat.S_ISREG(os.lstat(left_path(cdir)).st_mode):
+            return False
+        with open(left_path(cdir), encoding="utf-8") as f:
+            return f.read(200).strip() == token
+    except OSError:
+        return False
+
+
 def load_identity(cdir):
+    try:
+        if not stat.S_ISREG(os.stat(identity_path(cdir)).st_mode):
+            return {}   # a pipe, a device or a folder is not an identity, and reading one could block
+    except OSError:
+        return {}
     ident = load_dict(identity_path(cdir))
     token, server = ident.get("token"), ident.get("server")
     ok = isinstance(token, str) and TOKEN_RE.fullmatch(token) and isinstance(server, str) and SERVER_RE.match(server + "/")
-    return ident if ok else {}
+    return ident if ok and not has_left(cdir, token) else {}
 
 
 def save_identity(cdir, ident):
     path = identity_path(cdir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # The token is the only key to the board row: readable by its owner only, never written through a link.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
-    os.fchmod(fd, 0o600)   # an older file may have wider permissions: narrow them before anything is written
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(ident, f, indent=1)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    # The token is the only key to the board row: readable by its owner only, never written through a link. A new file
+    # replaces the old one in one step, so a reader sees the old copy or the new one, never a half-written one.
+    write_private(path, json.dumps(ident, indent=1))
+
+
+def tidy_left(cdir):
+    """Under the settings lock: once --leave has noted a token as gone, remove it and the note."""
+    if not os.path.lexists(left_path(cdir)):
+        return
+    raw = load_dict(identity_path(cdir)) if os.path.isfile(identity_path(cdir)) else {}
+    if isinstance(raw.get("token"), str) and has_left(cdir, raw["token"]):
+        os.remove(identity_path(cdir))
+    try:
+        os.remove(left_path(cdir))   # done with: the left token is gone, or the machine has joined again since
+    except OSError:
+        clear_odd(left_path(cdir))
+
+
+def update_identity(cdir, token, change, create=False, require=None, wait=10.0):
+    """The one way identity.json is changed: under the lock, from the copy on disk now, never from an older copy.
+    `change(ident)` edits it in place. Nothing is written, and None returned, when the file no longer holds this token
+    (its owner left or joined again) or when `require(ident)` is false. `create` writes a new file for a first join
+    when there is none."""
+    with identity_lock(cdir, wait):
+        tidy_left(cdir)
+        ident = load_identity(cdir)
+        if not ident and create:
+            ident = {}
+        elif ident.get("token") != token:
+            return None
+        if require is not None and not require(ident):
+            return None
+        change(ident)
+        save_identity(cdir, ident)
+        return ident
 
 
 def moved(server):
@@ -993,15 +1082,30 @@ def this_month():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def remember(cdir, ident, reply):
-    """Keep the board's latest numbers for this creature, so --rank can work offline from the public file."""
+def board_numbers(reply):
+    """The board's latest numbers for this creature, kept so --rank can work offline from the public file."""
     numbers = {k: reply[k] for k in ("witnessed_xp", "season_xp") if sane(reply.get(k))}
     if type(reply.get("world")) is bool:
         numbers["world"] = reply["world"]
     if "season_xp" in numbers:
         numbers["month"] = this_month()
-    ident.update(numbers)
-    save_identity(cdir, ident)
+    return numbers
+
+
+def remember(cdir, ident, reply, create=False):
+    """Keep the board's latest numbers, merged into the identity on disk now. `ident` is brought up to date too.
+    Returns None when nothing was written: the owner left or joined again meanwhile."""
+    numbers = board_numbers(reply)
+
+    def change(now):
+        if not now.get("token"):
+            now.update(token=ident["token"], server=ident["server"], name=ident["name"])
+        now.update(numbers)
+    saved = update_identity(cdir, ident["token"], change, create=create)
+    if saved is not None:
+        ident.clear()
+        ident.update(saved)
+    return saved
 
 
 def ranking(section):
@@ -1165,8 +1269,7 @@ def group_command(args, cdir, server, ident, data, result):
         if status != 200 or type(reply.get("left")) is not bool:
             print("cclevel: the board did not confirm: %s." % group_refusal(status, reply))
             return 1
-        ident.pop("group", None)
-        save_identity(cdir, ident)
+        keep_local(cdir, ident["token"], lambda now: now.pop("group", None))
         print("Left the group." if reply["left"] else "You were not in a group.")
         return 0
     if args.group_create or args.group_join is not None:
@@ -1207,9 +1310,8 @@ def group_command(args, cdir, server, ident, data, result):
         if status != 200 or reply.get("joined") is not True or not sane(members) or not 1 <= members <= GROUP_MAX:
             print("cclevel: the board did not add you to the group: %s." % group_refusal(status, reply))
             return 1
-        ident["group"] = code
         try:
-            save_identity(cdir, ident)
+            keep_local(cdir, token, lambda now: now.update(group=code))
         except OSError:
             pass  # the board has the membership; the local copy only lets --group-code print the code again
         if create:
@@ -1268,8 +1370,7 @@ def github_command(args, cdir, server, ident):
         if status != 200 or type(reply.get("removed")) is not bool:
             print("cclevel: the board did not confirm: %s." % group_refusal(status, reply, GITHUB_REFUSALS))
             return 1
-        ident.pop("github", None)
-        save_identity(cdir, ident)
+        keep_local(cdir, token, lambda now: now.pop("github", None))
         print("GitHub badge removed. The board keeps no GitHub detail for this creature." if reply["removed"]
               else "There was no GitHub badge to remove.")
         return 0
@@ -1290,8 +1391,7 @@ def github_command(args, cdir, server, ident):
             print("  cclevel verify " + code)
             print("Publish it at https://gist.github.com (public, any file content), then run this again.")
             return 1
-        ident.pop("github", None)
-        save_identity(cdir, ident)
+        keep_local(cdir, token, lambda now: now.pop("github", None))
         print(badge_line(True, reply.get("commits") if sane(reply.get("commits")) else 0))
         print("You can delete the gist now. --unverify-github removes the badge and the login from the board at once.")
         return 0
@@ -1312,8 +1412,7 @@ def github_command(args, cdir, server, ident):
     if status != 200 or reply.get("pending") is not True:
         print("cclevel: the board did not start the check: %s." % group_refusal(status, reply, GITHUB_REFUSALS))
         return 1
-    ident["github"] = {"login": login, "code": code}
-    save_identity(cdir, ident)
+    keep_local(cdir, token, lambda now: now.update(github={"login": login, "code": code}))
     print("Step 1 done. Now publish a new public gist at https://gist.github.com, signed in as that account,")
     print("with any file content and exactly this description, nothing else:")
     print("  cclevel verify " + code)
@@ -1410,8 +1509,8 @@ def world_command(args, cdir, server, ident):
         return 1
     try:
         remember(cdir, ident, reply)
-    except OSError:
-        pass  # the board has the choice; the local copy only feeds --rank
+    except (OSError, Busy):
+        pass  # the board has the choice; the local copy only feeds --rank and catches up at the next check-in
     if not on:
         print("World ranking off. %s is off the public lists now." % name)
     elif reply["listed"]:
@@ -1421,38 +1520,274 @@ def world_command(args, cdir, server, ident):
     return 0
 
 
+def auto_command(args, cdir, ident):
+    """Turn the daily auto check-in on (asks first) or off. A choice kept on this machine only: nothing is sent."""
+    if not ident:
+        print("Not joined. Run with --join first.")
+        return 1
+    if args.auto == "off":
+        def off(now):
+            now.pop("auto", None)
+            now.pop("auto_day", None)
+        if update_identity(cdir, ident["token"], off) is None:
+            print("Not joined. Nothing to turn off.")
+            return 1
+        print("Auto check-in off. No check-in is sent unless you run --sync.")
+        return 0
+    if not args.yes:
+        print("Auto check-in runs --sync for you once a day, in the background, when a Claude Code session starts.")
+        print("It sends the same nine numbers and badge codes as --sync, to the same board, and prints nothing.")
+        print("It is kept on this machine only; --auto off stops it.")
+        try:
+            answer = input("Turn it on? [y/N] ") if sys.stdin.isatty() else ""
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing changed. Re-run with --yes to turn it on.")
+            return 1
+    if update_identity(cdir, ident["token"], lambda now: now.update(auto=True)) is None:
+        print("This machine is not on the board. Nothing changed.")
+        return 1
+    print("Auto check-in on. %s checks in once a day when a Claude Code session starts." % creature_name(ident["token"]))
+    return 0
+
+
+class Busy(Exception):
+    """Another cclevel run holds a lock and did not let go in time, or something in the way stops it being taken."""
+
+    def __init__(self, blocked=None):
+        super().__init__(blocked)
+        self.blocked = blocked   # a path that is in the way, when that is the reason
+
+
+LOCAL_LATER = "The board has the change; this machine's copy could not be updated now (another cclevel run is busy)."
+
+
+def keep_local(cdir, token, change):
+    """Saves a change the board has already made. When the settings are busy, says so instead of claiming nothing changed."""
+    try:
+        update_identity(cdir, token, change)
+    except Busy:
+        print(LOCAL_LATER)
+
+
+def busy_text(e):
+    if e.blocked:
+        return "cclevel: %s is in the way and could not be cleared; remove it and try again. Nothing changed." % e.blocked
+    return "cclevel: another cclevel run on this machine is still busy. Nothing changed; try again in a moment."
+
+
+def clear_odd(path):
+    """Removes whatever is in the way at one of cclevel's own file paths (a pipe, a link, a folder, an unreadable file):
+    only cclevel's own small file belongs there. Never given any other path. True if it was removed."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    try:
+        if stat.S_ISDIR(st.st_mode):
+            for root, dirs, files in os.walk(path, topdown=False):
+                for name in files + dirs:
+                    full = os.path.join(root, name)
+                    (os.rmdir if os.path.isdir(full) and not os.path.islink(full) else os.unlink)(full)
+            os.rmdir(path)
+        else:
+            os.unlink(path)
+        return True
+    except OSError:
+        return False
+
+
+@contextlib.contextmanager
+def file_lock(path, wait, folder=False):
+    """An operating-system lock (flock) on `path`, a file or, with `folder`, a folder: one holder at a time, released
+    when the holder ends, even if it is killed, so none is ever left over. Raises Busy when another holder keeps it
+    beyond `wait` seconds, or when something at the path cannot be locked or cleared; nobody goes on without it."""
+    try:
+        os.makedirs(path if folder else os.path.dirname(path), exist_ok=True)
+    except OSError:
+        raise Busy(path if folder else os.path.dirname(path))
+    flags = os.O_RDONLY if folder else os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    deadline = time.time() + wait
+    repaired = folder
+    while True:
+        fd = None
+        try:
+            fd = os.open(path, flags, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            os.close(fd)
+            if time.time() >= deadline:
+                raise Busy()
+            time.sleep(0.05)
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            if not repaired and clear_odd(path):
+                repaired = True
+                continue
+            raise Busy(path)
+    try:
+        yield
+    finally:
+        os.close(fd)   # closing the file releases the lock
+
+
+HELD = set()   # board locks this run already holds
+
+
+@contextlib.contextmanager
+def board_lock(cdir, wait):
+    """Everything that sends this machine's token to the board (check-ins, the background check-in, leaving, and the
+    world, group and GitHub commands) runs one at a time under this lock, together with saving what the board answered.
+    So --leave waits for any of them still running, and none of them uses the token after it. (A run killed with its
+    request still on the way frees the lock at once; the board may apply that request later. A check-in made that way
+    gives a row with one day of check-ins, which the board deletes after 7 days.)"""
+    path = os.path.join(os.path.dirname(identity_path(cdir)), "board.lock")
+    if path in HELD:
+        yield
+        return
+    with file_lock(path, wait):
+        HELD.add(path)
+        try:
+            yield
+        finally:
+            HELD.discard(path)
+
+
+def identity_lock(cdir, wait=10.0):
+    """Changes to identity.json one at a time. The lock is on cclevel's own folder, so nothing left at a lock-file
+    path can ever block it."""
+    return file_lock(os.path.dirname(identity_path(cdir)), wait, folder=True)
+
+
+def today_utc():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def auto_wanted(cdir, token):
+    """The identity on disk right now, if it still has this token and auto check-in on; otherwise None."""
+    ident = load_identity(cdir)
+    return ident if ident.get("token") == token and ident.get("auto") is True else None
+
+
+def auto_run(cdir, args, default_dir):
+    """The plugin's session-start hook. Without --auto on it reads one file and stops; with it, one quiet check-in a UTC day."""
+    ident = load_identity(cdir)
+    token = ident.get("token")
+    if not token or ident.get("auto") is not True or ident.get("auto_day") == today_utc():
+        return 0
+    # Nothing reaches the screen or Claude's context: the hook runs in the background and its output is discarded here too.
+    sys.stdout = sys.stderr = open(os.devnull, "w")
+    server = resolve_server(args, ident)
+    if not server:
+        return 0
+    # One board write at a time: when a check-in or a leave from this machine is under way, this session stops at once.
+    try:
+        with board_lock(cdir, 0):
+            return auto_once(cdir, token, server, default_dir)
+    except Busy:
+        return 0
+
+
+def auto_once(cdir, token, server, default_dir):
+    """One background check-in, run while holding the board lock."""
+    # Read again now that this hook holds the lock: another session may have checked in, or the owner left, meanwhile.
+    fresh = auto_wanted(cdir, token)
+    if fresh is None or fresh.get("auto_day") == today_utc():
+        return 0
+    real = os.path.realpath(cdir) == os.path.realpath(default_dir)
+    result = score(cdir, machine_jobs=real, save=True)
+    if not auto_wanted(cdir, token):
+        return 0
+    try:
+        status, reply = call(server, "POST", "/api/checkin", token, payload(result))
+    except SystemExit:
+        return 0   # not marked: the next session start tries again
+    level = reply.get("level")
+    if status == 200 and type(level) is int and 1 <= level <= LEVEL_MAX:
+        # Kept only while auto check-in is still on: --auto off in the meantime stays off.
+        numbers = dict(board_numbers(reply), auto_day=today_utc())
+        update_identity(cdir, token, lambda now: now.update(numbers), require=lambda now: now.get("auto") is True)
+    return 0
+
+
 def board_command(args, cdir, result):
     data = payload(result)
     if args.preview:
         print(json.dumps(data, indent=1))
         print("\nThis is everything a check-in sends. Nothing has been sent.")
         return 0
+    try:
+        with identity_lock(cdir, 0):
+            tidy_left(cdir)
+    except (Busy, OSError):
+        pass
     ident = load_identity(cdir)
+    if args.auto:
+        return auto_command(args, cdir, ident)
     server = resolve_server(args, ident)
     if not server:
         print("cclevel: no public board is configured yet. Pass --server to use your own.")
         return 1
     if args.rank:
         return show_rank(server, ident, result)
-    if args.world:
-        return world_command(args, cdir, server, ident)
-    if args.group or args.group_create or args.group_join is not None or args.group_leave or args.group_code:
-        return group_command(args, cdir, server, ident, data, result)
-    if args.verify_github or args.unverify_github:
-        return github_command(args, cdir, server, ident)
+    if args.world or args.group or args.group_create or args.group_join is not None or args.group_leave \
+            or args.group_code or args.verify_github or args.unverify_github:
+        with board_lock(cdir, 30):
+            if ident and load_identity(cdir).get("token") != ident["token"]:
+                print("Not joined. Run with --join first.")   # left the board while this command waited
+                return 1
+            if args.world:
+                return world_command(args, cdir, server, ident)
+            if args.verify_github or args.unverify_github:
+                return github_command(args, cdir, server, ident)
+            return group_command(args, cdir, server, ident, data, result)
     if args.leave:
         if not ident:
             print("Not on the board, nothing to leave.")
             return 0
-        status, reply = call(server, "DELETE", "/api/entry", ident["token"])
-        if status != 200 or type(reply.get("deleted")) is not bool:
-            print("cclevel: the board did not confirm the deletion (HTTP %d). The token is kept so you can retry." % status)
-            return 1
-        os.remove(identity_path(cdir))
+        # Under the board lock: a check-in from this machine already on its way finishes first, and none starts until the
+        # row and the token are gone. If this run is stopped half way, nothing is left half done.
+        token = ident["token"]
+        with board_lock(cdir, 30):
+            if load_identity(cdir).get("token") != token:
+                print("Not on the board, nothing to leave.")
+                return 0
+            status, reply = call(server, "DELETE", "/api/entry", token)
+            if status != 200 or type(reply.get("deleted")) is not bool:
+                print("cclevel: the board did not confirm the deletion (HTTP %d). The token is kept so you can retry." % status)
+                return 1
+            # The row is gone. Said on disk at once, without waiting for any lock, so nothing uses this token again;
+            # the token itself goes as soon as the settings are free (now, or at the next command that changes them).
+            try:
+                write_private(left_path(cdir), token)
+                noted = True
+            except OSError:
+                noted = False
+            tidied = False
+            try:
+                with identity_lock(cdir, 10):
+                    if noted:
+                        tidy_left(cdir)
+                    elif load_identity(cdir).get("token") == token:
+                        os.remove(identity_path(cdir))
+                        noted = True
+                    tidied = True
+            except (Busy, OSError):
+                pass
+            if not noted:
+                first = "Your row on the board is deleted" if reply["deleted"] else "The board had no row for this token"
+                print("%s, but this machine's token could not be removed: something in %s is in the way. Remove the file"
+                      " identity.json there yourself." % (first, os.path.dirname(identity_path(cdir))))
+                return 1
+        token_line = ("the local token is removed" if tidied else "this machine no longer uses the token; its file is"
+                      " removed by the next cclevel command that talks to the board")
         if reply["deleted"]:
-            print("Left the board. Your row is deleted and the local token is removed.")
+            print("Left the board. Your row is deleted and %s." % token_line)
         else:
-            print("The board had no row for this token. The local token is removed.")
+            print("The board had no row for this token. %s%s." % (token_line[0].upper(), token_line[1:]))
         return 0
     if ident and args.join:
         print("Already on the board as %s. Use --sync to check in. Nothing sent." % creature_name(ident["token"]))
@@ -1471,7 +1806,16 @@ def board_command(args, cdir, result):
 
 
 def check_in(cdir, server, ident, token, data, result):
-    """Send one check-in, keep the token once the board has taken the first one. Returns (exit code, identity)."""
+    """Send one check-in, keep the token once the board has taken the first one. Returns (exit code, identity).
+    Runs under the board lock, so a --leave from this machine cannot cross it."""
+    with board_lock(cdir, 30):
+        if ident and load_identity(cdir).get("token") != token:
+            print("Not joined. Run with --join first.")
+            return 1, {}
+        return checked_in(cdir, server, ident, token, data, result)
+
+
+def checked_in(cdir, server, ident, token, data, result):
     status, reply = call(server, "POST", "/api/checkin", token, data)
     if status != 200:
         reason = reply.get("reason")
@@ -1489,11 +1833,16 @@ def check_in(cdir, server, ident, token, data, result):
     joined = bool(ident)
     ident = ident or {"token": token, "server": server, "name": name}
     try:
-        remember(cdir, ident, reply)
-    except OSError as e:
+        saved = remember(cdir, ident, reply, create=not joined)
+    except (OSError, Busy) as e:
         if not joined:
-            print("cclevel: joined, but the token could not be saved (%s). The row will expire on its own." % e.strerror)
+            print("cclevel: joined, but the token could not be saved. The row will expire on its own.")
             return 1, ident
+        print("The board took the check-in; this machine's copy of the numbers catches up next time.")
+        saved = ident
+    if saved is None:
+        print("cclevel: this machine's board settings changed while checking in. Run it again.")
+        return 1, load_identity(cdir)
     stage = next(s for floor, s in STAGES if level >= floor)
     print("You are %s · %s %s · Lv %d" % (name, stage, result["class"], level))
     witnessed, season = reply.get("witnessed_xp"), reply.get("season_xp")
@@ -1523,7 +1872,7 @@ def main():
     ap.add_argument("--json", action="store_true", help="print numbers only, as JSON")
     ap.add_argument("--no-save", action="store_true", help="do not write the ledger")
     ap.add_argument("--server", help="leaderboard address (default: the public board, or $CCLEVEL_SERVER)")
-    ap.add_argument("--yes", action="store_true", help="with --join, --world on, a group start or join, or --verify-github: do not ask again")
+    ap.add_argument("--yes", action="store_true", help="with --join, --world on, --auto on, a group start or join, or --verify-github: do not ask again")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
     board.add_argument("--join", action="store_true", help="join the leaderboard (asks first)")
@@ -1540,16 +1889,34 @@ def main():
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="delete your row and the local token")
     board.add_argument("--rank", action="store_true", help="compare with the public board; uploads nothing")
+    board.add_argument("--auto", choices=("on", "off"),
+                       help="check in once a day by itself when a Claude Code session starts (on asks first); sends nothing now")
+    board.add_argument("--auto-run", action="store_true", help=argparse.SUPPRESS)   # the plugin's session-start hook
     args = ap.parse_args()
     cdir = os.path.abspath(os.path.expanduser(args.claude_dir))
+    if args.auto_run:
+        # Silent in every case: a hook's failure must never reach the user's session.
+        try:
+            auto_run(cdir, args, default_dir) if os.path.isdir(cdir) else None
+        except (Exception, SystemExit):
+            pass
+        sys.exit(0)
     if not os.path.isdir(cdir):
         sys.exit("cclevel: %s is not a folder" % cdir)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
     if (args.preview or args.join or args.sync or args.world or args.leave or args.rank or args.group or args.group_create
-            or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github):
-        sys.exit(board_command(args, cdir, result))
+            or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github
+            or args.auto):
+        try:
+            sys.exit(board_command(args, cdir, result))
+        except Busy as e:
+            print(busy_text(e))
+            sys.exit(1)
+        except OSError as e:
+            print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
+            sys.exit(1)
     print(json.dumps(result, indent=1) if args.json else render(result))
 
 

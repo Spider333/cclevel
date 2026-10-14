@@ -19,7 +19,7 @@ The scanner needs Python 3.9 or newer and uses the standard library only. The bo
 
 These are the promises users rely on. A change that breaks one needs a very good reason and an update to [PRIVACY.md](PRIVACY.md) in the same pull request.
 
-1. **The card stays offline.** Nothing above the `leaderboard` line in `cclevel.py` touches the network. Network commands run only when the user asks for them by flag.
+1. **The card stays offline.** Nothing above the `leaderboard` line in `cclevel.py` touches the network. Network commands run only when the user asks for them by flag. The one exception is the session-start hook, and it sends nothing unless the user turned it on with `--auto on`.
 2. **The payload is five fields.** `payload()` in `cclevel.py` is everything a check-in sends. Adding to it changes PRIVACY.md and the board's validation.
 3. **No text from the board is ever printed.** The scanner prints only numbers and yes/no values from replies and spells names from its own word lists. Refusals are looked up by a one-word reason, never shown.
 4. **Every stored column is documented.** A test fails if `server/schema.sql` has a column PRIVACY.md does not name.

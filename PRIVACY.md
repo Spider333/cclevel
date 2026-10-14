@@ -19,8 +19,10 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 | `--verify-github LOGIN`, second run | one request to the board | the token; the board then looks at that account's public gists and counts its public commits |
 | `--unverify-github` | one request to the board | the token |
 | `--leave` | one request to the board | the token, to delete your row |
+| `--auto on`, `--auto off` | none | nothing; the choice is kept in `identity.json` on your machine |
+| a Claude Code session starts, with `--auto on` | one check-in per UTC day, in the background; a try that fails is repeated at the next session start | the same as `--sync` |
 
-The plugin ships no hooks and no background process. It never runs on its own. Inside Claude Code the plugin pre-approves only the offline commands. Network commands are left to Claude Code's normal permission rules, so with default settings each one asks first.
+The plugin ships one hook, for the optional auto check-in, and nothing that keeps running. Until you turn auto check-in on with `--auto on`, the hook reads a file or two on your machine when a Claude Code session starts and stops; it sends nothing. With it on, the hook runs one check-in a UTC day, in the background, and prints nothing; a try that fails is repeated at the next session start. `--auto off` stops it: no new check-in starts after that, though one already on its way still arrives. `--leave` waits for a check-in from this machine that is still running, then deletes the row. Only a check-in from a run that was killed, or gave up waiting for the board, while its request was on the way could still reach the board after that; such a row has a single day of check-ins and is deleted after 7 days. Inside Claude Code the plugin pre-approves only the offline commands. Network commands are left to Claude Code's normal permission rules, so with default settings each one asks first.
 
 ## The whole payload
 
@@ -116,6 +118,7 @@ A creature is on the world lists only while its owner keeps the world ranking on
 ## Your controls
 
 - `--world off` takes you off the world lists at once, and `--group-leave` takes you out of your group at once. Neither is ever limited. Turning the world ranking on, starting or joining a group and starting the GitHub badge share a limit of three a day. `--unverify-github` is never limited.
+- `--auto off` stops the daily auto check-in at once. It is off until you turn it on.
 - `--leave` deletes your row and removes the local token. The token is kept if the board does not confirm, so you can retry.
 - `--join` on a machine that is already on the board sends nothing.
 - A creature that never comes back after its first day is deleted after 7 days.

@@ -1,0 +1,18 @@
+{
+	"description": "cclevel auto check-in. Does nothing until you turn it on with --auto on (ask /pet). Then, when a Claude Code session starts, it checks in at most once a UTC day, in the background and silently. --auto off stops it.",
+	"hooks": {
+		"SessionStart": [
+			{
+				"matcher": "startup",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/pet/scripts/cclevel.py\" --auto-run",
+						"async": true,
+						"timeout": 60
+					}
+				]
+			}
+		]
+	}
+}
