@@ -83,7 +83,7 @@ In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank
 
 ## Play with friends
 
-1. **Start a group:** `/pet start a group`. You get an invite link like `https://cclevel-board.cclevel.workers.dev/join#3f9a…` and a generated group name, for example *Stormy Lemur Crew*.
+1. **Start a group:** `/pet start a group`. You get an invite link like `https://go.cclevel.workers.dev/join#3f9a…` and a generated group name, for example *Stormy Lemur Crew*.
 2. **Send the link** to friends. Opening it shows the group's name and how to join. The code after `#` stays in the browser and is never sent to the board.
 3. **Friends paste it** into Claude Code: `/pet join <link>`. One yes joins the board and the group together.
 4. **Compare:** `/pet show my group`. Each member sees the others' generated names, levels, XP and stats. Nobody outside the group does.

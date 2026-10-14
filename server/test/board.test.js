@@ -5,6 +5,8 @@ import worker from "../src/index.js";
 import { ADJECTIVES as ADJ, ANIMALS as ANI } from "../src/names.js";
 import source from "../src/index.js?raw";
 import wrangler from "../wrangler.jsonc?raw";
+import legacy from "../legacy/index.js";
+import legacyWrangler from "../legacy/wrangler.jsonc?raw";
 
 const TOKEN = "a".repeat(64);
 const token = (n) => n.toString(16).padStart(64, "0");
@@ -1060,5 +1062,34 @@ describe("source and configuration hygiene", () => {
 		const values = Array(update.split("?").length - 2).fill(1);
 		const { meta } = await env.DB.prepare(update).bind(...values, id).run();
 		expect(meta.rows_written).toBe(1);
+	});
+});
+
+describe("the board's first address", () => {
+	it("passes the scanner's calls on unchanged and sends browsers to the new address", async () => {
+		const seen = [];
+		const board = { fetch: async (request) => (seen.push(request), new Response("ok")) };
+		const post = new Request("https://cclevel-board.cclevel.workers.dev/api/checkin", { method: "POST", body: "{}" });
+		expect(await (await legacy.fetch(post, { BOARD: board })).text()).toBe("ok");
+		for (const path of ["/board.json", "/top.json", "/api/group"]) {
+			await legacy.fetch(new Request("https://cclevel-board.cclevel.workers.dev" + path), { BOARD: board });
+		}
+		expect(seen.map((r) => new URL(r.url).pathname)).toEqual(["/api/checkin", "/board.json", "/top.json", "/api/group"]);
+		expect(seen[0]).toBe(post);
+		const page = await legacy.fetch(new Request("https://cclevel-board.cclevel.workers.dev/join?x=1"), { BOARD: board });
+		expect(page.status).toBe(301);
+		expect(page.headers.get("location")).toBe("https://go.cclevel.workers.dev/join?x=1");
+		expect(seen).toHaveLength(4);
+	});
+
+	it("keeps no logs, holds no data and points at the board", () => {
+		const config = JSON.parse(legacyWrangler.replace(/^\s*\/\/.*$/gm, ""));
+		const main = JSON.parse(wrangler.replace(/^\s*\/\/.*$/gm, ""));
+		expect(config.observability).toEqual({ enabled: false });
+		expect(config.workers_dev).toBe(true);
+		expect(config.services).toEqual([{ binding: "BOARD", service: main.name }]);
+		for (const key of ["routes", "route", "logpush", "tail_consumers", "d1_databases", "triggers", "ratelimits"]) {
+			expect(config).not.toHaveProperty(key);
+		}
 	});
 });

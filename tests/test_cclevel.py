@@ -989,6 +989,18 @@ class Leaderboard(unittest.TestCase):
             self.assertEqual(len(FakeBoard.seen), 1)
             self.assertEqual("names another address" in out.stdout, foreign, text)
 
+    def test_the_boards_old_address_still_means_the_same_board(self):
+        old, new = "https://cclevel-board.cclevel.workers.dev", cclevel.DEFAULT_SERVER
+        args = type("Args", (), {"server": None})()
+        self.assertEqual(cclevel.resolve_server(args, {"server": old}), new)
+        args.server = old + "/"
+        self.assertEqual(cclevel.resolve_server(args, {"server": new}), new)
+        self.assertEqual(cclevel.resolve_server(args, {}), new)
+        code = "0123456789abcdef0123456789abcdef"
+        self.assertEqual(cclevel.read_invite("%s/join#%s" % (old, code), new), (code, False))
+        self.assertEqual(cclevel.read_invite("%s/join#%s" % (new, code), new), (code, False))
+        self.assertEqual(cclevel.read_invite("%s/join#%s" % (old, code), self.url), (code, True))
+
     def test_joining_from_an_invite_joins_the_board_too_with_one_yes(self):
         link = "https://cclevel.test/join#" + "ab" * 16
         out = run("--claude-dir", self.dir, "--group-join", link, "--server", self.url)

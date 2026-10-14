@@ -1,0 +1,20 @@
+{
+	"$schema": "../node_modules/wrangler/config-schema.json",
+	// The board's first address. Deploy the board first, then: npx wrangler deploy -c legacy/wrangler.jsonc
+	"name": "cclevel-board",
+	"main": "index.js",
+	"compatibility_date": "2026-03-01",
+	// Served from workers.dev on purpose, like the board: a custom domain adds sampled request logs with IP addresses.
+	"workers_dev": true,
+	// Privacy: this Worker keeps no request logs. Do not switch this on.
+	"observability": {
+		"enabled": false
+	},
+	// The board itself: no database, no schedule and no secrets here.
+	"services": [
+		{
+			"binding": "BOARD",
+			"service": "go"
+		}
+	]
+}

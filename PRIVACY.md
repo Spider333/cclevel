@@ -123,7 +123,7 @@ A creature is on the world lists only while its owner keeps the world ranking on
 
 ## Operator and contact
 
-The public board at https://cclevel-board.cclevel.workers.dev (short address https://cclevel.com) is run by Amagi Labs LLC, 30 N Gould St Ste R, Sheridan, WY 82801, USA.
+The public board at https://go.cclevel.workers.dev (earlier address https://cclevel-board.cclevel.workers.dev, which only passes requests on to it and keeps nothing; short address https://cclevel.com) is run by Amagi Labs LLC, 30 N Gould St Ste R, Sheridan, WY 82801, USA.
 
 Questions about your data: cclevel.grimace562@passmail.net.
 

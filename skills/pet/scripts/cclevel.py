@@ -811,7 +811,8 @@ def render(r):
 # Nothing above this line touches the network. Everything below runs only
 # when the user asks for it by flag.
 
-DEFAULT_SERVER = "https://cclevel-board.cclevel.workers.dev"   # the public board; --server or $CCLEVEL_SERVER picks another
+DEFAULT_SERVER = "https://go.cclevel.workers.dev"   # the public board; --server or $CCLEVEL_SERVER picks another
+MOVED_FROM = ("https://cclevel-board.cclevel.workers.dev",)   # the public board's earlier addresses: same board
 RULES_VERSION = 1        # must match RULES in server/src/index.js
 MAX_REPLY = 256 * 1024
 MAX_COUNT = 10 ** 9      # no honest number from the board is larger than this
@@ -930,10 +931,15 @@ def save_identity(cdir, ident):
         json.dump(ident, f, indent=1)
 
 
+def moved(server):
+    """The public board's address for one of its earlier ones. Any other address is left as it is."""
+    return DEFAULT_SERVER if server.rstrip("/").lower() in MOVED_FROM else server
+
+
 def resolve_server(args, ident):
     """The board to talk to. A creature only ever talks to the board it joined."""
-    asked = args.server or os.environ.get("CCLEVEL_SERVER") or ""
-    home = ident.get("server") or ""
+    asked = moved(args.server or os.environ.get("CCLEVEL_SERVER") or "")
+    home = moved(ident.get("server") or "")
     if home and asked and asked.rstrip("/") != home.rstrip("/"):
         sys.exit("cclevel: this creature lives on %s. Leave that board first, or drop --server and CCLEVEL_SERVER." % home)
     server = (home or asked or DEFAULT_SERVER).rstrip("/")
@@ -1068,7 +1074,8 @@ def read_invite(text, server):
     if len(found) != 1:
         return None, False
     home = urllib.parse.urlsplit(server).netloc.lower()
-    return found.pop(), any(host != home for host, _ in INVITE_LINK_RE.findall(text))
+    return found.pop(), any(host != home and moved("https://" + host) != server
+                            for host, _ in INVITE_LINK_RE.findall(text))
 
 
 def confirmed(args, prompt, retry):
