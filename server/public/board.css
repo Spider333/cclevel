@@ -99,21 +99,26 @@ select:hover { border-color: var(--muted); }
 /* The landing page: a wider page and more air between sections than the guide pages. */
 body.landing { --page: 66rem; }
 .landing main { gap: 7rem; padding-block: 2rem 4rem; }
-.landing .hero.split { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 4rem; padding-block: 3.5rem 0; }
+.landing .hero.split { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 3rem 4rem; padding-block: 3.5rem 0; }
 .landing .hero-text { gap: 1.4rem; }
 .landing .hero.split h1 { font-size: clamp(2.4rem, 5.2vw, 4rem); }
 .landing .hero.split .tagline { font-size: clamp(1.1rem, 2.6vw, 1.45rem); }
+.landing .tagline span { white-space: nowrap; }
 .landing .lede { max-width: 54ch; text-wrap: pretty; line-height: 1.75; }
 .landing .ctas { margin-top: .6rem; gap: .8rem; }
 .landing .btn { padding: .8rem 1.4rem; }
-.landing .evolve { padding: 3.25rem 1.5rem 2.25rem; gap: 1rem; }
+.landing .evolve { padding: 3.75rem 2rem 2.75rem; gap: 1.25rem; }
+.landing .evolve pre { font-size: clamp(1.8rem, 3.6vw, 2.8rem); }
+.landing .evolve figcaption { font-size: 1rem; }
+/* The checks run as one line under the whole hero. */
+.landing .checks { grid-column: 1 / -1; padding-top: 1.5rem; border-top: 1px dashed var(--line); gap: .4rem 2rem; font-size: .85rem; }
 .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .35rem 1.4rem; font-size: .8rem; color: var(--muted); }
 .checks li::before { content: "✓ "; color: var(--ok); }
 .checks a { color: inherit; text-decoration: none; }
 .checks a:hover { color: var(--fg); text-decoration: underline; }
 
 /* The one install line, in its own terminal window. Long, so it wraps only between its two halves. */
-.get { display: flex; flex-direction: column; align-items: center; gap: 1.4rem; text-align: center; scroll-margin-top: 5rem; }
+.get { display: flex; flex-direction: column; align-items: center; gap: 1.75rem; text-align: center; scroll-margin-top: 5rem; }
 .term { width: 100%; max-width: 46rem; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; text-align: left; box-shadow: 0 30px 70px -40px var(--glow); transition: border-color .15s; }
 .term:hover { border-color: var(--accent); }
 .term-bar { display: flex; align-items: center; gap: .4rem; padding: .65rem 1rem; border-bottom: 1px dashed var(--line); }
@@ -126,8 +131,15 @@ body.landing { --page: 66rem; }
 .term-line .copy { font-size: .8rem; padding: .3rem .8rem; }
 .get .note { max-width: 46rem; }
 
+/* Section headings on the landing page: big, with the comment slashes in orange */
+.landing main > section > h2, .landing .world-head h2 { font: 800 clamp(1.6rem, 3.6vw, 2.4rem)/1.15 var(--mono); letter-spacing: -.03em; color: var(--fg); }
+.landing h2 .slash { color: var(--accent); }
+.landing .world-head { align-items: flex-end; }
+.landing .world { gap: 1.5rem; }
+.landing .faq h2 { margin-bottom: 1.25rem; }
+
 /* What you get */
-.what { display: flex; flex-direction: column; gap: 1.4rem; }
+.what { display: flex; flex-direction: column; gap: 1.75rem; }
 .landing .tiles { gap: 1rem; }
 .landing .tiles article { padding: 1.6rem 1.5rem 1.4rem; gap: .6rem; }
 
