@@ -102,6 +102,7 @@ A creature is on the world lists only while its owner keeps the world ranking on
 ## What we cannot promise
 
 - **The host sees addresses.** The board runs on Cloudflare. Like any host, Cloudflare processes IP addresses to deliver a request, under its own privacy policy.
+- **The short address keeps sampled logs.** https://cclevel.com only sends you on to the board's own address. Because it is a domain on Cloudflare, Cloudflare keeps a sample of visits to it, with IP addresses, for about 31 days. Check-ins, invite links and the board itself use the `workers.dev` address and never go through it.
 - **Group requests are counted per creature.** Starting, joining and reading a group are limited to about ten a minute per creature. The counter is keyed by your row's id, which the board already holds, and Cloudflare keeps it for up to 60 seconds.
 - **Spam control uses your address for a minute.** A new creature's network address (for IPv6, its /64 prefix) is turned into a counter that Cloudflare holds for up to 60 seconds, so that one network can add roughly five new creatures a minute. The host's limiter is approximate, and people behind a shared address (an office, a campus) may have to wait a minute. The address is never written to the board's database.
 - **Live debugging is possible.** The service stores no logs, but its operator could watch live traffic while fixing a fault, and that view includes request details such as IP addresses. Nothing from it is kept.
@@ -122,7 +123,7 @@ A creature is on the world lists only while its owner keeps the world ranking on
 
 ## Operator and contact
 
-The public board at https://cclevel-board.cclevel.workers.dev is run by Amagi Labs LLC, 30 N Gould St Ste R, Sheridan, WY 82801, USA.
+The public board at https://cclevel-board.cclevel.workers.dev (short address https://cclevel.com) is run by Amagi Labs LLC, 30 N Gould St Ste R, Sheridan, WY 82801, USA.
 
 Questions about your data: cclevel.grimace562@passmail.net.
 

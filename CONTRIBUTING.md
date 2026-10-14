@@ -25,7 +25,7 @@ These are the promises users rely on. A change that breaks one needs a very good
 4. **Every stored column is documented.** A test fails if `server/schema.sql` has a column PRIVACY.md does not name.
 5. **Pages load only their own files.** The CSP is `default-src 'self'`. No outside fonts, scripts or images, and board data is written with `textContent`, never as HTML.
 6. **Word lists stay in sync.** Creature and group names come from the same lists in `cclevel.py`, `server/src/names.js` and `server/public/join.js`; a test checks them.
-7. **No request logs, no IP addresses stored.** Keep `observability` off and the board on `workers.dev`.
+7. **No request logs, no IP addresses stored.** Keep `observability` off and the board on `workers.dev`. `cclevel.com` is only a redirect: the scanner, invite links and API calls never use it.
 
 ## Pull requests
 
