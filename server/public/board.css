@@ -159,6 +159,8 @@ td.name { font-weight: 600; }
 .steps { margin: 0; padding-left: 1.4rem; display: flex; flex-direction: column; gap: .9rem; font-size: .9rem; min-width: 0; }
 .steps li::marker { color: var(--accent); font-weight: 700; }
 .steps .cmds { margin-top: .5rem; }
+.steps .cmds { max-width: 44rem; }
+.cmds code.wrap { white-space: normal; overflow-wrap: anywhere; }
 .payload { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 1rem; display: flex; flex-direction: column; gap: .7rem; min-width: 0; }
 .payload h3 { margin: 0; font-size: .8rem; font-weight: 700; color: var(--accent); }
 .payload pre { font-size: .78rem; line-height: 1.45; color: var(--fg); background: var(--raised); border-radius: 8px; padding: .75rem; overflow-x: auto; }

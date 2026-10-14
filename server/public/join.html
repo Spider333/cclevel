@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>You're invited · cclevel board</title>
+<link rel="stylesheet" href="/board.css">
+</head>
+<body>
+<main>
+<header class="hero">
+<p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> cclevel --join-group<span class="cursor">▌</span></p>
+<div class="meta">private group invite</div>
+<h1 id="title">You're invited<span class="dot">.</span></h1>
+<p class="tagline" id="crew">Someone wants to compare Claude Code setups with you. <em>Measure it. Compare it. Stay nameless.</em></p>
+<p class="lede">cclevel turns your Claude Code setup into a creature with a level and six stats. A private group of up to 25 friends sees each other's numbers. Nobody else does.</p>
+</header>
+
+<section class="how" id="steps" aria-labelledby="steps-title" hidden>
+<h2 id="steps-title">// join in three steps</h2>
+<ol class="steps">
+<li><b>Install</b> in Claude Code:
+<ul class="cmds">
+<li><code data-copy>/plugin marketplace add Spider333/cclevel</code></li>
+<li><code data-copy>/plugin install cclevel@cclevel</code></li>
+</ul></li>
+<li><b>Paste this</b> into Claude Code:
+<ul class="cmds">
+<li><code data-copy class="wrap" id="join-cmd">/pet join</code></li>
+</ul></li>
+<li><b>Say yes once.</b> It shows exactly what it sends, then joins the board and the group together.</li>
+</ol>
+<div class="payload">
+<h3>What your group sees</h3>
+<p>Each member's generated name, level, XP since joining, season XP, six stats and sus mark. No names, prompts, code or e-mail ever leave your machine. Being in a group does not put you on the public lists.</p>
+<p><b>Anyone with this link can join</b>, up to 25 members. If it leaks, start a new group with <code>/pet start a group</code>.</p>
+</div>
+</section>
+
+<div class="state" id="broken" hidden>
+<b>This invite link is incomplete.</b>
+<p>A link ends in <code>#</code> and 32 characters. Ask your friend to send it again, or <a href="/">see the board</a>.</p>
+</div>
+
+<footer>
+<p><a href="/">The world board</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> (MIT) · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a>. The invite code stays in your browser: this page sends it nowhere.</p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+</footer>
+</main>
+<script src="/join.js"></script>
+</body>
+</html>

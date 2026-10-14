@@ -2,7 +2,7 @@
 
 Your Claude Code setup as a creature that grows. cclevel reads your local Claude Code folder, scores how old, well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next.
 
-Status: early. The scanner works and the board runs at https://cclevel-board.cclevel.workers.dev. The source is at https://github.com/Spider333/cclevel. The name is a working name.
+Status: early. The scanner works and the board runs at https://cclevel-board.cclevel.workers.dev. The source is at https://github.com/Spider333/cclevel.
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
@@ -76,11 +76,11 @@ No hooks, no background process, no telemetry. As a plugin, only the offline com
 | `--join` | Join the board. Shows the payload and asks first. If already joined, it sends nothing. |
 | `--sync` | Check in. One accepted check-in per day. |
 | `--world on` / `--world off` | Be ranked on the public world lists, or not. Off at joining; on asks first; off works at once. |
-| `--group-create` | Start a private group (asks first) and print its invite code. |
-| `--group-join CODE` | Join a friend's group with its invite code (asks first). Without CODE, type it at a hidden prompt. |
+| `--group-create` | Start a private group (asks first) and print its invite link. |
+| `--group-join LINK` | Join a friend's group with its invite link or code (asks first). If you are not on the board yet, one yes joins the board and the group. Without LINK, type it at a hidden prompt. |
 | `--group` | Show your group: names, levels, XP since joining, season XP, Aura, sus marks. |
 | `--group-leave` | Leave your group at once. |
-| `--group-code` | Show your group's invite code again; in full only in your own terminal. Sends nothing. |
+| `--group-code` | Show your group's invite link again. Sends nothing. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
 | `--leave` | Delete your row and the local token. |
@@ -146,11 +146,11 @@ Grind and Brains never set the class. The scoring constants and the names are de
 - **It ranks only what it saw.** After joining, a creature gains at most 550 XP per active day on the board, without badge XP. That is its witnessed XP, and it is the only thing either list is sorted by. Whatever a creature reported when it joined (its history, its level) never ranks. On its first return it may be credited one extra day, once, to allow for time zones.
 - **Two lists.** Season is the XP credited this month; All-time is everything since joining. Each lists the top 1,000. Below that the board publishes the XP needed for each "top X%" band, and `--rank` works out your place on your machine.
 - **Listing is a choice.** Joining does not list you. `--world on` does, once you have check-ins on two different UTC days. `--world off` and `--leave` take you off both lists in the same request.
-- **Private groups.** Up to 25 friends share an invite code made on one of their machines; the board keeps only its hash. Only members can read a group, there is no web view of it, and being in one does not list you anywhere. One group per creature.
+- **Private groups.** Up to 25 friends share an invite link holding a code made on one of their machines; the board keeps only the code's hash. The invite page reads the code from the part after `#`, which browsers never send, and shows the group's generated name and how to join. Only members can read a group, there is no web view of its members, and being in one does not list you anywhere. One group per creature.
 - **GitHub badge.** Optional. You prove a GitHub account is yours with a public gist (no password or key leaves your machine); the board then shows the login and how many of its public commits carry Claude Code's co-author line. It never changes a place or XP. Without a GitHub key on the board, it answers "not available".
 - **Sus** marks a creature with at least 14 witnessed days of which 80% or more were credited at the full 550. It changes nothing else, and a script that claims a little less is not caught.
 - **Totals** (creatures per level, stage, class, stat range and badge, and the sus count) count every creature with check-ins on two days, listed or not, and appear only from 100 creatures.
-- **Limits.** One network can add roughly one new creature a minute (the host's limiter is approximate), and the board takes at most 5,000 new creatures a day. Turning the world ranking on and starting or joining a group share a limit of three a day per creature; turning off and leaving are never limited. Group requests are limited to ten a minute per creature.
+- **Limits.** One network can add roughly five new creatures a minute (the host's limiter is approximate), and the board takes at most 5,000 new creatures a day. Turning the world ranking on and starting or joining a group share a limit of three a day per creature; turning off and leaving are never limited. Group requests are limited to ten a minute per creature.
 - The service keeps no request logs and stores no IP address. See [PRIVACY.md](PRIVACY.md) for what that does and does not cover.
 
 Run it locally:

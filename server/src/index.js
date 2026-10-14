@@ -161,15 +161,15 @@ async function checkin(request, env) {
 
 	const prev = await env.DB.prepare("SELECT * FROM entries WHERE id = ?").bind(id).first();
 	if (!prev) {
-		// Spam control: one new creature a minute per network. The address becomes a counter key that
+		// Spam control: five new creatures a minute per network, so friends on one wifi can join together. The address becomes a counter key that
 		// Cloudflare holds for up to a minute. It is never written to the database and never logged.
 		if (!env.NEW_ROWS) return json({ error: "the board is not taking new creatures right now" }, 503);
 		const key = await sha256(network(request.headers.get("cf-connecting-ip") || ""));
 		const { success } = await env.NEW_ROWS.limit({ key });
-		if (!success) return json({ error: "too many new creatures from this network, try again in a minute" }, 429);
+		if (!success) return json({ error: "too many new creatures from this network, try again in a minute", reason: "network" }, 429);
 		const joined = await env.DB.prepare("SELECT joins FROM days WHERE day = ?").bind(day).first();
 		if (joined && joined.joins >= NEW_ROWS_PER_DAY) {
-			return json({ error: "the board is full for today, try again tomorrow" }, 429);
+			return json({ error: "the board is full for today, try again tomorrow", reason: "full_today" }, 429);
 		}
 		// Witnessed XP starts at zero: nothing claimed before joining ever ranks.
 		const row = {

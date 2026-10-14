@@ -23,14 +23,14 @@
 			"database_id": "42d83eb6-b05d-42db-9821-0eab43d81e22"
 		}
 	],
-	// One new creature a minute per network, ten group or GitHub requests a minute per creature, and twenty
+	// Five new creatures a minute per network (friends on one wifi), ten group or GitHub requests a minute per creature, and twenty
 	// GitHub checks a minute for the whole board.
 	// The Worker refuses those requests if a binding is missing.
 	"ratelimits": [
 		{
 			"name": "NEW_ROWS",
 			"namespace_id": "7421",
-			"simple": { "limit": 1, "period": 60 }
+			"simple": { "limit": 5, "period": 60 }
 		},
 		{
 			"name": "PER_CREATURE",

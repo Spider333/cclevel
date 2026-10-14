@@ -187,14 +187,16 @@ describe("joining", () => {
 		expect(stored.first_day).toBe("2026-10-13");
 	});
 
-	it("lets one network add one creature a minute, counting an IPv6 /64 as one network", async () => {
+	it("lets one network add five creatures a minute, counting an IPv6 /64 as one network", async () => {
 		expect(env.NEW_ROWS).toBeDefined();
 		const from = (ip, n) => checkin(score(), token(n), ip).then((r) => r.status);
-		expect(await from("198.51.100.9", 500)).toBe(200);
-		expect(await from("198.51.100.9", 501)).toBe(429);
-		expect(await from("2001:db8:1:2::1", 502)).toBe(200);
-		expect(await from("2001:db8:1:2:aaaa:bbbb:cccc:dddd", 503)).toBe(429);
-		expect(await from("2001:db8:1:3::1", 504)).toBe(200);
+		for (let n = 500; n < 505; n++) expect(await from("198.51.100.9", n)).toBe(200);
+		const sixth = await checkin(score(), token(505), "198.51.100.9");
+		expect(sixth.status).toBe(429);
+		expect((await sixth.json()).reason).toBe("network");
+		for (let n = 510; n < 515; n++) expect(await from("2001:db8:1:2::" + (n - 509), n)).toBe(200);
+		expect(await from("2001:db8:1:2:aaaa:bbbb:cccc:dddd", 515)).toBe(429);
+		expect(await from("2001:db8:1:3::1", 516)).toBe(200);
 	});
 
 	it("refuses new creatures when spam control is not wired up", async () => {
@@ -213,7 +215,9 @@ describe("joining", () => {
 	it("stops taking new creatures at the daily ceiling and keeps serving existing ones", async () => {
 		await checkin(score());
 		await env.DB.prepare("UPDATE days SET joins = 5000 WHERE day = '2026-10-13'").run();
-		expect((await checkin(score(), token(700))).status).toBe(429);
+		const refused = await checkin(score(), token(700));
+		expect(refused.status).toBe(429);
+		expect((await refused.json()).reason).toBe("full_today");
 		expect((await checkin(score())).status).toBe(200);
 		goTo("2026-10-14");
 		expect((await checkin(score(), token(701))).status).toBe(200);
@@ -1037,7 +1041,7 @@ describe("source and configuration hygiene", () => {
 		expect(config.observability).toEqual({ enabled: false });
 		expect(config.workers_dev).toBe(true);
 		for (const key of ["routes", "route", "logpush", "tail_consumers"]) expect(config).not.toHaveProperty(key);
-		expect(config.ratelimits[0].simple).toEqual({ limit: 1, period: 60 });
+		expect(config.ratelimits[0]).toMatchObject({ name: "NEW_ROWS", simple: { limit: 5, period: 60 } });
 		expect(config.ratelimits[1]).toMatchObject({ name: "PER_CREATURE", simple: { limit: 10, period: 60 } });
 		expect(config.ratelimits[2]).toMatchObject({ name: "GITHUB_CALLS", simple: { limit: 20, period: 60 } });
 	});

@@ -23,6 +23,7 @@ import secrets
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -818,6 +819,9 @@ LIST_SIZE = 1000         # ranked rows per world list; must match the board
 BANDS = (1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)   # "top X%" cut-offs below them
 TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 GROUP_RE = re.compile(r"[0-9a-f]{32}")   # a group invite code, made by --group-create
+# An invite link carries the code after "#", which browsers never send to a server.
+INVITE_LINK_RE = re.compile(r"https?://([^/\s#?]+)\S*?#([0-9a-f]{32})(?![0-9a-f])")
+INVITE_CODE_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])")
 GROUP_MAX = 25           # must match the board
 GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")   # GitHub's rule for a login
 SERVER_RE = re.compile(r"https://|http://(localhost|127\.0\.0\.1)[:/]")
@@ -846,6 +850,11 @@ REFUSALS = {
     413: "the board did not accept the data",
     422: "the score does not fit the board's rules. If you reset your ledger, leave the board and join again",
     429: "the board is taking no new creatures right now. Try again in a minute, or tomorrow",
+}
+# A refused first check-in says which limit it hit. The word is only looked up here, never printed.
+JOIN_LIMITS = {
+    "network": "too many new creatures from your network this minute. Try again in a minute",
+    "full_today": "the board is full for today. Try again tomorrow",
 }
 WORLD_REFUSALS = {
     401: "the board did not accept the token",
@@ -1036,13 +1045,60 @@ def member(m):
     return m if ok else None
 
 
-def show_code(code):
-    """A full invite code only in the user's own terminal. Run by an agent, output lands in its conversation and transcript."""
-    if sys.stdout.isatty():
-        print("  " + code)
-    else:
-        print("  %s…%s (shortened: this output is not a terminal, so it may be read by an agent)" % (code[:4], code[-4:]))
-        print("  Run `python3 %s --group-code` in your own terminal to see the whole code." % os.path.abspath(__file__))
+def group_name(code):
+    """The group's generated name, worked out from its code on each member's machine. It is never sent."""
+    digest = hashlib.sha256(("cclevel-group:" + code).encode()).hexdigest()
+    first, second = (int(digest[i:i + 4], 16) for i in (0, 4))
+    return "%s %s Crew" % (ADJECTIVES[first % len(ADJECTIVES)], ANIMALS[second % len(ANIMALS)])
+
+
+def invite_link(server, code):
+    """The link friends open or paste. Shown in full: it can land in a chat transcript, and it only grants a seat."""
+    return "%s/join#%s" % (server, code)
+
+
+def read_invite(text, server):
+    """(code, foreign) from an invite link, a bare code or a message holding one; (None, False) if there is none.
+    Only the code is ever used: a link never chooses the board, so it cannot send a token anywhere else."""
+    text = text.strip().lower()
+    if not re.search(r"[\s#]", text):
+        return (text, False) if GROUP_RE.fullmatch(text) else (None, False)
+    # Every code in the text counts, in links or not: two different ones are refused, never guessed between.
+    found = set(INVITE_CODE_RE.findall(text))
+    if len(found) != 1:
+        return None, False
+    home = urllib.parse.urlsplit(server).netloc.lower()
+    return found.pop(), any(host != home for host, _ in INVITE_LINK_RE.findall(text))
+
+
+def confirmed(args, prompt, retry):
+    """A yes from --yes or from the user's own terminal. Anything else sends nothing."""
+    if args.yes:
+        return True
+    try:
+        answer = input(prompt) if sys.stdin.isatty() else ""
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("Nothing sent. " + retry)
+    return False
+
+
+def join_terms(data, server):
+    """What joining the board sends and means, shown before the first check-in."""
+    print(json.dumps(data, indent=1))
+    print("\nJoining sends exactly this to %s, with a random token made on this machine." % server)
+    print("It does not put you on the public lists: the world ranking stays off until you run --world on.")
+    print("Every creature with check-ins on two different days is counted in the board's public totals")
+    print("(how many creatures per level, stat range, class, stage and badge), listed or not.")
+
+
+def group_terms(create):
+    print("%s a private group. Its members, up to %d, see each other's generated name, level, XP since joining,"
+          % ("Starting" if create else "Joining", GROUP_MAX))
+    print("season XP, six stats and sus mark, as soon as each one checks in. No other creature can see the group.")
+    print("Being in a group does not put you on the world lists. --group-leave leaves at once.")
 
 
 def group_refusal(status, reply, table=GROUP_REFUSALS):
@@ -1050,22 +1106,21 @@ def group_refusal(status, reply, table=GROUP_REFUSALS):
     return (table.get(reason) if isinstance(reason, str) else None) or "it answered HTTP %d" % status
 
 
-def group_command(args, cdir, server, ident):
-    """One private group per creature: start, join, show, leave."""
-    if not ident:
-        print("Not joined. Run with --join first.")
+def group_command(args, cdir, server, ident, data, result):
+    """One private group per creature: start, join, show, leave. Joining from an invite can also join the board."""
+    if not ident and args.group_join is None:
+        print("Not joined. Run with --join first, or join a friend's group with --group-join LINK.")
         return 1
-    token = ident["token"]
     if args.group_code:
         code = ident.get("group")
         if not (isinstance(code, str) and GROUP_RE.fullmatch(code)):
-            print("No group invite code is saved on this machine.")
+            print("No group invite is saved on this machine.")
             return 0
-        print("Your group's invite code, for friends only:")
-        show_code(code)
+        print("%s · invite link, for friends only (anyone with it can join, up to %d):" % (group_name(code), GROUP_MAX))
+        print("  " + invite_link(server, code))
         return 0
     if args.group_leave:
-        status, reply = call(server, "DELETE", "/api/group", token)
+        status, reply = call(server, "DELETE", "/api/group", ident["token"])
         if status != 200 or type(reply.get("left")) is not bool:
             print("cclevel: the board did not confirm: %s." % group_refusal(status, reply))
             return 1
@@ -1075,31 +1130,37 @@ def group_command(args, cdir, server, ident):
         return 0
     if args.group_create or args.group_join is not None:
         create = bool(args.group_create)
-        code = secrets.token_hex(16) if create else args.group_join.strip().lower()
-        if not create and not code:
-            # No code given: ask for it without echo, so it never appears on screen or in an agent's conversation.
+        text = "" if create else args.group_join
+        if not create and not text.strip():
+            # No link given: ask for it without echo, so it never appears on screen.
             if not sys.stdin.isatty():
-                print("cclevel: pass the invite code, or run --group-join in your own terminal to type it hidden. Nothing sent.")
+                print("cclevel: pass the invite link, or run --group-join in your own terminal to type it hidden. Nothing sent.")
                 return 1
             try:
-                code = getpass.getpass("Invite code (hidden): ").strip().lower()
+                text = getpass.getpass("Invite link or code (hidden): ")
             except EOFError:
-                code = ""
-        if not GROUP_RE.fullmatch(code):
-            print("cclevel: an invite code is 32 characters, 0-9 and a-f. Nothing sent.")
+                text = ""
+        code, foreign = (secrets.token_hex(16), False) if create else read_invite(text, server)
+        if not code:
+            print("cclevel: that is not an invite. A link ends in #, then 32 characters, 0-9 and a-f. Nothing sent.")
             return 1
-        if not args.yes:
-            print("%s a private group. Its members, up to %d, see each other's generated name, level, XP since joining,"
-                  % ("Starting" if create else "Joining", GROUP_MAX))
-            print("season XP, six stats and sus mark, as soon as each one checks in. No other creature can see the group.")
-            print("Being in a group does not put you on the world lists. --group-leave leaves at once.")
-            try:
-                answer = input("Go ahead? [y/N] ") if sys.stdin.isatty() else ""
-            except EOFError:
-                answer = ""
-            if answer.strip().lower() not in ("y", "yes"):
-                print("Nothing sent. Re-run with --yes to go ahead.")
+        if foreign:
+            print("Note: this invite names another address. cclevel uses only its code, on %s." % server)
+        if not ident:
+            # One yes covers both: joining the board and joining the group.
+            join_terms(data, server)
+            print()
+            group_terms(create)
+            if not confirmed(args, "Join the board and the group? [y/N] ", "Re-run with --yes to join the board and the group."):
                 return 1
+            rc, ident = check_in(cdir, server, {}, secrets.token_hex(32), data, result)
+            if rc:
+                return rc
+        elif not args.yes:
+            group_terms(create)
+            if not confirmed(args, "Go ahead? [y/N] ", "Re-run with --yes to go ahead."):
+                return 1
+        token = ident["token"]
         status, reply = call(server, "POST", "/api/group", token, {"code": code, "new": True} if create else {"code": code})
         members = reply.get("members")
         if status != 200 or reply.get("joined") is not True or not sane(members) or not 1 <= members <= GROUP_MAX:
@@ -1111,13 +1172,14 @@ def group_command(args, cdir, server, ident):
         except OSError:
             pass  # the board has the membership; the local copy only lets --group-code print the code again
         if create:
-            print("Group started. Invite code, for friends only (anyone with it can join, up to %d):" % GROUP_MAX)
-            show_code(code)
-            print("Friends join with --group-join and this code. --group-code shows it again.")
+            print("Group started: %s. Invite link, for friends only (anyone with it can join, up to %d):"
+                  % (group_name(code), GROUP_MAX))
+            print("  " + invite_link(server, code))
+            print("Friends open it, or paste it into Claude Code: /pet join <link>. --group-code shows it again.")
         else:
-            print("Joined the group: %d members. --group shows them." % members)
+            print("Joined %s: %d members. --group shows them." % (group_name(code), members))
         return 0
-    status, reply = call(server, "GET", "/api/group", token)
+    status, reply = call(server, "GET", "/api/group", ident["token"])
     members = reply.get("members")
     if status != 200 or not isinstance(members, list) or len(members) > GROUP_MAX:
         print("cclevel: the board did not show the group: %s." % group_refusal(status, reply))
@@ -1127,9 +1189,11 @@ def group_command(args, cdir, server, ident):
         print("cclevel: the board sent a group this copy of cclevel does not understand.")
         return 1
     if not checked:
-        print("You are not in a group. Start one with --group-create, or join one with --group-join CODE.")
+        print("You are not in a group. Start one with --group-create, or join one with --group-join LINK.")
         return 0
-    print("Your group · %d member%s · ranked by XP since joining" % (len(checked), "" if len(checked) == 1 else "s"))
+    code = ident.get("group")
+    title = group_name(code) if isinstance(code, str) and GROUP_RE.fullmatch(code) else "Your group"
+    print("%s · %d member%s · ranked by XP since joining" % (title, len(checked), "" if len(checked) == 1 else "s"))
     print("   #  %-24s %3s  %12s  %10s  %4s" % ("Creature", "Lv", "XP joined", "Season XP", "Aura"))
     place = 0
     for i, m in enumerate(checked):
@@ -1307,7 +1371,7 @@ def board_command(args, cdir, result):
     if args.world:
         return world_command(args, cdir, server, ident)
     if args.group or args.group_create or args.group_join is not None or args.group_leave or args.group_code:
-        return group_command(args, cdir, server, ident)
+        return group_command(args, cdir, server, ident, data, result)
     if args.verify_github or args.unverify_github:
         return github_command(args, cdir, server, ident)
     if args.leave:
@@ -1333,31 +1397,28 @@ def board_command(args, cdir, result):
             print("Not joined. Run with --join first.")
             return 1
         # First join: show the payload and get a yes before anything is sent.
-        print(json.dumps(data, indent=1))
-        print("\nJoining sends exactly this to %s, with a random token made on this machine." % server)
-        print("It does not put you on the public lists: the world ranking stays off until you run --world on.")
-        print("Every creature with check-ins on two different days is counted in the board's public totals")
-        print("(how many creatures per level, stat range, class, stage and badge), listed or not.")
-        if not args.yes:
-            try:
-                answer = input("Send it? [y/N] ") if sys.stdin.isatty() else ""
-            except EOFError:
-                answer = ""
-            if answer.strip().lower() not in ("y", "yes"):
-                print("Nothing sent. Re-run with --yes to join.")
-                return 1
+        join_terms(data, server)
+        if not confirmed(args, "Send it? [y/N] ", "Re-run with --yes to join."):
+            return 1
         token = secrets.token_hex(32)
+    return check_in(cdir, server, ident, token, data, result)[0]
+
+
+def check_in(cdir, server, ident, token, data, result):
+    """Send one check-in, keep the token once the board has taken the first one. Returns (exit code, identity)."""
     status, reply = call(server, "POST", "/api/checkin", token, data)
     if status != 200:
-        print("cclevel: check-in refused: %s." % REFUSALS.get(status, "the board answered HTTP %d" % status))
-        return 1
+        reason = reply.get("reason")
+        said = JOIN_LIMITS.get(reason) if status == 429 and not ident and isinstance(reason, str) else None
+        print("cclevel: check-in refused: %s." % (said or REFUSALS.get(status, "the board answered HTTP %d" % status)))
+        return 1, ident
     # No text from the board is ever shown. The only thing taken from the reply here is the level,
     # which must be a sane number; the name, the stage and the class are worked out on this machine.
     level = reply.get("level")
     name = creature_name(token)
     if type(level) is not int or not 1 <= level <= LEVEL_MAX:
         print("cclevel: the board sent a reply this copy of cclevel does not understand. Nothing was saved.")
-        return 1
+        return 1, ident
     # The token is kept only once the board has taken the first check-in.
     joined = bool(ident)
     ident = ident or {"token": token, "server": server, "name": name}
@@ -1366,7 +1427,7 @@ def board_command(args, cdir, result):
     except OSError as e:
         if not joined:
             print("cclevel: joined, but the token could not be saved (%s). The row will expire on its own." % e.strerror)
-            return 1
+            return 1, ident
     stage = next(s for floor, s in STAGES if level >= floor)
     print("You are %s · %s %s · Lv %d" % (name, stage, result["class"], level))
     witnessed, season = reply.get("witnessed_xp"), reply.get("season_xp")
@@ -1386,7 +1447,7 @@ def board_command(args, cdir, result):
         print(line)
     if reply.get("sus") is True:
         print("Sus: 80%% or more of your witnessed days took the full %d XP. The mark changes nothing else." % DAY_CAP)
-    return 0
+    return 0, ident
 
 
 def main():
@@ -1403,11 +1464,12 @@ def main():
     board.add_argument("--sync", action="store_true", help="check in: update your row on the leaderboard")
     board.add_argument("--world", choices=("on", "off"), help="be ranked on the public world lists (on asks first) or not")
     board.add_argument("--group", action="store_true", help="show your private group")
-    board.add_argument("--group-create", action="store_true", help="start a private group (asks first) and print its invite code")
-    board.add_argument("--group-join", metavar="CODE", nargs="?", const="",
-                       help="join a private group with its invite code (asks first); without CODE, type it hidden")
+    board.add_argument("--group-create", action="store_true", help="start a private group (asks first) and print its invite link")
+    board.add_argument("--group-join", metavar="LINK", nargs="?", const="",
+                       help="join a private group with its invite link or code (asks first; joins the board too if needed); "
+                            "without LINK, type it hidden")
     board.add_argument("--group-leave", action="store_true", help="leave your private group")
-    board.add_argument("--group-code", action="store_true", help="show your group's invite code again (in full only in a terminal); sends nothing")
+    board.add_argument("--group-code", action="store_true", help="show your group's invite link again; sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="delete your row and the local token")
