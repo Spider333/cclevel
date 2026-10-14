@@ -3,7 +3,7 @@
 **Claude Code, gamified. How big is your Claude Code? Measure it. Compare it. Stay nameless.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-d97757)](LICENSE)
-[![Board](https://img.shields.io/badge/board-live-d97757)](https://cclevel-board.cclevel.workers.dev)
+[![Board](https://img.shields.io/badge/board-live-d97757)](https://cclevel.com)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d97757)](#install)
 [![Privacy](https://img.shields.io/badge/sends-9_numbers-d97757)](PRIVACY.md)
 
@@ -75,7 +75,7 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | Feature | What it is | Sends anything? |
 |---|---|---|
 | **The card** | Level, six stats, mood, badges and the top things to fix. | No. Fully offline. |
-| **The world board** | Season and all-time lists at [cclevel-board.cclevel.workers.dev](https://cclevel-board.cclevel.workers.dev), ranked only on XP the board watched you earn. | Only if you join, and being listed is a second choice. |
+| **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Only if you join, and being listed is a second choice. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
 | **GitHub badge** | Prove a GitHub account is yours and show how many of its public commits Claude co-signed. | Only if you ask for it. |
 
