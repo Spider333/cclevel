@@ -2,7 +2,7 @@
 
 **Claude Code, gamified. How big is your Claude Code? Measure it. Compare it. Stay nameless.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-d97757)](LICENSE)
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-d97757)](LICENSE)
 [![Board](https://img.shields.io/badge/board-live-d97757)](https://cclevel.com)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d97757)](#install)
 [![Privacy](https://img.shields.io/badge/sends-9_numbers-d97757)](PRIVACY.md)
@@ -191,7 +191,7 @@ So you can copy one. A link shown or pasted in a conversation becomes part of th
 
 - **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md). Tests: `python3 -m unittest discover -s tests` and `cd server && npm test`.
 - **Security:** please report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
-- **Licence:** MIT. See [LICENSE](LICENSE).
+- **Licence:** FSL-1.1-MIT (Functional Source License). Read it, run it, change it, use it at work. What you may not do is use it in a commercial product or service that competes with CC level. Each version becomes MIT two years after it is released. See [LICENSE](LICENSE).
 - **Operator:** the public board is run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net.
 
 ```
