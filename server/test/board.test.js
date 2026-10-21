@@ -812,6 +812,213 @@ describe("private groups", () => {
 	});
 });
 
+describe("duels", () => {
+	// The per-creature limiter counts in real time across tests, so each test uses creatures of its own.
+	let next = 40000;
+	let token = (n) => n.toString(16).padStart(64, "0");
+	beforeEach(() => {
+		const base = next;
+		next += 100;
+		token = (n) => (base + n).toString(16).padStart(64, "0");
+	});
+	const duel = (method, body, bearer) => group(method, body, bearer, "/api/duel");
+	const view = async (bearer) => (await duel("GET", undefined, bearer)).json();
+	const row = (bearer) => sha256(bearer).then((id) => env.DB.prepare("SELECT * FROM entries WHERE id = ?").bind(id).first());
+	const reason = async (res) => [res.status, (await res.json()).reason];
+	// Two creatures in a duel accepted on 13 October, so it runs from 14 to 20 October.
+	const pair = async (a, b) => {
+		goTo("2026-10-12");
+		await checkin(score(), a);
+		await checkin(score(), b);
+		goTo("2026-10-13");
+		await duel("POST", { code: CODE, new: true }, a);
+		await duel("POST", { code: CODE }, b);
+	};
+
+	it("start with a code made by the client, take exactly one opponent, and start both clocks the next day", async () => {
+		for (const n of [1, 2, 3]) await checkin(score(), token(n));
+		expect(await (await duel("POST", { code: CODE, new: true }, token(1))).json()).toEqual({ joined: true, members: 1 });
+		expect(await view(token(1))).toEqual({ day: null, members: [expect.objectContaining({ you: true, duel_xp: 0 })] });
+		expect(await (await duel("POST", { code: CODE }, token(2))).json()).toEqual({ joined: true, members: 2 });
+		expect((await row(token(1))).duel_day).toBe("2026-10-14");
+		expect((await row(token(2))).duel_day).toBe("2026-10-14");
+		expect(await reason(await duel("POST", { code: CODE }, token(3)))).toEqual([409, "full"]);
+		expect((await row(token(3))).duel).toBeNull();
+		const seen = await view(token(2));
+		expect(seen.day).toBe(-1);
+		expect(seen.members).toHaveLength(2);
+		expect(seen.members.filter((m) => m.you)).toHaveLength(1);
+		// Not in it: nothing, whatever is added to the request.
+		expect(await view(token(3))).toEqual({ day: null, members: [] });
+		const sneaky = await group("GET", undefined, token(3), `/api/duel?code=${CODE}`);
+		expect((await sneaky.json()).members).toEqual([]);
+	});
+
+	it("count only the daily XP the board credits during its seven days", async () => {
+		await pair(token(1), token(2));
+		// The day it was accepted does not count, whoever checks in first.
+		await checkin(score({ xp: 1500, xp_days: 6 }), token(1));
+		await checkin(score(), token(2));
+		expect((await row(token(1))).duel_xp).toBe(0);
+		goTo("2026-10-14");
+		await checkin(score({ xp: 2000, xp_days: 7 }), token(1));
+		await checkin(score({ xp: 1200, xp_days: 6 }), token(2));
+		goTo("2026-10-20");
+		await checkin(score({ xp: 2550, xp_days: 8 }), token(1));
+		expect((await view(token(1))).day).toBe(6);
+		goTo("2026-10-21");
+		await checkin(score({ xp: 1750, xp_days: 7 }), token(2));
+		const { day, members } = await view(token(2));
+		expect(day).toBe(7);
+		expect(members.map((m) => [m.you, m.duel_xp])).toEqual([[false, 1050], [true, 200]]);
+		// The rest of the board's numbers go on as before.
+		expect((await row(token(2))).witnessed_xp).toBe(750);
+	});
+
+	it("count only check-ins after one on or after the day it was accepted, so XP held back from before never counts", async () => {
+		goTo("2026-10-01");
+		await checkin(score(), token(1));
+		await checkin(score(), token(2));
+		goTo("2026-10-13");
+		await duel("POST", { code: CODE, new: true }, token(2));
+		await duel("POST", { code: CODE }, token(1));
+		await checkin(score(), token(2));
+		// Twelve days held back and reported during the duel: the board credits them, the duel none of them,
+		// however many of those days are claimed to be duel days.
+		goTo("2026-10-16");
+		await checkin(score({ xp: 1000 + 550 * 15, xp_days: 20 }), token(1));
+		expect((await row(token(1))).witnessed_xp).toBe(8250);
+		expect((await row(token(1))).duel_xp).toBe(0);
+		// From then on its check-ins count.
+		goTo("2026-10-17");
+		await checkin(score({ xp: 1000 + 550 * 16, xp_days: 21 }), token(1));
+		expect((await row(token(1))).duel_xp).toBe(550);
+		// One check-in on the day of accepting, then one on the last day: all seven days count, and never more than 550 a day.
+		goTo("2026-10-20");
+		await checkin(score({ xp: 1000 + 550 * 7, xp_days: 12 }), token(2));
+		expect((await row(token(2))).duel_xp).toBe(3850);
+	});
+
+	it("keep only the SHA-256 of the code, and reply with numbers, yes/no values and null only", async () => {
+		await pair(token(1), token(2));
+		expect((await row(token(1))).duel).toBe(await sha256(CODE));
+		const tables = (await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).results;
+		for (const { name } of tables.filter((t) => !t.name.startsWith("_"))) {
+			const everything = JSON.stringify((await env.DB.prepare(`SELECT * FROM ${name}`).all()).results);
+			expect(everything).not.toContain(CODE);
+		}
+		const reply = await view(token(1));
+		const strings = [];
+		const walk = (v) => {
+			if (typeof v === "string") strings.push(v);
+			else if (v && typeof v === "object") Object.values(v).forEach(walk);
+		};
+		walk(reply);
+		expect(strings).toEqual([]);
+		expect(reply.members[0]).toEqual({
+			name: expect.any(Array), level: 5, duel_xp: 0, stats: [10, 20, 30, 60, 5, 15], sus: false, you: expect.any(Boolean),
+		});
+	});
+
+	it("hold one duel per creature beside its group: a waiting or finished duel can be replaced, a running one cannot", async () => {
+		for (const n of [1, 2, 3]) await checkin(score(), token(n));
+		await group("POST", { code: CODE, new: true }, token(1));
+		await duel("POST", { code: OTHER, new: true }, token(1));
+		// A new duel replaces one that waits: its old link leads nowhere.
+		const third = "ab".repeat(16);
+		expect((await duel("POST", { code: third, new: true }, token(1))).status).toBe(200);
+		expect(await reason(await duel("POST", { code: OTHER }, token(2)))).toEqual([404, "no_duel"]);
+		expect((await duel("POST", { code: third }, token(2))).status).toBe(200);
+		expect((await row(token(1))).grp).toBe(await sha256(CODE));
+		goTo("2026-10-20");
+		expect(await reason(await duel("POST", { code: OTHER, new: true }, token(1)))).toEqual([409, "in_duel"]);
+		await duel("POST", { code: OTHER, new: true }, token(3));
+		expect(await reason(await duel("POST", { code: OTHER }, token(2)))).toEqual([409, "in_duel"]);
+		// Over after seven days: a new duel or a rematch can start, and the other side sees it was left.
+		goTo("2026-10-21");
+		expect((await duel("POST", { code: OTHER }, token(1))).status).toBe(200);
+		const left = await view(token(2));
+		expect(left.day).toBe(7);
+		expect(left.members).toHaveLength(1);
+	});
+
+	it("refuse your own duel, an unknown code, a malformed body and a creature that does not exist", async () => {
+		await checkin(score(), token(1));
+		await duel("POST", { code: CODE, new: true }, token(1));
+		expect(await reason(await duel("POST", { code: CODE }, token(1)))).toEqual([409, "own_duel"]);
+		expect(await reason(await duel("POST", { code: OTHER }, token(1)))).toEqual([404, "no_duel"]);
+		for (const body of [{ code: CODE.toUpperCase() }, { code: CODE + "0" }, { code: CODE, new: false }, { code: CODE, x: 1 }, [CODE], "nope"]) {
+			expect((await duel("POST", body, token(1))).status).toBe(400);
+		}
+		expect(await reason(await duel("POST", { code: OTHER, new: true }, token(7)))).toEqual([404, "no_creature"]);
+		expect(await reason(await duel("GET", undefined, token(7)))).toEqual([404, "no_creature"]);
+		expect((await row(token(1))).duel).toBe(await sha256(CODE));
+	});
+
+	it("refuse an opponent whose generated name matches the waiting creature's", async () => {
+		await checkin(score(), token(1));
+		await checkin(score(), token(2));
+		await duel("POST", { code: CODE, new: true }, token(2));
+		await env.DB.prepare("UPDATE entries SET name = (SELECT name FROM entries WHERE id = ?) WHERE id = ?")
+			.bind(await sha256(token(1)), await sha256(token(2)))
+			.run();
+		expect(await reason(await duel("POST", { code: CODE }, token(1)))).toEqual([409, "name_taken"]);
+		expect((await row(token(2))).duel_day).toBeNull();
+	});
+
+	it("let only one of two creatures accepting at the same moment in", async () => {
+		for (const n of [1, 2, 3]) await checkin(score(), token(n));
+		await duel("POST", { code: CODE, new: true }, token(1));
+		const answers = await Promise.all([duel("POST", { code: CODE }, token(2)), duel("POST", { code: CODE }, token(3))]);
+		expect(answers.map((a) => a.status).sort()).toEqual([200, 409]);
+		expect((await view(token(1))).members).toHaveLength(2);
+	});
+
+	it("let a creature leave at once, and drop it when it leaves the board", async () => {
+		await pair(token(1), token(2));
+		expect(await (await duel("DELETE", undefined, token(2))).json()).toEqual({ left: true });
+		expect(await (await duel("DELETE", undefined, token(2))).json()).toEqual({ left: false });
+		expect((await row(token(2))).duel).toBeNull();
+		const alone = await view(token(1));
+		expect([alone.day, alone.members.length]).toEqual([-1, 1]);
+		await leave(token(1));
+		expect(await (await duel("DELETE", undefined, token(1))).json()).toEqual({ left: false });
+	});
+
+	it("share the three-a-day opt-in limit with the world ranking and groups; leaving is never limited", async () => {
+		await checkin(score(), token(1));
+		await setWorld(true, token(1));
+		await group("POST", { code: CODE, new: true }, token(1));
+		expect((await duel("POST", { code: CODE, new: true }, token(1))).status).toBe(200);
+		expect(await reason(await duel("POST", { code: OTHER, new: true }, token(1)))).toEqual([429, "opt_ins"]);
+		for (let n = 0; n < 4; n++) expect((await duel("DELETE", undefined, token(1))).status).toBe(200);
+		goTo("2026-10-14");
+		expect((await duel("POST", { code: OTHER, new: true }, token(1))).status).toBe(200);
+	});
+
+	it("never show on the public files or put anyone on a world list", async () => {
+		await listed(token(1));
+		await setWorld(false, token(1));
+		await checkin(score(), token(2));
+		await duel("POST", { code: CODE, new: true }, token(1));
+		await duel("POST", { code: CODE }, token(2));
+		await rebuild();
+		const { board, top } = await files();
+		expect(top.all).toEqual([]);
+		expect(JSON.stringify({ board, top })).not.toMatch(/duel/);
+		expect((await row(token(1))).world).toBe(0);
+	});
+
+	it("refuse duel requests when the per-creature limiter is not wired up", async () => {
+		await checkin(score(), token(1));
+		const res = await worker.fetch(
+			new Request("https://board.test/api/duel", { method: "GET", headers: { authorization: `Bearer ${token(1)}` } }),
+			{ DB: env.DB },
+		);
+		expect(res.status).toBe(503);
+	});
+});
+
 describe("GitHub badge", () => {
 	// GitHub is faked: no test reaches the real one.
 	let next = 40000;
@@ -1084,18 +1291,25 @@ describe("source and configuration hygiene", () => {
 
 	it("indexes no column a check-in writes, so a check-in costs one written row", async () => {
 		const indexes = (await env.DB.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'entries'").all()).results;
-		// The indexes are on the group and GitHub columns, which a check-in never writes.
-		expect(indexes.filter((i) => i.sql !== null).map((i) => i.name)).toEqual(["entries_grp", "entries_gh", "entries_gh_code"]);
+		// The indexes are on the group, duel and GitHub columns, which a check-in never writes.
+		expect(indexes.filter((i) => i.sql !== null).map((i) => i.name)).toEqual(["entries_grp", "entries_duel", "entries_gh", "entries_gh_code"]);
 		await checkin(score(), token(5));
 		await group("POST", { code: CODE, new: true }, token(5));
+		await group("POST", { code: CODE, new: true }, token(5), "/api/duel");
+		await checkin(score(), token(6));
+		await group("POST", { code: CODE }, token(6), "/api/duel");
 		await checkin(score());
 		goTo("2026-10-14");
 		const id = await sha256(token(5));
-		// The same statement the board runs for a check-in, run here to read its cost, for a creature in a group.
+		// The same statement the board runs for a check-in, run here to read its cost, for a creature in a group and in a
+		// running duel. The last four values take the duel's counting branch: it runs from 14 October, and the previous
+		// check-in was on the day it was accepted.
 		const update = source.match(/`UPDATE entries SET xp = [\s\S]*?WHERE id = \?`/)[0].slice(1, -1);
 		const values = Array(update.split("?").length - 2).fill(1);
+		values.splice(-4, 4, "2026-10-08", "2026-10-14", "2026-10-13", 550);
 		const { meta } = await env.DB.prepare(update).bind(...values, id).run();
 		expect(meta.rows_written).toBe(1);
+		expect((await row(token(5))).duel_xp).toBe(550);
 	});
 });
 

@@ -34,11 +34,16 @@ CREATE TABLE IF NOT EXISTS entries (
 	gh_code      TEXT,                       -- SHA-256 of the verification code, kept while the badge exists
 	gh_code_day  TEXT,                       -- UTC date that code was sent, cleared once verified
 	week         TEXT,                       -- ISO week in UTC ("2026-W42") that week_xp belongs to
-	week_xp      INTEGER NOT NULL DEFAULT 0  -- daily XP the board credited in that week: the group's weekly crown
+	week_xp      INTEGER NOT NULL DEFAULT 0, -- daily XP the board credited in that week: the group's weekly crown
+	duel         TEXT,                       -- SHA-256 of the duel's code, or NULL
+	duel_day     TEXT,                       -- UTC date the duel starts (the day after it was accepted), NULL while it waits
+	duel_xp      INTEGER NOT NULL DEFAULT 0  -- daily XP the board credited during the duel's seven days
 );
 -- No index on any column a check-in changes: each one would cost an extra written row per check-in.
 -- A check-in never changes grp, so members are found through this index at no cost to check-ins.
 CREATE INDEX IF NOT EXISTS entries_grp ON entries (grp) WHERE grp IS NOT NULL;
+-- The same for duels: a check-in writes duel_xp, never duel.
+CREATE INDEX IF NOT EXISTS entries_duel ON entries (duel) WHERE duel IS NOT NULL;
 -- Verified accounts, oldest count first, for the timed refresh. A check-in never writes these columns either.
 CREATE INDEX IF NOT EXISTS entries_gh ON entries (gh_day) WHERE gh_id IS NOT NULL;
 -- A verification code proves an account once: no two creatures can hold the same one.

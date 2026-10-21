@@ -34,7 +34,8 @@ const BANDS = [1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]; // "top X%" cu
 const MIN_ROWS_FOR_TOTALS = 100; // no totals for a crowd small enough to pick people out of
 const OPT_INS_PER_DAY = 3; // world ranking on and group joins together, per creature and UTC day
 const GROUP_MAX = 25; // members of one private group
-const GROUP_CODE = /^[0-9a-f]{32}$/; // made on the user's machine
+const GROUP_CODE = /^[0-9a-f]{32}$/; // made on the user's machine; duel codes look the same
+const DUEL_DAYS = 7; // a duel runs this many UTC days, from 00:00 UTC the day after it is accepted
 // GitHub badge. A login is 1 to 39 letters, digits and single hyphens, not starting or ending with one.
 const GH_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 const GH_CODE_DAYS = 2; // a verification code is good for the day it was sent and the next
@@ -223,6 +224,13 @@ async function checkin(request, env) {
 	// The group's weekly crown: the same daily XP, starting again at zero each ISO week.
 	const week = isoWeek(day);
 	const weekXp = (prev.week === week ? prev.week_xp : 0) + daily;
+	// A duel counts the same daily XP while it runs, from check-ins whose previous check-in was on or after the day it was
+	// accepted (the eve of its start), and at most the daily cap per day since that previous check-in. The board cannot
+	// tell which day XP was earned on, so XP held back from before the duel goes into the first check-in after accepting
+	// and never counts. Worked out in the statement, so a duel that starts while this check-in is on its way is never
+	// overwritten with an older count.
+	const duelFrom = daysBefore(day, DUEL_DAYS - 1);
+	const duelGain = Math.min(daily, DAY_CAP * daysBetween(prev.last_day, day));
 	// Every new day counts as capped when the whole cap was taken: the sus rule counts days, not check-ins.
 	const cappedDays = prev.capped_days + (earnable > 0 && daily === earnable ? xpDays - prev.xp_days : 0);
 	const next = {
@@ -232,12 +240,14 @@ async function checkin(request, env) {
 	await env.DB.prepare(
 		`UPDATE entries SET xp = ?, xp_days = ?, level = ?, stage = ?, class = ?,
 			grind = ?, appetite = ?, arsenal = ?, brains = ?, autonomy = ?, craft = ?,
-			badges = ?, last_day = ?, days_seen = ?, season = ?, season_xp = ?, witnessed_xp = ?, capped_days = ?, week = ?, week_xp = ?
+			badges = ?, last_day = ?, days_seen = ?, season = ?, season_xp = ?, witnessed_xp = ?, capped_days = ?, week = ?, week_xp = ?,
+			duel_xp = CASE WHEN duel_day BETWEEN ? AND ? AND ? >= date(duel_day, '-1 day') THEN duel_xp + ? ELSE duel_xp END
 		WHERE id = ?`,
 	)
 		.bind(
 			xp, xpDays, next.level, next.stage, next.cls, ...STATS.map((s) => body.stats[s]),
-			JSON.stringify(badges), day, next.days_seen, season, seasonXp, next.witnessed_xp, cappedDays, week, weekXp, id,
+			JSON.stringify(badges), day, next.days_seen, season, seasonXp, next.witnessed_xp, cappedDays, week, weekXp,
+			duelFrom, day, prev.last_day, duelGain, id,
 		)
 		.run();
 	return json({ ...view(next, true, season), capped: xp < body.xp });
@@ -383,6 +393,114 @@ async function readGroup(request, env) {
 			witnessed_xp: r.witnessed_xp,
 			season_xp: r.season === month ? r.season_xp : 0,
 			week_xp: r.week === week ? r.week_xp : 0,
+			stats: STATS.map((s) => r[s]),
+			sus: isSus(r),
+			you: r.id === id,
+		})),
+	});
+}
+
+// Duels: two creatures, seven UTC days, and the one the board credits with more daily XP in them wins. Like a group, a duel
+// is nothing but the SHA-256 of its code on both rows. It starts at 00:00 UTC the day after it is accepted, so both sides
+// count the same days whoever checks in first that day. A creature holds one duel, beside its group. Its seat is free while
+// it has no duel, while its own duel waits for an opponent, and once its duel is over.
+const DUEL_FREE = "(duel IS NULL OR duel_day IS NULL OR duel_day <= ?5)";
+
+async function joinDuel(request, env) {
+	const id = await entryId(request);
+	if (!id) return json({ error: "missing or malformed token" }, 401);
+	const { body, refused } = await readBody(request);
+	if (refused) return refused;
+	const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).sort().join() : "";
+	const fresh = keys === "code,new" && body.new === true;
+	if (!(keys === "code" || fresh) || typeof body.code !== "string" || !GROUP_CODE.test(body.code)) {
+		return json({ error: "the body must be {\"code\": \"<32 hex>\"}, with \"new\": true to start a duel" }, 400);
+	}
+	const busy = await perCreature(env, id);
+	if (busy) return busy;
+	const duel = await sha256(body.code);
+	const day = today();
+	const over = daysBefore(day, DUEL_DAYS); // a duel that started on this day or earlier is over
+	const start = daysBefore(day, -1); // tomorrow
+	const optIn = "opt_count = CASE WHEN opt_day = ?3 THEN opt_count + 1 ELSE 1 END, opt_day = ?3";
+	const allowed = `${DUEL_FREE} AND (opt_day IS NOT ?3 OR opt_count < ?4)`;
+	if (fresh) {
+		await env.DB.prepare(
+			`UPDATE entries SET duel = ?2, duel_day = NULL, duel_xp = 0, ${optIn}
+			WHERE id = ?1 AND ${allowed} AND NOT EXISTS (SELECT 1 FROM entries g WHERE g.duel = ?2)`,
+		)
+			.bind(id, duel, day, OPT_INS_PER_DAY, over)
+			.run();
+	} else {
+		const args = [id, duel, day, OPT_INS_PER_DAY, over, start];
+		// One transaction. The second seat is taken only while exactly one other creature waits in the duel, and only then
+		// does that creature's clock start too, so two people accepting at once cannot both get in.
+		await env.DB.batch([
+			env.DB.prepare(
+				`UPDATE entries SET duel = ?2, duel_day = ?6, duel_xp = 0, ${optIn}
+				WHERE id = ?1 AND ${allowed}
+					AND (SELECT COUNT(*) FROM entries g WHERE g.duel = ?2) = 1
+					AND EXISTS (SELECT 1 FROM entries g WHERE g.duel = ?2 AND g.duel_day IS NULL AND g.id <> ?1 AND g.name <> entries.name)`,
+			).bind(...args),
+			env.DB.prepare(
+				`UPDATE entries SET duel_day = ?6, duel_xp = 0
+				WHERE duel = ?2 AND duel_day IS NULL AND id <> ?1
+					AND EXISTS (SELECT 1 FROM entries me WHERE me.id = ?1 AND me.duel = ?2 AND me.duel_day = ?6)`,
+			).bind(...args),
+		]);
+	}
+	const row = await env.DB.prepare("SELECT duel, duel_day, opt_day, opt_count FROM entries WHERE id = ?").bind(id).first();
+	if (!row) return refuse(404, "no_creature", "no creature has this token");
+	const seats = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(duel_day IS NULL) AS waiting FROM entries WHERE duel = ?").bind(duel).first();
+	const n = seats.n;
+	if (row.duel === duel && row.duel_day === (fresh ? null : start)) return json({ joined: true, members: n });
+	if (!fresh && row.duel === duel && row.duel_day === null) return refuse(409, "own_duel", "this is your own duel; send it to a friend");
+	if (row.duel !== null && row.duel_day !== null && row.duel_day > over) {
+		return refuse(409, "in_duel", "this creature is already in a duel; it ends after seven days, or leave it first");
+	}
+	if (fresh && n > 0) return refuse(409, "taken", "a duel with this code exists");
+	if (!fresh && n === 0) return refuse(404, "no_duel", "no duel has this code");
+	if (!fresh && (n !== 1 || seats.waiting !== 1)) return refuse(409, "full", "this duel already has two creatures");
+	if (row.opt_day === day && row.opt_count >= OPT_INS_PER_DAY) {
+		return refuse(429, "opt_ins", "the world ranking, groups, duels and the GitHub badge can be turned on three times a day together");
+	}
+	return refuse(409, "name_taken", "the other creature in this duel has the same generated name");
+}
+
+async function leaveDuel(request, env) {
+	const id = await entryId(request);
+	if (!id) return json({ error: "missing or malformed token" }, 401);
+	const done = await env.DB.prepare("UPDATE entries SET duel = NULL, duel_day = NULL, duel_xp = 0 WHERE id = ? AND duel IS NOT NULL")
+		.bind(id)
+		.run();
+	return json({ left: done.meta.changes > 0 });
+}
+
+// A duel as one of its creatures sees it: numbers, yes/no values and null only. "day" counts from the start: -1 the day it
+// was accepted, 0 to 6 while it runs, 7 or more once it is over, and null while it waits for an opponent.
+async function readDuel(request, env) {
+	const id = await entryId(request);
+	if (!id) return json({ error: "missing or malformed token" }, 401);
+	const busy = await perCreature(env, id);
+	if (busy) return busy;
+	const { results } = await env.DB.prepare(
+		`SELECT m.* FROM entries me JOIN entries m ON m.duel = me.duel
+		WHERE me.id = ?1 AND me.duel IS NOT NULL ORDER BY m.duel_xp DESC, m.id`,
+	)
+		.bind(id)
+		.all();
+	const me = results.find((r) => r.id === id);
+	if (!me) {
+		const row = await env.DB.prepare("SELECT 1 AS ok FROM entries WHERE id = ?").bind(id).first();
+		if (!row) return refuse(404, "no_creature", "no creature has this token");
+		return json({ day: null, members: [] });
+	}
+	return json({
+		day: me.duel_day === null ? null : daysBetween(me.duel_day, today()),
+		members: results.map((r) => ({
+			name: nameKey(r.id),
+			level: r.level,
+			duel_xp: r.duel_xp,
 			stats: STATS.map((s) => r[s]),
 			sus: isSus(r),
 			you: r.id === id,
@@ -701,6 +819,9 @@ export default {
 			if (pathname === "/api/group" && request.method === "POST") return await joinGroup(request, env);
 			if (pathname === "/api/group" && request.method === "GET") return await readGroup(request, env);
 			if (pathname === "/api/group" && request.method === "DELETE") return await leaveGroup(request, env);
+			if (pathname === "/api/duel" && request.method === "POST") return await joinDuel(request, env);
+			if (pathname === "/api/duel" && request.method === "GET") return await readDuel(request, env);
+			if (pathname === "/api/duel" && request.method === "DELETE") return await leaveDuel(request, env);
 			if (pathname === "/api/github" && request.method === "PUT") return await githubStart(request, env);
 			if (pathname === "/api/github" && request.method === "POST") return await githubCheck(request, env);
 			if (pathname === "/api/github" && request.method === "DELETE") return await githubForget(request, env);

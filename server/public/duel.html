@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>You've been challenged · CC level</title>
+<link rel="stylesheet" href="/board.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="CC level">
+<meta property="og:title" content="You've been challenged · CC level">
+<meta property="og:description" content="A friend challenged you to a 7-day CC level duel: whose Claude Code earns more XP? No account, nine numbers.">
+<meta property="og:url" content="https://go.cclevel.workers.dev/duel">
+<meta property="og:image" content="https://go.cclevel.workers.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A pixel creature in Claude orange above the question: How big is your Claude Code?">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<nav class="nav" aria-label="Site">
+<a class="brand" href="/"><span class="hl">CC</span> level</a>
+<ul>
+<li><a href="/#board">Board</a></li>
+<li><a href="/how">How it works</a></li>
+<li><a href="https://github.com/Spider333/cclevel">GitHub ↗</a></li>
+</ul>
+</nav>
+<main>
+<header class="hero">
+<p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> cclevel --duel<span class="cursor">▌</span></p>
+<div class="meta">duel invite</div>
+<h1>You've been challenged<span class="dot">.</span></h1>
+<p class="tagline">A friend bets their Claude Code beats yours over seven days. <em>Measure it. Compare it. Stay nameless.</em></p>
+<p class="lede">CC level turns your Claude Code setup into a creature with a level and six stats. In a duel, the board counts the XP each of you earns over seven days. Whoever earns more takes the crown ♛.</p>
+</header>
+
+<section class="how" id="steps" aria-labelledby="steps-title" hidden>
+<h2 id="steps-title">// accept in three steps</h2>
+<ol class="steps">
+<li><b>Install</b> in Claude Code:
+<ul class="cmds">
+<li><code data-copy>/plugin marketplace add Spider333/cclevel</code></li>
+<li><code data-copy>/plugin install cclevel@cclevel</code></li>
+</ul></li>
+<li><b>Paste this</b> into Claude Code:
+<ul class="cmds">
+<li><code data-copy class="wrap" id="duel-cmd">/pet duel</code></li>
+</ul></li>
+<li><b>Say yes once.</b> It shows exactly what it sends, then joins the board and accepts the duel together.</li>
+</ol>
+<div class="payload">
+<h3>How the duel works</h3>
+<p>It starts at 00:00 UTC the day after you accept and runs seven days. Your duel XP counts from your first check-in on or after the day you accept, so XP saved up from before never counts. Check in each day, or turn on auto check-in and it happens by itself.</p>
+<p>You two see each other's generated name, level, duel XP, six stats and sus mark. No names, prompts, code or e-mail ever leave your machine. A duel does not put you on the public lists.</p>
+<p><b>The first to accept takes the seat.</b> If someone got there before you, ask your friend for a new link.</p>
+</div>
+</section>
+
+<div class="state" id="broken" hidden>
+<b>This duel link is incomplete.</b>
+<p>A link ends in <code>#</code> and 32 characters. Ask your friend to send it again, or <a href="/">see the board</a>.</p>
+</div>
+
+<footer>
+<p><a href="/">The world board</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a>. The duel code stays in your browser: this page sends it nowhere.</p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+</footer>
+</main>
+<script src="/duel.js"></script>
+</body>
+</html>
