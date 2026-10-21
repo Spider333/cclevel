@@ -161,8 +161,18 @@ body.landing { --page: 66rem; }
 
 /* What you get */
 .what { display: flex; flex-direction: column; gap: 1.75rem; }
-.landing .tiles { gap: 1rem; }
+/* Five tiles, never one left alone: three over two on wide screens; on mid widths the card leads across the row, then two by two. */
+.landing .tiles { grid-template-columns: 1fr; gap: 1rem; }
 .landing .tiles article { padding: 1.6rem 1.5rem 1.4rem; gap: .6rem; }
+@media (min-width: 600px) {
+	.landing .tiles { grid-template-columns: repeat(2, 1fr); }
+	.landing .tiles article:first-child { grid-column: span 2; }
+}
+@media (min-width: 900px) {
+	.landing .tiles { grid-template-columns: repeat(6, 1fr); }
+	.landing .tiles article:first-child, .landing .tiles article { grid-column: span 2; }
+	.landing .tiles article:nth-child(n+4) { grid-column: span 3; }
+}
 
 /* Podium */
 #panel { display: flex; flex-direction: column; gap: 1.25rem; }
