@@ -179,7 +179,7 @@ class Scanner(unittest.TestCase):
 
     def test_output_never_carries_private_strings(self):
         make_folder(self.dir)
-        outputs = [run("--claude-dir", self.dir, flag).stdout for flag in ("--no-save", "--preview")]
+        outputs = [run("--claude-dir", self.dir, *flags).stdout for flags in (["--no-save"], ["--preview"], ["--learn", "--no-save"])]
         self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel")), "a preview must leave no file behind")
         outputs.append(run("--claude-dir", self.dir, "--json").stdout)
         for text in outputs:
@@ -722,6 +722,181 @@ class Framework(unittest.TestCase):
         self.assertEqual(list(cclevel.STATS["appetite"]), ["mtok_30d"])
         self.assertNotIn("spawns_30d", cclevel.STATS["autonomy"])
         self.assertEqual(tuple(cclevel.STATS) + ("brains",), tuple(n for n in cclevel.STAT_ORDER if n != "brains") + ("brains",))
+
+
+def command_line(when, name):
+    """A slash command as Claude Code logs it: the user's turn that ran it."""
+    return json.dumps({"type": "user", "timestamp": when.isoformat(), "sessionId": "s1",
+                       "message": {"role": "user", "content": "<command-name>/%s</command-name>\n<command-message>%s"
+                                                              "</command-message>\n<command-args></command-args>" % (name, name)}},
+                      separators=(",", ":"))
+
+
+def system_line(subtype, **fields):
+    return json.dumps(dict({"type": "system", "subtype": subtype}, **fields), separators=(",", ":"))
+
+
+class Training(unittest.TestCase):
+    """The opt-in lessons and tips: offline text, kept on this machine, never part of a check-in."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def needy(self):
+        """A folder that is in use and still misses most of the Brains checks, so the card has Needs."""
+        write(self.dir, "CLAUDE.md", "rules\n")
+        write(self.dir, "projects/p/s.jsonl", log_line(day_stamp(1), "m1", tools=[("Read", {})]) + "\n")
+        return self.dir
+
+    def training(self):
+        with open(os.path.join(self.dir, "cclevel", "training.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def card(self):
+        out = run("--claude-dir", self.dir)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_tips_are_off_until_turned_on(self):
+        self.needy()
+        plain = self.card()
+        self.assertNotIn("How:", plain)
+        self.assertNotIn("Tip of the day", plain)
+        self.assertIn("/pet learn", plain)
+        self.assertIn("/pet tips on", plain)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "training.json")), "a card with tips off writes no training file")
+
+        on = run("--claude-dir", self.dir, "--tips", "on")
+        self.assertEqual(on.returncode, 0, on.stderr)
+        self.assertIn("nothing is sent", on.stdout)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.dir, "cclevel", "training.json")).st_mode), 0o600)
+        card = self.card().splitlines()
+        needs = [i for i, line in enumerate(card) if re.match(r"   \d\. ", line)]
+        self.assertTrue(needs)
+        for i in needs:                                  # every Need is followed by how to fix it, with its docs page
+            self.assertRegex(card[i + 1], r"^      How: .+  %s\S+$" % re.escape(cclevel.DOCS))
+        self.assertEqual(sum(line.startswith("  Tip of the day (") for line in card), 1)
+        self.assertNotIn("/pet tips on", "\n".join(card))
+
+        off = run("--claude-dir", self.dir, "--tips", "off")
+        self.assertEqual(off.returncode, 0, off.stderr)
+        self.assertEqual(self.card(), plain)
+
+    def test_the_tip_stays_all_day_and_comes_round_again_only_when_all_were_shown(self):
+        self.needy()
+        cclevel.save_training(self.dir, lambda now: now.update(tips=True))
+        result = cclevel.score(self.dir, machine_jobs=False, save=False)
+        first = cclevel.training_extras(self.dir, result, save=True)[1]
+        self.assertEqual(cclevel.training_extras(self.dir, result, save=True)[1], first)   # same day, same tip
+        weakest = min(cclevel.STAT_ORDER, key=lambda s: (result["stats"][s], cclevel.STAT_ORDER.index(s)))
+        self.assertEqual(first[0], weakest)
+        total = sum(len(t) for t in cclevel.TIPS.values())
+        shown = [first[1][0]]
+        for _ in range(total):
+            cclevel.save_training(self.dir, lambda now: now.update(day=utc_day(1)))     # as if the tip was picked yesterday
+            shown.append(cclevel.training_extras(self.dir, result, save=True)[1][1][0])
+        self.assertEqual(len(set(shown[:total])), total, shown)   # every tip once before any comes again
+        self.assertIn(shown[total], shown[:total])
+        # --no-save shows a tip but remembers nothing.
+        cclevel.save_training(self.dir, lambda now: now.update(day=utc_day(1)))
+        before = self.training()
+        cclevel.training_extras(self.dir, result, save=False)
+        self.assertEqual(self.training(), before)
+
+    def test_lessons_tick_from_the_logs_and_stay_ticked(self):
+        when = day_stamp(1)
+        lines = [log_line(when, "m1", tools=[("EnterWorktree", {})]), command_line(when, "context"),
+                 command_line(when, "zzq-skill"),
+                 system_line("local_command", content="<command-name>/usage</command-name>"),
+                 system_line("compact_boundary", compactMetadata={"trigger": "manual", "preTokens": 1000})]
+        write(self.dir, "projects/p/s.jsonl", "\n".join(lines) + "\n")
+        lessons = cclevel.score(self.dir, machine_jobs=False, save=False)["lessons"]
+        for lesson in ("a_context", "a_usage", "a_compact", "c_worktree"):
+            self.assertIn(lesson, lessons)
+        self.assertNotIn("a_model", lessons)
+        # The automatic compaction is not the user's /compact.
+        write(self.dir, "projects/p/s.jsonl", log_line(when, "m1") + "\n" +
+              system_line("compact_boundary", compactMetadata={"trigger": "auto", "preTokens": 1000}) + "\n")
+        self.assertNotIn("a_compact", cclevel.score(self.dir, machine_jobs=False, save=False)["lessons"])
+        # Ticked once, a lesson stays ticked after its logs are gone.
+        write(self.dir, "projects/p/s.jsonl", "\n".join(lines) + "\n")
+        shown = run("--claude-dir", self.dir, "--learn")
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("[x] See what fills the context", shown.stdout)
+        self.assertNotIn("zzq", shown.stdout)
+        os.unlink(os.path.join(self.dir, "projects/p/s.jsonl"))
+        later = run("--claude-dir", self.dir, "--learn").stdout
+        self.assertIn("[x] See what fills the context", later)
+        self.assertIn("[ ] Pick the model for the job", later)
+        self.assertLessEqual({"a_context", "a_usage", "a_compact", "c_worktree"}, set(self.training()["done"]))
+
+    def test_lessons_and_tips_send_nothing_and_leave_the_check_in_alone(self):
+        self.needy()
+        preview = run("--claude-dir", self.dir, "--preview").stdout
+        self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
+        run("--claude-dir", self.dir, "--learn")
+        self.assertEqual(run("--claude-dir", self.dir, "--preview").stdout, preview)
+        self.assertNotIn("lessons", json.loads(run("--claude-dir", self.dir, "--json").stdout))
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        argv = sys.argv
+        try:
+            for flags in (["--learn"], [], ["--tips", "off"]):
+                sys.argv = ["cclevel.py", "--claude-dir", self.dir] + flags
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.suppress(SystemExit):
+                    cclevel.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(events, [])
+
+    def test_a_broken_training_file_does_not_crash(self):
+        self.needy()
+        path = os.path.join(self.dir, "cclevel", "training.json")
+        for content in ("[1]", "not json", "[" * 100000, '{"tips": true, "seen": [[1], {"a": 1}, "t_rewind", "t_rewind"], "today": [1], '
+                                           '"day": 5, "done": [1]}', '{"tips": true, "done": {"a_context": [1], "made_up": "x"}}'):
+            write(self.dir, "cclevel/training.json", content)
+            for flags in ((), ("--learn",), ("--tips", "on")):
+                out = run("--claude-dir", self.dir, *flags)
+                self.assertEqual(out.returncode, 0, "%s %s: %s" % (content, flags, out.stderr[-300:]))
+            self.assertNotIn("made_up", self.training()["done"])
+        os.unlink(path)
+        os.makedirs(path)                                 # a folder where the file belongs
+        self.assertEqual(run("--claude-dir", self.dir).returncode, 0)
+        self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
+        self.assertTrue(os.path.isfile(path))
+        os.unlink(path)
+        outside = os.path.join(self.dir, "outside.json")
+        write(self.dir, "outside.json", '{"tips": true}')
+        os.symlink(outside, path)                         # a link is never read or written through
+        self.assertNotIn("Tip of the day", self.card())
+        self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
+        self.assertFalse(os.path.islink(path))
+        with open(outside, encoding="utf-8") as f:
+            self.assertEqual(f.read(), '{"tips": true}')
+
+    def test_every_need_lesson_and_tip_is_taught_with_a_docs_page(self):
+        codes = {"unused_skills", "sign_in", "heavy_context", "tool_errors", "interrupts"}
+        codes |= {"brains_%d" % (i + 1) for i in range(len(cclevel.BRAINS))}
+        self.assertEqual(set(cclevel.HOWTO), codes)
+        lessons = [l for stat in cclevel.STAT_ORDER for l in cclevel.LESSONS[stat]]
+        tips = [t for stat in cclevel.STAT_ORDER for t in cclevel.TIPS[stat]]
+        self.assertEqual(set(cclevel.LESSONS), set(cclevel.STAT_ORDER))
+        self.assertEqual(set(cclevel.TIPS), set(cclevel.STAT_ORDER))
+        self.assertTrue(all(len(cclevel.LESSONS[s]) == 5 and cclevel.TIPS[s] for s in cclevel.STAT_ORDER))
+        self.assertEqual(len({l[0] for l in lessons}), len(lessons))
+        self.assertEqual(len({t[0] for t in tips}), len(tips))
+        self.assertTrue(cclevel.DOCS.startswith("https://code.claude.com/docs/"))
+        for entry in list(cclevel.HOWTO.values()) + [l[2:] for l in lessons] + [t[1:] for t in tips]:
+            text, page = entry
+            self.assertRegex(page, r"^[a-z][a-z/-]*[a-z]$", entry)
+            self.assertTrue(text and len(text) <= 110, entry)
+        self.assertTrue(cclevel.is_day(cclevel.TIPS_CHECKED))
+        # Every lesson is decided by score(): an empty folder has none done and no lesson is missing from the checks.
+        self.assertEqual(cclevel.score(self.dir, machine_jobs=False, save=False)["lessons"], [])
 
 
 class Leaderboard(unittest.TestCase):
