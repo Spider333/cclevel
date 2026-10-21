@@ -83,6 +83,7 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
 | **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
 | **Share card** | Your card as a picture to post, drawn in your browser. | No. The numbers stay in the link after `#`. |
+| **Wrapped** | Your year in review: XP, best day and month, longest streak, level gained, badges, and how your stats moved week by week. | No. Worked out from your own ledger. |
 | **GitHub badge** | Prove a GitHub account is yours and show how many of its public commits Claude co-signed. | Only if you ask for it. |
 
 In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank me`, `/pet start a group`, `/pet join <invite link>`, `/pet duel`, `/pet card`.
@@ -138,6 +139,7 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--duel-leave` | Leave your duel at once. |
 | `--duel-code` | Show your duel's invite link again. Sends nothing. |
 | `--card` | Print a link to your card as a picture, to save and post. Sends nothing. |
+| `--wrapped [YEAR]` | Your year in review, this year so far by default. Sends nothing. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
 | `--leave` | Delete your row and the local token. |

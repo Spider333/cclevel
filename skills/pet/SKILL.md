@@ -1,7 +1,7 @@
 ---
 name: pet
-description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against or leave the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), or to share or post their card as a picture."
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --json), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --no-save), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --preview), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --card)
+description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against or leave the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), to share or post their card as a picture, or for their year in review ('wrapped')."
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --json), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --no-save), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --preview), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --card), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --wrapped)
 ---
 
 # /pet: Claude Code Level card
@@ -16,6 +16,10 @@ This skill pre-approves only the offline commands. Network commands are left to 
 2. In one or two plain sentences, say what the first item under Needs means and what fixing it would involve. Do not fix anything unless asked.
 
 This path is fully offline. `--json` prints the numbers behind the card. `--no-save` scores without touching the ledger.
+
+## Year in review
+
+When the user asks for their year in review, Wrapped or how their year went (for example `/pet wrapped`), run `--wrapped` for this year so far, or `--wrapped YEAR` for an earlier year. It is offline: like the card, it scores the folder and saves this week's snapshot to the ledger, then works the year out from that ledger. Show it exactly as printed, in a code block. Stats over time come from weekly snapshots the ledger keeps from version 0.5.0 on, so early in that history the last line says they have only just started.
 
 ## Share the card as a picture
 
