@@ -840,6 +840,7 @@ class Training(unittest.TestCase):
         self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
         run("--claude-dir", self.dir, "--learn")
         self.assertEqual(run("--claude-dir", self.dir, "--preview").stdout, preview)
+        self.assertNotIn("lessons", json.loads(run("--claude-dir", self.dir, "--json").stdout))
         events = []
         sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
         argv = sys.argv

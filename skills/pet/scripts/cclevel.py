@@ -2485,7 +2485,8 @@ def main():
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
     if args.json:
-        print(json.dumps(result, indent=1))
+        # The numbers behind the card; the lessons are --learn's to show.
+        print(json.dumps({k: v for k, v in result.items() if k != "lessons"}, indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
         # Whether this machine is on the board is read from its own token file; nothing is sent.
