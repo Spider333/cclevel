@@ -106,6 +106,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 | | |
 |---|---|
 | **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running, no telemetry. The one hook does nothing unless you turn on auto check-in. |
+| **Where data goes** | Only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only when you use an opt-in command: joining, check-ins (also the opt-in daily auto check-in), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
 | **Never sent** | Your name, e-mail, prompts, code, file paths, or the names of your projects, skills or connectors. |
 | **The board stores** | No account, no e-mail, no IP address, and no request logs. A creature is its score, a generated name, the key's hash and a few dates and counters. |
