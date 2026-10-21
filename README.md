@@ -79,9 +79,11 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | **The card** | Level, six stats, mood, badges and the top things to fix. | No. Fully offline. |
 | **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Only if you join, and being listed is a second choice. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
+| **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
+| **Share card** | Your card as a picture to post, drawn in your browser. | No. The numbers stay in the link after `#`. |
 | **GitHub badge** | Prove a GitHub account is yours and show how many of its public commits Claude co-signed. | Only if you ask for it. |
 
-In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank me`, `/pet start a group`, `/pet join <invite link>`.
+In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank me`, `/pet start a group`, `/pet join <invite link>`, `/pet duel`, `/pet card`.
 
 ## Play with friends
 
@@ -92,6 +94,10 @@ In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank
 
 Anyone with the link can join until the group is full, so share it with friends only. If it leaks, start a new group.
 
+**Duel one friend:** `/pet duel` gives you a link like `https://go.cclevel.workers.dev/duel#7c1e…`. The first friend to accept it with `/pet duel <link>` takes the seat. The duel starts at 00:00 UTC the next day and runs seven days. XP counts at each check-in after your first one on or after the day it was accepted, so XP saved up from before never counts; whoever the board credits with more wins the ♛. A duel sits beside your group and is never published.
+
+**Post your card:** `/pet card` prints a link to a page that draws your card as a picture to save or copy. The numbers sit after `#`, so the page sends nothing, and the picture shows no creature name.
+
 ## Privacy at a glance
 
 | | |
@@ -100,7 +106,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
 | **Never sent** | Your name, e-mail, prompts, code, file paths, or the names of your projects, skills or connectors. |
 | **The board stores** | No account, no e-mail, no IP address, and no request logs. A creature is its score, a generated name, the key's hash and a few dates and counters. |
-| **You control** | `--world off` (off the lists at once), `--group-leave`, `--leave` (deletes your row). A row with no check-in for 180 days deletes itself. |
+| **You control** | `--world off` (off the lists at once), `--group-leave`, `--duel-leave`, `--leave` (deletes your row). A row with no check-in for 180 days deletes itself. |
 
 The word is **pseudonymous, not anonymous**: a row stays linked to the key on your machine. [PRIVACY.md](PRIVACY.md) lists every field, every request and what we cannot promise.
 
@@ -124,6 +130,12 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--group` | Show your group: names, levels, XP since joining, season XP, this week's XP with the ♛ weekly crown, Aura, sus marks. |
 | `--group-leave` | Leave your group at once. |
 | `--group-code` | Show your group's invite link again. Sends nothing. |
+| `--duel-create` | Challenge a friend to a seven-day duel (asks first) and print its invite link. |
+| `--duel-join LINK` | Accept a friend's duel with its invite link or code (asks first). If you are not on the board yet, one yes joins the board and accepts. Without LINK, type it at a hidden prompt. |
+| `--duel` | Show your duel: the day, both creatures' duel XP, who leads, and the ♛ once it is over. |
+| `--duel-leave` | Leave your duel at once. |
+| `--duel-code` | Show your duel's invite link again. Sends nothing. |
+| `--card` | Print a link to your card as a picture, to save and post. Sends nothing. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
 | `--leave` | Delete your row and the local token. |

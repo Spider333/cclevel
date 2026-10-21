@@ -4,12 +4,13 @@
 Reads the local Claude Code folder. Writes nothing except its own files in
 <claude dir>/cclevel/. A score covers one machine and is self-reported.
 
-The card is fully offline. The network is used only by --join, --sync,
---world, the --group commands, the GitHub badge commands, --leave and
---rank, and by the plugin's session-start hook (--auto-run) once a day
-after the user turned it on with --auto on; and only for what payload()
-returns, the world choice, a group invite code and a GitHub login with
-the hash of a code.
+The card is fully offline, and so is --card, which only prints a link. The
+network is used only by --join, --sync, --world, the --group and --duel
+commands, the GitHub badge commands, --leave and --rank, and by the
+plugin's session-start hook (--auto-run) once a day after the user turned
+it on with --auto on; and only for what payload() returns, the world
+choice, a group or duel invite code and a GitHub login with the hash of a
+code.
 """
 import argparse
 import contextlib
@@ -812,7 +813,8 @@ def render(r):
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
-    out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor.", ""]
+    out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor.",
+            "  Post it as an image: /pet card. Challenge a friend: /pet duel.", ""]
     return "\n".join(out)
 
 
@@ -834,6 +836,8 @@ GROUP_RE = re.compile(r"[0-9a-f]{32}")   # a group invite code, made by --group-
 INVITE_LINK_RE = re.compile(r"https?://([^/\s#?]+)\S*?#([0-9a-f]{32})(?![0-9a-f])")
 INVITE_CODE_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])")
 GROUP_MAX = 25           # must match the board
+DUEL_DAYS = 7            # must match the board
+CARD_VERSION = 1         # must match the card page, server/public/card.js
 GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")   # GitHub's rule for a login
 SERVER_RE = re.compile(r"https://|http://(localhost|127\.0\.0\.1)[:/]")
 # Word lists for creature names. They must match server/src/names.js.
@@ -867,10 +871,11 @@ JOIN_LIMITS = {
     "network": "too many new creatures from your network this minute. Try again in a minute",
     "full_today": "the board is full for today. Try again tomorrow",
 }
+OPT_INS = "the world ranking, group and duel joins and GitHub starts can be turned on three times a day together. Try again tomorrow"
 WORLD_REFUSALS = {
     401: "the board did not accept the token",
     404: "the board has no creature for this token. Check in with --sync, or join again",
-    429: "the world ranking and group joins can be turned on three times a day together. Try again tomorrow",
+    429: OPT_INS,
 }
 # Keyed by the board's one-word reason. The word is only looked up here, never printed.
 GROUP_REFUSALS = {
@@ -879,7 +884,7 @@ GROUP_REFUSALS = {
     "full": "this group is full (%d members)" % GROUP_MAX,
     "name_taken": "a member of this group has the same generated name as yours",
     "in_group": "you are already in a group. Leave it first with --group-leave",
-    "opt_ins": "the world ranking and group joins can be turned on three times a day together. Try again tomorrow",
+    "opt_ins": OPT_INS,
     "busy": "too many group requests. Try again in a minute",
     "unavailable": "groups are not available on this board right now",
     "taken": "that code is already in use. Run --group-create again",
@@ -892,6 +897,18 @@ GITHUB_REFUSALS = dict(GROUP_REFUSALS, unavailable="the GitHub badge is not avai
                        busy="too many requests. Try again in a minute",
                        too_new="the GitHub badge opens after check-ins on two different days. Check in again tomorrow",
                        code_taken="that code has been used. Run --verify-github LOGIN again for a new one")
+DUEL_REFUSALS = {
+    "no_creature": GROUP_REFUSALS["no_creature"],
+    "no_duel": "no duel has this code. Check it, or start one with --duel-create",
+    "full": "this duel already has its two creatures",
+    "own_duel": "that is your own duel. Send the link to the friend you challenge",
+    "in_duel": "you are in a duel that has not ended. Leave it first with --duel-leave",
+    "name_taken": "the creature that started this duel has the same generated name as yours",
+    "opt_ins": OPT_INS,
+    "busy": "too many duel requests. Try again in a minute",
+    "unavailable": "duels are not available on this board right now",
+    "taken": "that code is already in use. Run --duel-create again",
+}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1178,12 +1195,12 @@ def name_of(key):
     return "%s %s %04d" % (ADJECTIVES[adjective], ANIMALS[animal], number)
 
 
-def member(m):
-    """One member from a group reply, checked, or None."""
+def member(m, xp=("witnessed_xp", "season_xp", "week_xp")):
+    """One member from a group reply (or, with xp=("duel_xp",), from a duel reply), checked, or None."""
     m = as_dict(m)
     stats = m.get("stats")
     ok = (name_of(m.get("name")) and type(m.get("level")) is int and 1 <= m["level"] <= LEVEL_MAX
-          and sane(m.get("witnessed_xp")) and sane(m.get("season_xp")) and sane(m.get("week_xp")) and type(m.get("sus")) is bool
+          and all(sane(m.get(k)) for k in xp) and type(m.get("sus")) is bool
           and type(m.get("you")) is bool and isinstance(stats, list) and len(stats) == len(STAT_ORDER)
           and all(type(n) is int and 0 <= n <= 100 for n in stats))
     return m if ok else None
@@ -1199,6 +1216,20 @@ def group_name(code):
 def invite_link(server, code):
     """The link friends open or paste. Shown in full: it can land in a chat transcript, and it only grants a seat."""
     return "%s/join#%s" % (server, code)
+
+
+def duel_link(server, code):
+    """The link a challenged friend opens or pastes. Shown in full, like a group's: it only grants the second seat."""
+    return "%s/duel#%s" % (server, code)
+
+
+def card_link(server, result):
+    """The share card's address. Its numbers sit after "#", which browsers never send: the page draws the picture from
+    them. XP, the six stats, the mood, the streak and the badges as bits; the page works out the rest the way this file does."""
+    numbers = [CARD_VERSION, result["xp"], *(result["stats"][s] for s in STAT_ORDER),
+               list(MOODS.values()).index(result["mood"]), result["raw"]["current_streak"],
+               sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"])]
+    return "%s/card#%s" % (server, "-".join(str(n) for n in numbers))
 
 
 def read_invite(text, server):
@@ -1246,9 +1277,57 @@ def group_terms(create):
     print("Being in a group does not put you on the world lists. --group-leave leaves at once.")
 
 
+START_COUNTING = "Check in today (--sync), or turn on --auto on: duel XP counts only after a check-in from today on."
+
+
+def duel_terms(create):
+    print("%s a duel: you and one friend, %d days, and whoever the board credits with more XP in them wins the ♛."
+          % ("Starting" if create else "Accepting", DUEL_DAYS))
+    print("It starts at 00:00 UTC the day after it is accepted. Duel XP counts from each side's first check-in on or after")
+    print("the day it is accepted. The two of you see each other's generated name, level, duel XP, six stats and sus mark.")
+    print("Nobody else can see the duel, and it does not put you on the world lists.")
+    print("A duel sits beside your group, if you have one. --duel-leave leaves at once.")
+
+
 def group_refusal(status, reply, table=GROUP_REFUSALS):
     reason = reply.get("reason")
     return (table.get(reason) if isinstance(reason, str) else None) or "it answered HTTP %d" % status
+
+
+def invite_seat(args, cdir, server, ident, data, result, create, text, flag, terms, both):
+    """The code to send for a group or a duel, after a yes: a new one, or the one in an invite. Accepting an invite before
+    this machine is on the board joins the board first, with the same yes. Returns (exit code, code, identity); the exit
+    code is None when the code should be sent."""
+    if not create and not text.strip():
+        # No link given: ask for it without echo, so it never appears on screen.
+        if not sys.stdin.isatty():
+            print("cclevel: pass the invite link, or run %s in your own terminal to type it hidden. Nothing sent." % flag)
+            return 1, None, ident
+        try:
+            text = getpass.getpass("Invite link or code (hidden): ")
+        except EOFError:
+            text = ""
+    code, foreign = (secrets.token_hex(16), False) if create else read_invite(text, server)
+    if not code:
+        print("cclevel: that is not an invite. A link ends in #, then 32 characters, 0-9 and a-f. Nothing sent.")
+        return 1, None, ident
+    if foreign:
+        print("Note: this invite names another address. cclevel uses only its code, on %s." % server)
+    if not ident:
+        # One yes covers both: joining the board and taking the seat.
+        join_terms(data, server)
+        print()
+        terms(create)
+        if not confirmed(args, "Join the board and the %s? [y/N] " % both, "Re-run with --yes to join the board and the %s." % both):
+            return 1, None, ident
+        rc, ident = check_in(cdir, server, {}, secrets.token_hex(32), data, result)
+        if rc:
+            return rc, None, ident
+    elif not args.yes:
+        terms(create)
+        if not confirmed(args, "Go ahead? [y/N] ", "Re-run with --yes to go ahead."):
+            return 1, None, ident
+    return None, code, ident
 
 
 def group_command(args, cdir, server, ident, data, result):
@@ -1274,36 +1353,10 @@ def group_command(args, cdir, server, ident, data, result):
         return 0
     if args.group_create or args.group_join is not None:
         create = bool(args.group_create)
-        text = "" if create else args.group_join
-        if not create and not text.strip():
-            # No link given: ask for it without echo, so it never appears on screen.
-            if not sys.stdin.isatty():
-                print("cclevel: pass the invite link, or run --group-join in your own terminal to type it hidden. Nothing sent.")
-                return 1
-            try:
-                text = getpass.getpass("Invite link or code (hidden): ")
-            except EOFError:
-                text = ""
-        code, foreign = (secrets.token_hex(16), False) if create else read_invite(text, server)
-        if not code:
-            print("cclevel: that is not an invite. A link ends in #, then 32 characters, 0-9 and a-f. Nothing sent.")
-            return 1
-        if foreign:
-            print("Note: this invite names another address. cclevel uses only its code, on %s." % server)
-        if not ident:
-            # One yes covers both: joining the board and joining the group.
-            join_terms(data, server)
-            print()
-            group_terms(create)
-            if not confirmed(args, "Join the board and the group? [y/N] ", "Re-run with --yes to join the board and the group."):
-                return 1
-            rc, ident = check_in(cdir, server, {}, secrets.token_hex(32), data, result)
-            if rc:
-                return rc
-        elif not args.yes:
-            group_terms(create)
-            if not confirmed(args, "Go ahead? [y/N] ", "Re-run with --yes to go ahead."):
-                return 1
+        rc, code, ident = invite_seat(args, cdir, server, ident, data, result, create, "" if create else args.group_join,
+                                      "--group-join", group_terms, "group")
+        if rc is not None:
+            return rc
         token = ident["token"]
         status, reply = call(server, "POST", "/api/group", token, {"code": code, "new": True} if create else {"code": code})
         members = reply.get("members")
@@ -1349,6 +1402,95 @@ def group_command(args, cdir, server, ident, data, result):
                                                           "{:,}".format(m["season_xp"]), "{:,}".format(m["week_xp"]), sum(m["stats"]), tags))
     if best > 0:
         print("♛ most XP this week. Weeks start Monday, 00:00 UTC.")
+    return 0
+
+
+def duel_command(args, cdir, server, ident, data, result):
+    """One duel per creature, beside its group: start, accept, show, leave. Accepting from an invite can also join the board."""
+    if not ident and args.duel_join is None:
+        print("Not joined. Run with --join first, or accept a friend's duel with --duel-join LINK.")
+        return 1
+    if args.duel_code:
+        code = ident.get("duel")
+        if not (isinstance(code, str) and GROUP_RE.fullmatch(code)):
+            print("No duel invite is saved on this machine.")
+            return 0
+        print("Duel invite link, for the friend you challenge (the first to accept takes the seat):")
+        print("  " + duel_link(server, code))
+        return 0
+    if args.duel_leave:
+        status, reply = call(server, "DELETE", "/api/duel", ident["token"])
+        if status != 200 or type(reply.get("left")) is not bool:
+            print("cclevel: the board did not confirm: %s." % group_refusal(status, reply, DUEL_REFUSALS))
+            return 1
+        keep_local(cdir, ident["token"], lambda now: now.pop("duel", None))
+        print("Left the duel." if reply["left"] else "You were not in a duel.")
+        return 0
+    if args.duel_create or args.duel_join is not None:
+        create = bool(args.duel_create)
+        rc, code, ident = invite_seat(args, cdir, server, ident, data, result, create, "" if create else args.duel_join,
+                                      "--duel-join", duel_terms, "duel")
+        if rc is not None:
+            return rc
+        token = ident["token"]
+        status, reply = call(server, "POST", "/api/duel", token, {"code": code, "new": True} if create else {"code": code})
+        members = reply.get("members")
+        if status != 200 or reply.get("joined") is not True or not sane(members) or members != (1 if create else 2):
+            print("cclevel: the board did not %s the duel: %s." % ("start" if create else "accept", group_refusal(status, reply, DUEL_REFUSALS)))
+            return 1
+        try:
+            # Only a duel that waits has a link worth showing again; an accepted one replaced any duel of this creature's.
+            keep_local(cdir, token, (lambda now: now.update(duel=code)) if create else (lambda now: now.pop("duel", None)))
+        except OSError:
+            pass  # the board has the seat; the local copy only lets --duel-code print the link again
+        if create:
+            print("Duel started. Send this link to the friend you challenge (the first to accept takes the seat):")
+            print("  " + duel_link(server, code))
+            print("They open it, or paste it into Claude Code: /pet duel <link>. --duel-code shows it again.")
+        else:
+            print("Duel accepted. It starts at 00:00 UTC tomorrow and runs %d days. --duel shows the score." % DUEL_DAYS)
+            print(START_COUNTING)
+        return 0
+    status, reply = call(server, "GET", "/api/duel", ident["token"])
+    members, day = reply.get("members"), reply.get("day")
+    if status != 200 or not isinstance(members, list) or not (day is None or (type(day) is int and -1 <= day <= MAX_COUNT)):
+        print("cclevel: the board did not show the duel: %s." % group_refusal(status, reply, DUEL_REFUSALS))
+        return 1
+    checked = [member(m, ("duel_xp",)) for m in members]
+    if None in checked or len(checked) > 2 or (checked and sum(m["you"] for m in checked) != 1):
+        print("cclevel: the board sent a duel this copy of cclevel does not understand.")
+        return 1
+    if not checked:
+        print("You are not in a duel. Start one with --duel-create, or accept one with --duel-join LINK.")
+        return 0
+    me = next(m for m in checked if m["you"])
+    rival = next((m for m in checked if not m["you"]), None)
+    over = day is not None and day >= DUEL_DAYS
+    winner = max(checked, key=lambda m: m["duel_xp"]) if over and rival and me["duel_xp"] != rival["duel_xp"] else None
+    if day is None:
+        print("Your duel waits for an opponent. --duel-code shows the invite link to send.")
+    elif rival is None:
+        print("Your opponent left this duel. %s" % ("--duel-create starts a new one." if over else
+                                                    "--duel-leave ends it; then --duel-create starts a new one."))
+    elif day < 0:
+        print("Duel accepted. It starts at 00:00 UTC tomorrow and runs %d days. %s" % (DUEL_DAYS, START_COUNTING))
+    elif not over:
+        print("Duel · day %d of %d · ends in %s, at 00:00 UTC" % (day + 1, DUEL_DAYS, count(DUEL_DAYS - day, "day")))
+    else:
+        print("Duel over.")
+    print("     %-24s %3s  %10s  %4s" % ("Creature", "Lv", "Duel XP", "Aura"))
+    for m in checked:
+        tags = (" (you)" if m["you"] else "") + (" sus" if m["sus"] else "")
+        print("  %s  %-24s %3d  %10s  %4d%s" % ("♛" if m is winner else " ", name_of(m["name"]), m["level"],
+                                               "{:,}".format(m["duel_xp"]), sum(m["stats"]), tags))
+    if rival and day is not None and day >= 0:
+        gap = me["duel_xp"] - rival["duel_xp"]
+        if over:
+            print("You won by {:,} XP.".format(gap) if gap > 0 else "You lost by {:,} XP.".format(-gap) if gap < 0 else "A draw.")
+            print("Rematch: --duel-create, then send the new link.")
+        else:
+            print("You lead by {:,} XP.".format(gap) if gap > 0 else "You trail by {:,} XP.".format(-gap) if gap < 0 else "Neck and neck.")
+            print("Duel XP grows when you check in: --sync, or --auto on to check in once a day by itself.")
     return 0
 
 
@@ -1719,6 +1861,11 @@ def board_command(args, cdir, result):
         print(json.dumps(data, indent=1))
         print("\nThis is everything a check-in sends. Nothing has been sent.")
         return 0
+    if args.card:
+        print("Your card as a picture: open this link, then save or copy the image.")
+        print("  " + card_link(resolve_server(args, load_identity(cdir)), result))
+        print("The numbers after # stay in your browser: the page sends nothing, and the picture shows no creature name.")
+        return 0
     try:
         with identity_lock(cdir, 0):
             tidy_left(cdir)
@@ -1733,8 +1880,9 @@ def board_command(args, cdir, result):
         return 1
     if args.rank:
         return show_rank(server, ident, result)
+    duel = args.duel or args.duel_create or args.duel_join is not None or args.duel_leave or args.duel_code
     if args.world or args.group or args.group_create or args.group_join is not None or args.group_leave \
-            or args.group_code or args.verify_github or args.unverify_github:
+            or args.group_code or args.verify_github or args.unverify_github or duel:
         with board_lock(cdir, 30):
             if ident and load_identity(cdir).get("token") != ident["token"]:
                 print("Not joined. Run with --join first.")   # left the board while this command waited
@@ -1743,6 +1891,8 @@ def board_command(args, cdir, result):
                 return world_command(args, cdir, server, ident)
             if args.verify_github or args.unverify_github:
                 return github_command(args, cdir, server, ident)
+            if duel:
+                return duel_command(args, cdir, server, ident, data, result)
             return group_command(args, cdir, server, ident, data, result)
     if args.leave:
         if not ident:
@@ -1872,7 +2022,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="print numbers only, as JSON")
     ap.add_argument("--no-save", action="store_true", help="do not write the ledger")
     ap.add_argument("--server", help="leaderboard address (default: the public board, or $CCLEVEL_SERVER)")
-    ap.add_argument("--yes", action="store_true", help="with --join, --world on, --auto on, a group start or join, or --verify-github: do not ask again")
+    ap.add_argument("--yes", action="store_true",
+                    help="with --join, --world on, --auto on, a group or duel start or join, or --verify-github: do not ask again")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
     board.add_argument("--join", action="store_true", help="join the leaderboard (asks first)")
@@ -1885,6 +2036,15 @@ def main():
                             "without LINK, type it hidden")
     board.add_argument("--group-leave", action="store_true", help="leave your private group")
     board.add_argument("--group-code", action="store_true", help="show your group's invite link again; sends nothing")
+    board.add_argument("--duel", action="store_true", help="show your duel")
+    board.add_argument("--duel-create", action="store_true", help="challenge a friend to a %d-day duel (asks first) and print its invite link"
+                       % DUEL_DAYS)
+    board.add_argument("--duel-join", metavar="LINK", nargs="?", const="",
+                       help="accept a friend's duel with its invite link or code (asks first; joins the board too if needed); "
+                            "without LINK, type it hidden")
+    board.add_argument("--duel-leave", action="store_true", help="leave your duel")
+    board.add_argument("--duel-code", action="store_true", help="show your duel's invite link again; sends nothing")
+    board.add_argument("--card", action="store_true", help="print a link that draws your card as a picture to save and post; sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="delete your row and the local token")
@@ -1908,7 +2068,8 @@ def main():
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
     if (args.preview or args.join or args.sync or args.world or args.leave or args.rank or args.group or args.group_create
             or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github
-            or args.auto):
+            or args.auto or args.duel or args.duel_create or args.duel_join is not None or args.duel_leave or args.duel_code
+            or args.card):
         try:
             sys.exit(board_command(args, cdir, result))
         except Busy as e:
