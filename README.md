@@ -64,6 +64,8 @@ claude plugin install cclevel --marketplace Spider333/cclevel
 
 Then run `/pet`. If you already have a command called `pet`, use `/cclevel:pet`.
 
+**Updating.** Claude Code does not update plugins from this marketplace by itself until you say so. Once, in Claude Code: `/plugin` → Marketplaces → cclevel → **Enable auto-update**, and new versions arrive on their own. To update now: `/plugin` → Marketplaces → cclevel → Update marketplace, then `/reload-plugins`; or from a shell, `claude plugin marketplace update cclevel` and `claude plugin update cclevel@cclevel`. Duels and the share card need 0.4.0 or newer.
+
 Without the plugin system, copy `skills/pet/` into `~/.claude/skills/`, or run the script directly:
 
 ```
