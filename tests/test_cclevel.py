@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -591,7 +591,7 @@ class Framework(unittest.TestCase):
         for ago, expected in ((50, 256), (51, 400), (52, 145)):
             self.assertEqual((a["days"][utc_day(ago)], b["days"][utc_day(ago)]), (expected, expected))
         self.assertEqual(a["estimated"], [utc_day(52), utc_day(51), utc_day(50)])
-        self.assertEqual((a["version"], b["version"]), (3, 3))
+        self.assertEqual((a["version"], b["version"]), (4, 4))
         self.assertGreater(b["days"][utc_day(1)], a["days"][utc_day(1)])     # the logged days do differ
 
     def test_a_finished_day_is_priced_once(self):
@@ -620,8 +620,64 @@ class Framework(unittest.TestCase):
         os.remove(os.path.join(self.dir, "projects/p/more.jsonl"))
         os.remove(os.path.join(self.dir, "history.jsonl"))
         self.assertEqual(self.score(save=True)["xp"], second["xp"])
-        self.assertEqual(self.ledger(), after)
+        # Everything but this week's snapshot, which follows the latest run of the week by design.
+        self.assertEqual({k: v for k, v in self.ledger().items() if k != "weeks"}, {k: v for k, v in after.items() if k != "weeks"})
         self.assertLessEqual(max(after["days"].values()), cclevel.DAY_CAP)
+
+    def test_a_week_keeps_one_snapshot_and_a_hand_edited_one_cannot_cheat(self):
+        write(self.dir, "projects/p/s.jsonl", log_line(day_stamp(1), "m1") + "\n")
+        result = self.score(save=True)
+        week = cclevel.iso_week(datetime.now(timezone.utc).date())
+        self.assertEqual(self.ledger()["weeks"], {week: {"xp": result["xp"], "stats": [result["stats"][s] for s in cclevel.STAT_ORDER],
+                                                         "health": result["health"]}})
+        ledger = self.ledger()
+        good = {"xp": 900, "stats": [5, 10, 15, 20, 25, 30], "health": 70}
+        ledger["weeks"].update({"2025-W10": good, "2099-W01": good, "2025-W11": dict(good, xp="lots"), "x": good,
+                                "2025-W12": dict(good, stats=[5, 10, 15, 20, 25, 101]), "2025-W13": dict(good, health=-1),
+                                "2025-W99": good, "2025-W00": good})
+        write(self.dir, "cclevel/ledger.json", ledger)
+        self.score(save=True)
+        self.assertEqual(sorted(self.ledger()["weeks"]), ["2025-W10", week])
+        self.assertEqual(self.ledger()["weeks"]["2025-W10"], good)
+
+    def test_wrapped_is_worked_out_from_the_ledger_alone(self):
+        write(self.dir, "cclevel/ledger.json", {
+            "version": 4,
+            "days": {"2024-12-31": 400, "2025-01-01": 100, "2025-01-02": 200, "2025-01-03": 300, "2025-03-10": 550,
+                     "2025-03-11": 550, "2025-12-31": 150},
+            "estimated": ["2025-01-01", "2024-12-31"],
+            "badges": {"first_hook": "2024-12-31", "first_skill": "2025-03-10", "streak_7": "2026-01-05"},
+            "weeks": {"2025-W02": {"xp": 1000, "stats": [10, 20, 30, 40, 50, 60], "health": 80},
+                      "2025-W40": {"xp": 2600, "stats": [20, 20, 35, 40, 45, 60], "health": 90},
+                      "2026-W01": {"xp": 2800, "stats": [99, 99, 99, 99, 99, 99], "health": 90}},
+        })
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        text = cclevel.wrapped(self.dir, 2025, date(2026, 10, 21))
+        self.assertEqual(events, [])
+        self.assertIn("CC level Wrapped 2025 · this machine only, self-reported", text)
+        self.assertIn("1,850 XP over 6 active days (1 estimated from prompt counts)", text)
+        self.assertIn("Lv 4 Egg → Lv 8 Hatchling", text)
+        self.assertIn("Best day: 10 Mar, 550 XP · Best month: Mar, 1,100 XP · Longest streak: 3 days", text)
+        self.assertIn("Badges earned: Skill issue: solved\n", text)
+        self.assertIn("  Mar  ####################   1,100\n", text)
+        self.assertIn("  Jan  ###########---------     600\n", text)
+        self.assertIn("  Dec  ###-----------------     150\n", text)
+        self.assertIn("2 weekly snapshots, from 2025-W02 · Most weeks as: Shipper · Strongest stat: Craft, 60 on average", text)
+        self.assertIn("Since then: Grind +10 · Appetite +0 · Arsenal +5 · Brains +0 · Autonomy -5 · Craft +0", text)
+        # This year so far lists only the months that have begun; a year with no days says so.
+        self.assertIn("Wrapped 2026 so far", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
+        self.assertIn("No finished days banked in 2026", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
+        self.assertNotIn("Feb", cclevel.wrapped(self.dir, 2025, date(2025, 1, 20)))
+
+    def test_wrapped_takes_only_a_year_cclevel_can_have_seen(self):
+        for year in ("2024", "0", str(datetime.now(timezone.utc).year + 1)):
+            out = run("--claude-dir", self.dir, "--wrapped", year, "--no-save")
+            self.assertNotEqual(out.returncode, 0, year)
+            self.assertIn("takes a year from 2025", out.stderr)
+        out = run("--claude-dir", self.dir, "--wrapped", "--no-save")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("No finished days banked in %d" % datetime.now(timezone.utc).year, out.stdout)
 
     def test_days_are_utc_so_the_clock_setting_changes_nothing(self):
         make_folder(self.dir)

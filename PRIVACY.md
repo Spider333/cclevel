@@ -19,6 +19,7 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 | `--duel-code` | none | nothing; it shows the saved duel invite link |
 | opening an invite link (group or duel) in a browser | one request for the invite page | nothing about you; the code after `#` stays in your browser and the page makes no request with it |
 | `--card` | none | nothing; it prints a link to the card page, with your card's numbers after `#` |
+| `--wrapped [YEAR]` | none | nothing; it reads the ledger on your machine, which keeps your banked days, badge dates and, from version 0.5.0, one snapshot a week of your XP, six stats and Health |
 | opening a card link in a browser | one request for the card page | nothing about you; the numbers after `#` stay in your browser, which draws the picture, and the page makes no request with them |
 | `--verify-github LOGIN`, first run | one request to the board | the token, the GitHub login and the SHA-256 hash of a code made on your machine |
 | `--verify-github LOGIN`, second run | one request to the board | the token; the board then looks at that account's public gists and counts its public commits |

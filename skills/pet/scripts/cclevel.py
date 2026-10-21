@@ -164,7 +164,12 @@ ART = {
     "GOAT": [r"*\.-^-./*", r" ( @ @ ) ", r"</\ = /\>", r" _/| |\_ "],
 }
 
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+FIRST_YEAR = 2025            # Claude Code's first public release: no Wrapped before it
+THIS_YEAR = object()         # what --wrapped means without a YEAR (not a string, so argparse leaves it as it is)
+
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+WEEK_RE = re.compile(r"\d{4}-W(0[1-9]|[1-4]\d|5[0-3])")   # ISO weeks run 01 to 53
 GIT_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
 COMMAND_RE = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
 HOOK_COUNT_RE = re.compile(r'"hookCount":(\d+)')
@@ -584,6 +589,49 @@ def class_of(stats):
     return CLASSES[top]
 
 
+def level_of(xp):
+    return max(1, min(LEVEL_MAX, math.isqrt(xp // LEVEL_DIVISOR)))
+
+
+def stage_of(level):
+    return next(name for floor, name in STAGES if level >= floor)
+
+
+def iso_week(day):
+    """The ISO week of a date in UTC, "2026-W43", numbered the way the board numbers them."""
+    year, week, _ = day.isocalendar()
+    return "%04d-W%02d" % (year, week)
+
+
+def ledger_file(cdir):
+    return os.path.join(cdir, "cclevel", "ledger.json")
+
+
+def read_ledger(cdir, today):
+    """This machine's ledger, checked: (the file as read, banked days, badges, estimated days, weekly snapshots)."""
+    path = ledger_file(cdir)
+    today_s = today.isoformat()
+    # Only a plain file is read: a pipe or a device there would block, and the daily auto check-in runs this unattended.
+    ledger = load_dict(path) if os.path.isfile(path) and not os.path.islink(path) else {}
+    # A hand-edited ledger cannot lift a day above the cap, bank a future day or hold a badge that does not exist.
+    banked = {d: min(int(x), DAY_CAP) for d, x in as_dict(ledger.get("days")).items()
+              if is_day(d) and d < today_s and num(x) > 0}
+    badges = {b: str(when) for b, when in as_dict(ledger.get("badges")).items() if b in BADGES}
+    listed = ledger.get("estimated") if isinstance(ledger.get("estimated"), list) else []
+    estimated = {d for d in listed if isinstance(d, str) and d in banked}
+    # Nor a snapshot of a week to come, or one whose numbers are out of range.
+    now = iso_week(today)
+    weeks = {}
+    for week, snap in as_dict(ledger.get("weeks")).items():
+        snap = as_dict(snap)
+        stats, xp, health = snap.get("stats"), snap.get("xp"), snap.get("health")
+        if (WEEK_RE.fullmatch(week) and week <= now and type(xp) is int and 0 <= xp <= 10 ** 9
+                and type(health) is int and 0 <= health <= 100 and isinstance(stats, list) and len(stats) == len(STAT_ORDER)
+                and all(type(v) is int and 0 <= v <= 100 for v in stats)):
+            weeks[week] = {"xp": xp, "stats": stats, "health": health}
+    return ledger, banked, badges, estimated, weeks
+
+
 def score(cdir, machine_jobs, save):
     today = datetime.now(timezone.utc).date()
     today_s = today.isoformat()
@@ -615,15 +663,8 @@ def score(cdir, machine_jobs, save):
     # Unused means old enough to have had its chance: a skill added last week is not dead weight.
     unused = [n for n in own if n not in used_skills and own[n]["age_days"] >= USED_WINDOW_DAYS]
 
-    ledger_path = os.path.join(cdir, "cclevel", "ledger.json")
-    # Only a plain file is read: a pipe or a device there would block, and the daily auto check-in runs this unattended.
-    ledger = load_dict(ledger_path) if os.path.isfile(ledger_path) and not os.path.islink(ledger_path) else {}
-    # A hand-edited ledger cannot lift a day above the cap, bank a future day or hold a badge that does not exist.
-    banked = {d: min(int(x), DAY_CAP) for d, x in as_dict(ledger.get("days")).items()
-              if is_day(d) and d < today_s and num(x) > 0}
-    badges = {b: str(when) for b, when in as_dict(ledger.get("badges")).items() if b in BADGES}
-    listed = ledger.get("estimated") if isinstance(ledger.get("estimated"), list) else []
-    estimated = {d for d in listed if isinstance(d, str) and d in banked}
+    ledger_path = ledger_file(cdir)
+    ledger, banked, badges, estimated, weeks = read_ledger(cdir, today)
 
     # XP: a finished day is priced once and never touched again. With logs it gets its real figure.
     # Without them it gets the fixed estimate from its prompt count and is marked as estimated.
@@ -726,14 +767,16 @@ def score(cdir, machine_jobs, save):
             badges.setdefault(badge, today_s)
 
     xp = sum(banked.values()) + sum(BADGES.get(b, 0) for b in badges)
-    level = max(1, min(LEVEL_MAX, math.isqrt(xp // LEVEL_DIVISOR)))
+    level = level_of(xp)
+    # One snapshot a week, from the week's latest run, so a year in review can show how the stats moved.
+    weeks[iso_week(today)] = {"xp": xp, "stats": [stats[s] for s in STAT_ORDER], "health": health}
 
-    kept = {"days": banked, "estimated": sorted(estimated), "badges": badges}
+    kept = {"days": banked, "estimated": sorted(estimated), "badges": badges, "weeks": weeks}
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
         try:
             os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
             # Written to a fresh private file and swapped in: never through a link, never half written.
-            write_private(ledger_path, json.dumps(dict(kept, version=3, first_seen=ledger.get("first_seen") or today_s),
+            write_private(ledger_path, json.dumps(dict(kept, version=4, first_seen=ledger.get("first_seen") or today_s),
                                                   indent=1, sort_keys=True))
         except OSError:
             pass   # the card still shows; the day is banked at the next run
@@ -815,6 +858,65 @@ def render(r):
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor.",
             "  Post it as an image: /pet card. Challenge a friend: /pet duel.", ""]
+    return "\n".join(out)
+
+
+def short_day(day):
+    return "%d %s" % (int(day[8:]), MONTHS[int(day[5:7]) - 1])
+
+
+def wrapped(cdir, year, today):
+    """A year in review from this machine's ledger: its banked days, badges and weekly snapshots. Offline."""
+    _, banked, badges, estimated, weeks = read_ledger(cdir, today)
+    start, end = "%d-01-01" % year, "%d-12-31" % year
+    days = {d: x for d, x in banked.items() if start <= d <= end}
+    out = ["", "  CC level Wrapped %d%s · this machine only, self-reported" % (year, " so far" if year == today.year else ""), ""]
+    if not days:
+        return "\n".join(out + ["  No finished days banked in %d on this machine." % year, ""])
+
+    def xp_until(day):
+        return sum(x for d, x in banked.items() if d <= day) + sum(BADGES[b] for b, when in badges.items() if when <= day)
+    first, last = level_of(xp_until(str(year - 1) + "-12-31")), level_of(xp_until(end))
+    guessed = sum(1 for d in days if d in estimated)
+    out.append("  {:,} XP over {}{}".format(sum(days.values()), count(len(days), "active day"),
+                                           " (%d estimated from prompt counts)" % guessed if guessed else ""))
+    out.append("  Lv %d %s → Lv %d %s" % (first, stage_of(first), last, stage_of(last)))
+    months = [0] * 12
+    for d, x in days.items():
+        months[int(d[5:7]) - 1] += x
+    best_day = max(sorted(days), key=lambda d: days[d])   # the earliest of equal days
+    best_month = max(range(12), key=lambda m: months[m])
+    longest = run = 0
+    prev = None
+    for d in sorted(days):
+        dt = date.fromisoformat(d)
+        run = run + 1 if prev and (dt - prev).days == 1 else 1
+        longest, prev = max(longest, run), dt
+    out.append("  Best day: {}, {:,} XP · Best month: {}, {:,} XP · Longest streak: {}".format(
+        short_day(best_day), days[best_day], MONTHS[best_month], months[best_month], count(longest, "day")))
+    earned = [BADGE_NAMES[b] for b in BADGES if start <= badges.get(b, "") <= end]
+    out.append("  Badges earned: " + ", ".join(earned) if earned else "  No new badges this year.")
+    out.append("")
+    top = max(months)
+    for m in range(today.month if year == today.year else 12):
+        filled = round(20 * months[m] / top)
+        out.append("  %s  %s%s  %s" % (MONTHS[m], "#" * filled, "-" * (20 - filled), "{:,}".format(months[m]).rjust(6)))
+    out.append("")
+    snaps = [weeks[w]["stats"] for w in sorted(weeks) if w.startswith(str(year))]
+    if not snaps:
+        out.append("  Weekly snapshots of your stats start with this version, so a later Wrapped shows how they moved.")
+    else:
+        weeks_in = [w for w in sorted(weeks) if w.startswith(str(year))]
+        classes = Counter(class_of(dict(zip(STAT_ORDER, s))) for s in snaps)
+        averages = {name: sum(s[i] for s in snaps) / len(snaps) for i, name in enumerate(STAT_ORDER)}
+        strongest = max(STAT_ORDER, key=lambda n: averages[n])
+        out.append("  %s, from %s · Most weeks as: %s · Strongest stat: %s, %d on average" % (
+            count(len(snaps), "weekly snapshot"), weeks_in[0], classes.most_common(1)[0][0], strongest.capitalize(),
+            round(averages[strongest])))
+        if len(snaps) > 1:
+            out.append("  Since then: " + " · ".join("%s %+d" % (name.capitalize(), snaps[-1][i] - snaps[0][i])
+                                                       for i, name in enumerate(STAT_ORDER)))
+    out += ["", "  Post your card: /pet card.", ""]
     return "\n".join(out)
 
 
@@ -2045,6 +2147,8 @@ def main():
     board.add_argument("--duel-leave", action="store_true", help="leave your duel")
     board.add_argument("--duel-code", action="store_true", help="show your duel's invite link again; sends nothing")
     board.add_argument("--card", action="store_true", help="print a link that draws your card as a picture to save and post; sends nothing")
+    board.add_argument("--wrapped", metavar="YEAR", nargs="?", type=int, const=THIS_YEAR,
+                       help="your year in review from this machine's ledger (default: this year); sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="delete your row and the local token")
@@ -2066,6 +2170,13 @@ def main():
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
+    if args.wrapped is not None:
+        today = datetime.now(timezone.utc).date()
+        year = today.year if args.wrapped is THIS_YEAR else args.wrapped
+        if not FIRST_YEAR <= year <= today.year:
+            sys.exit("cclevel: --wrapped takes a year from %d to %d" % (FIRST_YEAR, today.year))
+        print(wrapped(cdir, year, today))
+        return
     if (args.preview or args.join or args.sync or args.world or args.leave or args.rank or args.group or args.group_create
             or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github
             or args.auto or args.duel or args.duel_create or args.duel_join is not None or args.duel_leave or args.duel_code
