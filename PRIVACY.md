@@ -26,6 +26,8 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 | `--unverify-github` | one request to the board | the token |
 | `--leave` | one request to the board | the token, to delete your row |
 | `--auto on`, `--auto off` | none | nothing; the choice is kept in `identity.json` on your machine |
+| `--learn` | none | nothing; the lessons it ticked are kept in `training.json` on your machine |
+| `--tips on`, `--tips off` | none | nothing; the choice and the tips already shown are kept in `training.json` on your machine |
 | a Claude Code session starts, with `--auto on` | one check-in per UTC day, in the background; a try that fails is repeated at the next session start | the same as `--sync` |
 
 The plugin ships one hook, for the optional auto check-in, and nothing that keeps running. Until you turn auto check-in on with `--auto on`, the hook reads a file or two on your machine when a Claude Code session starts and stops; it sends nothing. With it on, the hook runs one check-in a UTC day, in the background, and prints nothing; a try that fails is repeated at the next session start. `--auto off` stops it: no new check-in starts after that, though one already on its way still arrives. `--leave` waits for a check-in from this machine that is still running, then deletes the row. Only a check-in from a run that was killed, or gave up waiting for the board, while its request was on the way could still reach the board after that; such a row has a single day of check-ins and is deleted after 7 days. Inside Claude Code the plugin pre-approves only the offline commands. Network commands are left to Claude Code's normal permission rules, so with default settings each one asks first.

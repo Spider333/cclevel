@@ -42,6 +42,15 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 | Hooked, Skill issue: solved, Not my job, AFK gains | Badges for the first hook that ran at the end of a turn, own skill used, subagent spawned and unattended session |
 | Loadout, Full kit, Maxed out | Badges for 10, 50 and 100 distinct skills used |
 
+## Training and tips
+
+Opt-in learning, offline, outside the score. It never changes XP, level, a stat or a rank, and nothing about it is sent.
+
+- **`/pet learn`** shows five lessons per stat, easiest first: for example *See what fills the context* (`/context`), *Plan before you build*, *Hand a job to a subagent*, *Let Claude commit*. A lesson ticks itself when the logs or the setup show it done, never because you say so, and stays ticked after the logs are gone. The next lesson in each stat says how to do it and links its page in the Claude Code docs.
+- **`/pet tips on`** adds a how-to line, with its docs page, under each item on the card's Needs list, and one tip a day. The tip comes from your weakest stat, stays the same all UTC day, and no tip comes round again until all of them have been shown. `/pet tips off` turns both off.
+- Ticked lessons, the tips switch and the tips already shown are kept in `~/.claude/cclevel/training.json`.
+- Every tip and how-to was checked against the Claude Code docs on the date in `TIPS_CHECKED`. Claude Code changes fast: if one is out of date, please open an issue.
+
 Grind and Brains never set the class. The scoring constants and the names are defined at the top of `skills/pet/scripts/cclevel.py`. The numbers are first-draft values, tuned on very few setups. The scanner never sends a name and never reads one from the board, so the names can change at any time. The board names creatures itself.
 
 ## Limits worth knowing

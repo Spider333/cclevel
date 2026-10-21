@@ -1,7 +1,7 @@
 ---
 name: pet
-description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against or leave the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), to share or post their card as a picture, or for their year in review ('wrapped')."
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --json), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --no-save), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --preview), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --card), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --wrapped)
+description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against or leave the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), to share or post their card as a picture, for their year in review ('wrapped'), or to learn Claude Code step by step ('/pet learn', lessons, 'how do I get better at Claude Code', '/pet tips on', tips)."
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --json), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --no-save), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --preview), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --card), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --wrapped), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --learn), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --tips on), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --tips off)
 ---
 
 # /pet: Claude Code Level card
@@ -20,6 +20,13 @@ This path is fully offline. `--json` prints the numbers behind the card. `--no-s
 ## Year in review
 
 When the user asks for their year in review, Wrapped or how their year went (for example `/pet wrapped`), run `--wrapped` for this year so far, or `--wrapped YEAR` for an earlier year. It is offline: like the card, it scores the folder and saves this week's snapshot to the ledger, then works the year out from that ledger. Show it exactly as printed, in a code block. Stats over time come from weekly snapshots the ledger keeps from version 0.5.0 on, so early in that history the last line says they have only just started.
+
+## Learn Claude Code (opt-in, offline)
+
+- **Lessons:** when the user asks to learn, for lessons or for how to get better at Claude Code (for example `/pet learn`), run `--learn` and show its output exactly as printed, in a code block. Then, in one or two plain sentences, explain the lesson that has a How line in the weakest stat and offer to walk them through it. Do not change their setup unless they ask. A lesson ticks itself when the logs show it done; it cannot be ticked by hand, and lessons never change the score.
+- **Tips:** `/pet tips on` runs `--tips on`; `/pet tips off` runs `--tips off`. With tips on, the card shows a How line, with its docs page, under each Need and one tip of the day. Show them as printed. If a tip or How line contradicts what this Claude Code version does, say so plainly instead of repeating it.
+
+Both are offline and kept on this machine in `~/.claude/cclevel/training.json`.
 
 ## Share the card as a picture
 

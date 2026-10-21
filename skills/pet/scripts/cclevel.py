@@ -4,7 +4,8 @@
 Reads the local Claude Code folder. Writes nothing except its own files in
 <claude dir>/cclevel/. A score covers one machine and is self-reported.
 
-The card is fully offline, and so is --card, which only prints a link. The
+The card is fully offline, and so are --card, which only prints a link, and
+the opt-in training (--learn, --tips), which is text shipped here. The
 network is used only by --join, --sync, --world, the --group and --duel
 commands, the GitHub badge commands, --leave and --rank, and by the
 plugin's session-start hook (--auto-run) once a day after the user turned
@@ -155,6 +156,127 @@ MOODS = {
 }
 QUIPS = {"unused_skills": "Skill issue", "heavy_context": "Certified chonk", "no_needs": "Touch grass"}
 
+# --------------------------------------------------------------- training
+# Opt-in learning: --learn shows the lessons, --tips on adds a how-to under each Need and a tip a day.
+# All of it is text shipped with the scanner, and none of it is ever sent. It teaches; it never changes a score.
+# Claude Code changes fast, so every line names its docs page. Facts checked against the docs on TIPS_CHECKED.
+DOCS = "https://code.claude.com/docs/en/"
+TIPS_CHECKED = "2026-10-21"
+# How to fix each item the Needs list can show: (what to do, docs page).
+HOWTO = {
+    "unused_skills": ("move them out of ~/.claude/skills (or commands); moving one back restores it", "skills"),
+    "sign_in": ("type /mcp to see each connector and sign in; remove the ones you never use", "mcp"),
+    "heavy_context": ("type /context to see what fills it; move long how-tos from CLAUDE.md into skills", "memory"),
+    "tool_errors": ("ask Claude why its last tool calls failed; /doctor checks the install", "commands"),
+    "interrupts": ("agree a plan first with /plan; Esc Esc rewinds instead of stopping halfway", "common-workflows"),
+    "brains_1": ("open a project and type /init: it writes a starter CLAUDE.md", "memory"),
+    "brains_2": ("auto memory is on by default (check with /memory); ask Claude to remember a rule", "memory"),
+    "brains_3": ("ask Claude to turn a task you repeat into a skill in ~/.claude/skills/<name>/SKILL.md", "skills"),
+    "brains_4": ("put a script next to the skill's SKILL.md and say in the skill when to run it", "skills"),
+    "brains_5": ("ask Claude to create a subagent (saved in ~/.claude/agents/), or to use Explore", "sub-agents"),
+    "brains_6": ("ask Claude to create a code-reviewer subagent and use it after each change", "sub-agents"),
+    "brains_7": ("add a deny rule such as Read(./.env) to permissions.deny; /permissions shows them", "permissions"),
+    "brains_8": ("type /hooks and add a Stop hook, for example a sound when Claude finishes", "hooks-guide"),
+    "brains_9": ("set model: haiku in a subagent's frontmatter so small jobs run on a smaller model", "sub-agents"),
+    "brains_10": ("press Shift+Tab until the status bar says plan mode on, or type /plan", "common-workflows"),
+}
+# The training path: five lessons per stat, easiest first. A lesson is ticked by what the logs and the setup show,
+# never by a claim (score() decides), and once ticked it stays ticked. (id, lesson, how, docs page)
+LESSONS = {
+    "grind": [
+        ("g_days2", "Come back on a second day", "claude --continue picks up the last conversation in a folder", "sessions"),
+        ("g_resume", "Reopen an older conversation", "type /resume and pick one from the list", "sessions"),
+        ("g_streak7", "Use it 7 days in a row", "small jobs count: explain a file, write a commit message, review a diff", "common-workflows"),
+        ("g_days15", "Use it on 15 of the last 30 days", "start the day by asking what changed in the repo since yesterday", "common-workflows"),
+        ("g_streak30", "Keep a 30-day streak", "turn what you repeat into skills, so each day starts faster", "skills"),
+    ],
+    "appetite": [
+        ("a_context", "See what fills the context", "type /context: it shows how the context window is used", "sessions"),
+        ("a_compact", "Compact on your own terms", "type /compact and what to keep, e.g. /compact keep the open questions", "sessions"),
+        ("a_model", "Pick the model for the job", "type /model and choose; a smaller model is fine for small edits", "commands"),
+        ("a_usage", "Check your usage", "type /usage to see what you have used", "commands"),
+        ("a_lean", "Keep a CLAUDE.md, and start-up context under 15k tokens",
+         "keep CLAUDE.md to the rules; long how-tos go into skills, which load only when used", "memory"),
+    ],
+    "arsenal": [
+        ("r_skill", "Use a skill", "type / to see your commands and skills, and run one", "skills"),
+        ("r_connector", "Use a connector (MCP)", "add one with claude mcp add, sign in with /mcp, then ask Claude to use it", "mcp"),
+        ("r_own", "Make a skill of your own and use it", "ask Claude to turn a task you repeat into a skill", "skills"),
+        ("r_own_script", "Give one of your skills its own script") + HOWTO["brains_4"],
+        ("r_ten", "Use 10 different skills", "type /plugin to browse plugins with skills other people made", "commands"),
+    ],
+    "brains": [
+        ("b_claude_md", "Write a CLAUDE.md") + HOWTO["brains_1"],
+        ("b_plan", "Plan before you build") + HOWTO["brains_10"],
+        ("b_memory", "Let it remember") + HOWTO["brains_2"],
+        ("b_guardrail", "Add a guardrail") + HOWTO["brains_7"],
+        ("b_stop_hook", "Run a hook when a turn ends") + HOWTO["brains_8"],
+    ],
+    "autonomy": [
+        ("u_subagent", "Hand a job to a subagent", "ask Claude to use the Explore subagent to search the code", "sub-agents"),
+        ("u_two_kinds", "Use two kinds of subagent") + HOWTO["brains_5"],
+        ("u_second_model", "Put a second model to work") + HOWTO["brains_9"],
+        ("u_headless", "Run it without a chat", "claude -p \"summarise today's git log\" runs once and prints the answer", "headless"),
+        ("u_scheduled", "Put it on a schedule", "call claude -p from cron or launchd for a job that runs by itself", "headless"),
+    ],
+    "craft": [
+        ("c_edit", "Let Claude edit a file", "ask for one small change and accept the edit", "common-workflows"),
+        ("c_commit", "Let Claude commit", "ask Claude to commit, with a message that says why", "common-workflows"),
+        ("c_pr", "Open a pull request", "with the GitHub CLI (gh) signed in, ask Claude to open a pull request", "common-workflows"),
+        ("c_checker", "Get your work checked") + HOWTO["brains_6"],
+        ("c_worktree", "Work in two places at once", "claude --worktree <name> starts a session in its own git worktree",
+         "common-workflows"),
+    ],
+}
+# Tips of the day, by stat: extras the lessons do not cover. (id, tip, docs page)
+TIPS = {
+    "grind": [
+        ("t_rewind", "Esc Esc on an empty prompt opens rewind: go back and restore the code or the chat", "checkpointing"),
+        ("t_bang", "start a prompt with ! to run a shell command yourself, without a turn for Claude", "interactive-mode"),
+        ("t_at", "type @ and a path to put a file or a folder straight into the conversation", "common-workflows"),
+        ("t_resume_flag", "claude -r opens the list of past conversations before the session starts", "cli-reference"),
+        ("t_statusline", "/statusline sets up a status line under the prompt", "commands"),
+    ],
+    "appetite": [
+        ("t_clear", "/clear starts an empty conversation: use it between unrelated tasks", "sessions"),
+        ("t_subagent_context", "a subagent works in its own context window, so a big search does not fill yours", "sub-agents"),
+        ("t_skill_load", "a skill's full text loads only when it is used, so a long how-to costs less as a skill than in CLAUDE.md",
+         "skills"),
+        ("t_model_session", "in the /model picker, s switches the model for this session only", "commands"),
+    ],
+    "arsenal": [
+        ("t_skill_desc", "a skill's description decides when Claude loads it: say what it does and when to use it", "skills"),
+        ("t_project_skills", "skills in a repo's .claude/skills/ come with the repo, for everyone who clones it", "skills"),
+        ("t_skill_slash", "every skill can also be run by hand: type / and its name", "skills"),
+        ("t_mcp_http", "claude mcp add --transport http <name> <url> adds a remote connector", "mcp"),
+        ("t_marketplace", "claude plugin marketplace add owner/repo adds a plugin marketplace from GitHub",
+         "plugins/marketplace-reference"),
+    ],
+    "brains": [
+        ("t_memory_cmd", "/memory shows which CLAUDE.md and memory files are loaded, and switches auto memory on or off", "memory"),
+        ("t_pretool_block", "a PreToolUse hook can stop a tool call: exit code 2 blocks it", "hooks"),
+        ("t_deny_first", "deny rules are checked first, so one deny line protects a file even when much else is allowed",
+         "permissions"),
+        ("t_init_again", "/init on a project that has a CLAUDE.md suggests changes instead of overwriting it", "commands"),
+        ("t_hooks_browser", "/hooks opens a browser of every hook you have", "hooks-guide"),
+    ],
+    "autonomy": [
+        ("t_ctrl_b", "Ctrl+B sends a running shell command to the background so you can keep working", "interactive-mode"),
+        ("t_github_app", "/install-github-app lets you tag @claude in a GitHub issue or pull request", "github-actions"),
+        ("t_exit_code", "claude -p exits with code 0 when it succeeds, so a script can check the result", "headless"),
+        ("t_plan_flag", "claude --permission-mode plan starts a session already in plan mode", "common-workflows"),
+        ("t_accept_edits", "Shift+Tab cycles modes; accept-edits mode applies file edits without asking each time",
+         "interactive-mode"),
+    ],
+    "craft": [
+        ("t_security_review", "/security-review checks your pending changes for security problems", "commands"),
+        ("t_code_review", "/code-review (or /review) reviews your changes before you push", "commands"),
+        ("t_bash_not_rewound", "rewind does not undo changes made by shell commands, so commit before a risky step",
+         "checkpointing"),
+    ],
+}
+WORKTREE_MARK = "-claude-worktrees-"   # a session started in <repo>/.claude/worktrees/<name> logs under a folder with this
+
 ART = {
     "Egg": [r"   ___   ", r"  /   \  ", r" |  .  | ", r"  \___/  "],
     "Hatchling": [r"   ___   ", r"  /o o\  ", r" _\_^_/_ ", r"  '   '  "],
@@ -181,7 +303,7 @@ def load_json(path):
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):   # RecursionError: a file nested too deeply to decode
         return None
 
 
@@ -265,8 +387,9 @@ def merged_lists(a, b):
 def new_day():
     return {"tok": Counter(), "models": Counter(), "skills": set(), "servers": set(), "agents": set(),
             "auto": set(), "sessions": set(), "projects": set(), "pages": set(),
-            "edits": 0, "commits": 0, "prs": 0, "spawns": 0, "tools": 0,
-            "errors": 0, "interrupts": 0, "turns": 0, "plan": 0, "hooks_ran": 0, "memory_writes": 0}
+            "commands": set(), "edits": 0, "commits": 0, "prs": 0, "spawns": 0, "tools": 0,
+            "errors": 0, "interrupts": 0, "turns": 0, "plan": 0, "hooks_ran": 0, "memory_writes": 0, "compacts": 0,
+            "worktrees": 0}
 
 
 def scan_history(cdir):
@@ -359,6 +482,8 @@ def scan_logs(cdir, skill_names):
                                 d["pages"].add(str(inp["file_path"]))
                         elif name == "ExitPlanMode":
                             d["plan"] += 1
+                        elif name == "EnterWorktree":
+                            d["worktrees"] += 1
                 elif '"type":"user"' in line:
                     if '"tool_result"' in line:
                         if day and '"is_error":true' in line:
@@ -383,6 +508,7 @@ def scan_logs(cdir, skill_names):
                         days[day]["interrupts"] += 1
                         continue
                     for name in COMMAND_RE.findall(text):
+                        days[day]["commands"].add(name)   # kept for the training path; never shown or sent
                         if name in skill_names or ":" in name:
                             days[day]["skills"].add(name)
                     days[day]["turns"] += 1
@@ -393,6 +519,10 @@ def scan_logs(cdir, skill_names):
                 elif day and '"subtype":"stop_hook_summary"' in line:
                     ran = HOOK_COUNT_RE.search(line)
                     days[day]["hooks_ran"] += bool(ran and int(ran.group(1)) > 0)
+                elif day and '"subtype":"local_command"' in line:
+                    days[day]["commands"].update(COMMAND_RE.findall(line))   # some commands are logged only here
+                elif day and '"subtype":"compact_boundary"' in line:
+                    days[day]["compacts"] += '"trigger":"manual"' in line   # /compact typed, not the automatic one
         longest = max(longest, len(run))
     for _, day, u, model in best.values():
         days[day]["models"][str(model)] += 1
@@ -766,6 +896,23 @@ def score(cdir, machine_jobs, save):
         if ok:
             badges.setdefault(badge, today_s)
 
+    # Training: which lessons the logs and the setup show as done. Only lesson ids leave score().
+    used = w30["commands"]
+    done = {
+        "g_days2": raw["active_days_30d"] >= 2, "g_resume": "resume" in used,
+        "g_streak7": longest_streak >= BADGE_STREAKS["streak_7"], "g_days15": raw["active_days_30d"] >= 15,
+        "g_streak30": longest_streak >= BADGE_STREAKS["streak_30"],
+        "a_context": "context" in used, "a_compact": w30["compacts"] > 0 or "compact" in used, "a_model": "model" in used,
+        "a_usage": bool(used & {"usage", "cost", "stats"}), "a_lean": checks[0] and setup["context_tokens"] <= CONTEXT_OK,
+        "r_skill": bool(used_skills), "r_connector": bool(w30["servers"]), "r_own": bool(own_used), "r_own_script": checks[3],
+        "r_ten": ever_used >= BADGE_SKILLS["skills_10"],
+        "b_claude_md": checks[0], "b_plan": checks[9], "b_memory": checks[1], "b_guardrail": checks[6], "b_stop_hook": checks[7],
+        "u_subagent": w30["spawns"] > 0, "u_two_kinds": checks[4], "u_second_model": checks[8],
+        "u_headless": auto_sessions > 0, "u_scheduled": jobs > 0,
+        "c_edit": w30["edits"] > 0, "c_commit": w30["commits"] > 0, "c_pr": w30["prs"] > 0, "c_checker": checks[5],
+        "c_worktree": w30["worktrees"] > 0 or any(WORKTREE_MARK in p for p in w30["projects"]),
+    }
+
     xp = sum(banked.values()) + sum(BADGES.get(b, 0) for b in badges)
     level = level_of(xp)
     # One snapshot a week, from the week's latest run, so a year in review can show how the stats moved.
@@ -802,6 +949,7 @@ def score(cdir, machine_jobs, save):
         "mood": mood_of(health, idle, current_streak, gap), "health": health,
         "power": sum(stats.values()), "stats": stats,
         "badges": [b for b in BADGES if b in badges], "needs": needs, "raw": raw,
+        "lessons": [lesson[0] for stat in STAT_ORDER for lesson in LESSONS[stat] if done[lesson[0]]],
     }
 
 
@@ -828,9 +976,10 @@ def need_text(n):
     return "missing: %s (Brains +%d)" % (BRAINS[int(n["code"].split("_")[1]) - 1], g)
 
 
-def render(r, joined=True):
+def render(r, joined=True, how=False, tip=None):
     """The card. On a machine that is not on the board (`joined` false) with XP banked in the last 7 days, the last lines
-    say how much of it will never rank: the board counts only XP it sees after joining. Worked out here; nothing is sent."""
+    say how much of it will never rank: the board counts only XP it sees after joining. Worked out here; nothing is sent.
+    With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
     to_next = "top level" if level >= LEVEL_MAX else "{:,} to Lv {}".format(r["xp_next_level"] - r["xp"], level + 1)
@@ -854,17 +1003,25 @@ def render(r, joined=True):
     elif r["needs"]:
         sick = r["mood"] == MOODS["bad"] and r["needs"][0]["stat"] == "health"
         out.append("  Needs (why it is %s)" % MOODS["bad"] if sick else "  Needs")
-        out += ["   %d. %s" % (i + 1, need_text(n)) for i, n in enumerate(r["needs"][:5])]
+        for i, n in enumerate(r["needs"][:5]):
+            out.append("   %d. %s" % (i + 1, need_text(n)))
+            if how:
+                text, page = HOWTO[n["code"]]
+                out.append("      How: %s  %s%s" % (text, DOCS, page))
     else:
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
+    if tip:
+        stat, (_, text, page) = tip
+        out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
     if not joined and raw["xp_7d"] > 0:
         out += ["  Not on the board yet: your last 7 days earned {:,} XP that will never rank.".format(raw["xp_7d"]),
-                "  Start counting: /pet join the leaderboard. Post it as an image: /pet card.", ""]
+                "  Start counting: /pet join the leaderboard. Post it as an image: /pet card."]
     else:
-        out += ["  Post it as an image: /pet card. Challenge a friend: /pet duel.", ""]
+        out += ["  Post it as an image: /pet card. Challenge a friend: /pet duel."]
+    out += ["  Learn Claude Code step by step: /pet learn%s." % ("" if how else ". A how-to under each Need: /pet tips on"), ""]
     return "\n".join(out)
 
 
@@ -925,6 +1082,123 @@ def wrapped(cdir, year, today):
                                                        for i, name in enumerate(STAT_ORDER)))
     out += ["", "  Post your card: /pet card.", ""]
     return "\n".join(out)
+
+
+def training_path(cdir):
+    return os.path.join(cdir, "cclevel", "training.json")
+
+
+def load_training(cdir):
+    """The tips switch, the tips already shown and the lessons already ticked. Kept on this machine only."""
+    path = training_path(cdir)
+    # Only a plain file is read, as with the ledger; anything odd there reads as a fresh start.
+    data = load_dict(path) if os.path.isfile(path) and not os.path.islink(path) else {}
+    tips = {t[0] for ts in TIPS.values() for t in ts}
+    lessons = {l[0] for ls in LESSONS.values() for l in ls}
+    seen = data.get("seen") if isinstance(data.get("seen"), list) else []
+    today = data.get("today")
+    return {"tips": data.get("tips") is True,
+            "seen": list(dict.fromkeys(t for t in seen if isinstance(t, str) and t in tips)),
+            "day": data.get("day") if is_day(data.get("day")) else None,
+            "today": today if isinstance(today, str) and today in tips else None,
+            "done": {l: str(d) for l, d in as_dict(data.get("done")).items() if l in lessons}}
+
+
+def save_training(cdir, change, wait=2.0):
+    """Read, change and write training.json in one step, under the same folder lock as identity.json."""
+    with identity_lock(cdir, wait):
+        now = load_training(cdir)
+        change(now)
+        write_private(training_path(cdir), json.dumps(dict(now, version=1), indent=1, sort_keys=True))
+
+
+def tick(now, result):
+    """Lessons ticked by this scan join the ones ticked before: once learnt, a lesson stays learnt after the logs are gone."""
+    for lesson in result["lessons"]:
+        now["done"].setdefault(lesson, result["generated"])
+
+
+def tip_of_the_day(state, result):
+    """The same tip all day, a new one the next day: the first unseen tip of the weakest stat that has one.
+    Once every tip has been shown, they start again. Returns ((stat, tip), new) where new means not shown before today."""
+    by_id = {t[0]: (stat, t) for stat in STAT_ORDER for t in TIPS[stat]}
+    if state["day"] == result["generated"] and state["today"] in by_id:
+        return by_id[state["today"]], False
+    seen = set(state["seen"])
+    if seen >= set(by_id):
+        seen = set()
+    for stat in sorted(STAT_ORDER, key=lambda s: result["stats"][s]):   # sorted() keeps STAT_ORDER among equals
+        for t in TIPS[stat]:
+            if t[0] not in seen:
+                return (stat, t), True
+    return None, False
+
+
+def training_extras(cdir, result, save):
+    """What the card adds when tips are on: the how-to lines and the tip of the day. Nothing at all when off."""
+    state = load_training(cdir)
+    if not state["tips"]:
+        return False, None
+    tip, new = tip_of_the_day(state, result)
+    if save and (new or any(l not in state["done"] for l in result["lessons"])):
+        def shown(now):
+            # Another run may have picked today's tip in the meantime; the first one picked stays.
+            if new and not (now["day"] == result["generated"] and now["today"]):
+                if set(now["seen"]) >= {t[0] for ts in TIPS.values() for t in ts}:
+                    now["seen"] = []
+                now["seen"].append(tip[1][0])
+                now.update(day=result["generated"], today=tip[1][0])
+            tick(now, result)
+        try:
+            save_training(cdir, shown)
+        except (Busy, OSError):
+            pass   # the card still shows; at worst the same tip comes again tomorrow
+    return True, tip
+
+
+def tips_command(args, cdir):
+    """Turns tips on or off. A choice kept on this machine only: nothing is sent."""
+    on = args.tips == "on"
+    save_training(cdir, lambda now: now.update(tips=on))
+    if on:
+        print("Tips on. The card now shows how to fix each Need and one Claude Code tip a day.")
+        print("They come with cclevel and are kept on this machine; nothing is sent. --tips off stops them.")
+    else:
+        print("Tips off. The card is back to its short form. /pet learn still shows the lessons.")
+    return 0
+
+
+def render_learn(result, done):
+    """The training path: every lesson per stat, ticked or not, with how to do the next one."""
+    total = sum(len(ls) for ls in LESSONS.values())
+    out = ["", "  Training · %d of %d lessons done" % (len(done), total), ""]
+    for stat in STAT_ORDER:
+        lessons = LESSONS[stat]
+        n = sum(1 for l in lessons if l[0] in done)
+        out.append("  %s %d/%d%s" % (stat.capitalize(), n, len(lessons), " · trained" if n == len(lessons) else ""))
+        nxt = next((l[0] for l in lessons if l[0] not in done), None)
+        for lesson, title, how, page in lessons:
+            out.append("   [%s] %s" % ("x" if lesson in done else " ", title))
+            if lesson == nxt:
+                out.append("       How: %s  %s%s" % (how, DOCS, page))
+        out.append("")
+    out += ["  A lesson ticks itself when your Claude Code logs show it done, and stays ticked.",
+            "  Lessons teach; they never change your level, XP or rank. Facts checked against the docs on %s." % TIPS_CHECKED,
+            "  A how-to under each Need and a tip a day on the card: /pet tips on.", ""]
+    return "\n".join(out)
+
+
+def learn_command(cdir, result, save):
+    """Shows the training path. Offline: it reads the logs like the card and remembers the ticks on this machine."""
+    state = load_training(cdir)
+    done = set(state["done"]) | set(result["lessons"])
+    if save and done - set(state["done"]):
+        try:
+            save_training(cdir, lambda now: tick(now, result))
+        except (Busy, OSError):
+            pass   # shown anyway; remembered at the next run
+    print(render_learn(result, done))
+    return 0
 
 
 # ------------------------------------------------------------ leaderboard
@@ -2156,6 +2430,10 @@ def main():
     board.add_argument("--card", action="store_true", help="print a link that draws your card as a picture to save and post; sends nothing")
     board.add_argument("--wrapped", metavar="YEAR", nargs="?", type=int, const=THIS_YEAR,
                        help="your year in review from this machine's ledger (default: this year); sends nothing")
+    board.add_argument("--learn", action="store_true",
+                       help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
+    board.add_argument("--tips", choices=("on", "off"),
+                       help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="delete your row and the local token")
@@ -2174,6 +2452,14 @@ def main():
         sys.exit(0)
     if not os.path.isdir(cdir):
         sys.exit("cclevel: %s is not a folder" % cdir)
+    if args.tips:
+        try:
+            sys.exit(tips_command(args, cdir))
+        except Busy as e:
+            print(busy_text(e))
+        except OSError as e:
+            print("cclevel: could not save the tips setting (%s)." % (e.strerror or type(e).__name__))
+        sys.exit(1)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
@@ -2184,6 +2470,8 @@ def main():
             sys.exit("cclevel: --wrapped takes a year from %d to %d" % (FIRST_YEAR, today.year))
         print(wrapped(cdir, year, today))
         return
+    if args.learn:
+        sys.exit(learn_command(cdir, result, save=not args.no_save))
     if (args.preview or args.join or args.sync or args.world or args.leave or args.rank or args.group or args.group_create
             or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github
             or args.auto or args.duel or args.duel_create or args.duel_join is not None or args.duel_leave or args.duel_code
@@ -2196,8 +2484,12 @@ def main():
         except OSError as e:
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
-    # Whether this machine is on the board is read from its own token file; nothing is sent.
-    print(json.dumps(result, indent=1) if args.json else render(result, joined=bool(load_identity(cdir))))
+    if args.json:
+        print(json.dumps(result, indent=1))
+    else:
+        how, tip = training_extras(cdir, result, save=not args.no_save)
+        # Whether this machine is on the board is read from its own token file; nothing is sent.
+        print(render(result, joined=bool(load_identity(cdir)), how=how, tip=tip))
 
 
 if __name__ == "__main__":
