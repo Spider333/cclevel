@@ -441,6 +441,20 @@ class Framework(unittest.TestCase):
         self.assertNotIn("1 days", card)
         self.assertNotIn("1 active days", card)
 
+    def test_the_join_nudge_names_last_weeks_xp_only_off_the_board(self):
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "days": {utc_day(1): 300, utc_day(7): 200, utc_day(8): 550}})
+        result = self.score()
+        self.assertEqual(result["raw"]["xp_7d"], 500)   # day 8 is outside the last 7 finished days
+        card = cclevel.render(result, joined=False)
+        self.assertIn("  Not on the board yet: your last 7 days earned 500 XP that will never rank.\n", card)
+        self.assertIn("  Start counting: /pet join the leaderboard. Post it as an image: /pet card.\n", card)
+        self.assertNotIn("Challenge a friend", card)
+        for joined, days in ((True, {utc_day(1): 300}), (False, {utc_day(8): 550})):
+            write(self.dir, "cclevel/ledger.json", {"version": 4, "days": days})
+            card = cclevel.render(self.score(), joined=joined)
+            self.assertNotIn("Not on the board", card)
+            self.assertIn("Challenge a friend: /pet duel.", card)
+
     def test_counts_of_one_read_as_singular(self):
         write(self.dir, "commands/solo/SKILL.md", "---\ndescription: one\n---\n")
         old = (datetime.now() - timedelta(days=120)).timestamp()
@@ -1771,6 +1785,17 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("GitHub badge removed", out.stdout)
         self.assertEqual(FakeBoard.seen[-1]["method"] + " " + FakeBoard.seen[-1]["path"], "DELETE /api/github")
+
+    def test_the_card_nudges_only_until_this_machine_joins_and_sends_nothing(self):
+        out = run("--claude-dir", self.dir, "--server", self.url)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertRegex(out.stdout, r"Not on the board yet: your last 7 days earned [\d,]+ XP that will never rank\.")
+        self.assertEqual(FakeBoard.seen, [])
+        self.joined()
+        out = run("--claude-dir", self.dir)
+        self.assertNotIn("Not on the board", out.stdout)
+        self.assertIn("Challenge a friend: /pet duel.", out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
 
     def test_starting_a_duel_asks_first_and_the_code_travels_only_in_that_body(self):
         self.joined()

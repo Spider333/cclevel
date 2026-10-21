@@ -791,6 +791,7 @@ def score(cdir, machine_jobs, save):
         "tool_calls_30d": w30["tools"], "tool_errors_30d": w30["errors"],
         "interrupts_30d": w30["interrupts"], "brains_passed": sum(checks), "brains_total": len(checks),
         "xp_days": len(banked), "xp_days_estimated": len(estimated),
+        "xp_7d": sum(x for d, x in banked.items() if d >= (today - timedelta(days=7)).isoformat()),   # the last 7 finished days
     })
     return {
         "version": 1, "generated": today_s, "scope": "one machine, self-reported",
@@ -827,7 +828,9 @@ def need_text(n):
     return "missing: %s (Brains +%d)" % (BRAINS[int(n["code"].split("_")[1]) - 1], g)
 
 
-def render(r):
+def render(r, joined=True):
+    """The card. On a machine that is not on the board (`joined` false) with XP banked in the last 7 days, the last lines
+    say how much of it will never rank: the board counts only XP it sees after joining. Worked out here; nothing is sent."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
     to_next = "top level" if level >= LEVEL_MAX else "{:,} to Lv {}".format(r["xp_next_level"] - r["xp"], level + 1)
@@ -856,8 +859,12 @@ def render(r):
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
-    out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor.",
-            "  Post it as an image: /pet card. Challenge a friend: /pet duel.", ""]
+    out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
+    if not joined and raw["xp_7d"] > 0:
+        out += ["  Not on the board yet: your last 7 days earned {:,} XP that will never rank.".format(raw["xp_7d"]),
+                "  Start counting: /pet join the leaderboard. Post it as an image: /pet card.", ""]
+    else:
+        out += ["  Post it as an image: /pet card. Challenge a friend: /pet duel.", ""]
     return "\n".join(out)
 
 
@@ -2189,7 +2196,8 @@ def main():
         except OSError as e:
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
-    print(json.dumps(result, indent=1) if args.json else render(result))
+    # Whether this machine is on the board is read from its own token file; nothing is sent.
+    print(json.dumps(result, indent=1) if args.json else render(result, joined=bool(load_identity(cdir))))
 
 
 if __name__ == "__main__":
