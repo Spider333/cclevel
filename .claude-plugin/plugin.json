@@ -1,7 +1,7 @@
 {
 	"name": "cclevel",
 	"displayName": "CC level",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next. Joins the public leaderboard by default under a generated name (nine numbers, no account); opt out any time with /pet leave.",
 	"author": { "name": "cclevel contributors" },
 	"homepage": "https://cclevel.com",
