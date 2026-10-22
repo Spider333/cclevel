@@ -430,12 +430,13 @@
 			setTimeout(step, 900);
 		};
 		var video = el("evo-video");
-		var source = video && video.querySelector("source");
 		var ascii = function () {
 			if (video) video.remove();
 			restart();
 		};
-		if (!source || video.networkState === 3 || (navigator.connection && navigator.connection.saveData)) {
+		// A failed load leaves video.error set, so an error that came before this script is still caught.
+		// (networkState is not a test: it reads "no source" while the browser is still picking the file.)
+		if (!video || video.error || (navigator.connection && navigator.connection.saveData)) {
 			ascii();
 			return;
 		}
@@ -464,7 +465,7 @@
 		video.addEventListener("playing", function () {
 			if (!frame) frame = requestAnimationFrame(tick);
 		});
-		source.addEventListener("error", ascii);
+		video.addEventListener("error", ascii);
 		var play = function () {
 			var p = video.play();
 			if (p) p.catch(function () {}); // autoplay refused: the poster and the caption stay as written
