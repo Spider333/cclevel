@@ -50,6 +50,6 @@ npx wrangler d1 execute cclevel-board --local --file=schema.sql
 npx wrangler dev --test-scheduled
 ```
 
-The public files are rebuilt by a timer (every six hours) that does not fire in local development. Open `http://localhost:8787/cdn-cgi/handler/scheduled` to rebuild them by hand.
+The public files are rebuilt by a timer (every hour) that does not fire in local development. Open `http://localhost:8787/cdn-cgi/handler/scheduled` to rebuild them by hand.
 
 A note for self-hosters: `wrangler dev` is a development tool and keeps its own local traces of each request (method, address of the page, status, time) and its own copy of the limiter's counters under `.wrangler/`. The deployed service does neither, because `wrangler.jsonc` switches request logging off. Keep it that way.
