@@ -6,7 +6,7 @@
 		{
 			"name": "cclevel",
 			"source": "./",
-			"description": "Scores your Claude Code setup and shows it as a creature that grows. Offline by default; the leaderboard is opt-in.",
+			"description": "Scores your Claude Code setup and shows it as a creature that grows. Joins the public leaderboard by default under a generated name; opt out any time with /pet leave.",
 			"category": "productivity"
 		}
 	]

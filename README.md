@@ -7,7 +7,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d97757)](#install)
 [![Privacy](https://img.shields.io/badge/sends-9_numbers-d97757)](PRIVACY.md)
 
-CC level (`cclevel` for short: the plugin, the script and this repository) turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. If you like, you can put the creature on a public board or compare it with friends in a private group. No account, no name, nine numbers.
+CC level (`cclevel` for short: the plugin, the script and this repository) turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. From the next Claude Code start, the creature is on a public board under a generated name, and you can compare it with friends in a private group. No account, no name, nine numbers. Opting out is one command: `/pet leave`.
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
@@ -64,7 +64,9 @@ claude plugin install cclevel --marketplace Spider333/cclevel
 
 Then run `/pet`. If you already have a command called `pet`, use `/cclevel:pet`.
 
-**Updating.** Claude Code does not update plugins from this marketplace by itself until you say so. Once, in Claude Code: `/plugin` → Marketplaces → cclevel → **Enable auto-update**, and new versions arrive on their own. To update now: `/plugin` → Marketplaces → cclevel → Update marketplace, then `/reload-plugins`; or from a shell, `claude plugin marketplace update cclevel` and `claude plugin update cclevel@cclevel`. Duels and the share card need 0.4.0 or newer.
+**On the board by default.** From the next Claude Code start, the plugin puts your creature on the public board under a generated name, lists it from its second day, and checks in once a day in the background: nine numbers and badge codes, no account, nothing you wrote. Don't want that? **`/pet leave` opts out in one command**, before or after it joins: it deletes your row, if there is one, and the plugin never joins again by itself. To stay on the board for groups and duels but off the public lists, use `/pet world off`.
+
+**Updating.** Claude Code does not update plugins from this marketplace by itself until you say so. Once, in Claude Code: `/plugin` → Marketplaces → cclevel → **Enable auto-update**, and new versions arrive on their own. To update now: `/plugin` → Marketplaces → cclevel → Update marketplace, then `/reload-plugins`; or from a shell, `claude plugin marketplace update cclevel` and `claude plugin update cclevel@cclevel`. Duels and the share card need 0.4.0 or newer. From 0.7.0 the board is on by default; if you left the board under an earlier version, run `/pet leave` once after updating, or the next session start joins you again.
 
 Without the plugin system, copy `skills/pet/` into `~/.claude/skills/`, or run the script directly:
 
@@ -79,7 +81,7 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | Feature | What it is | Sends anything? |
 |---|---|---|
 | **The card** | Level, six stats, mood, badges and the top things to fix. | No. Fully offline. |
-| **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Only if you join, and being listed is a second choice. |
+| **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Yes, by default: nine numbers a day. Opt out with `/pet leave`. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
 | **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
 | **Share card** | Your card as a picture to post, drawn in your browser. | No. The numbers stay in the link after `#`. |
@@ -106,18 +108,19 @@ Anyone with the link can join until the group is full, so share it with friends 
 
 | | |
 |---|---|
-| **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running, no telemetry. The one hook does nothing unless you turn on auto check-in. |
-| **Where data goes** | Only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only when you use an opt-in command: joining, check-ins (also the opt-in daily auto check-in), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. |
+| **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running. |
+| **The board** | On by default. The plugin's one hook joins the board at the first Claude Code start and checks in once a day. `/pet leave` opts out in one command and the hook then sends nothing. |
+| **Where data goes** | Only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only for the board: joining and the daily check-in (both on by default), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
 | **Never sent** | Your name, e-mail, prompts, code, file paths, or the names of your projects, skills or connectors. |
 | **The board stores** | No account, no e-mail, no IP address, and no request logs. A creature is its score, a generated name, the key's hash and a few dates and counters. |
-| **You control** | `--world off` (off the lists at once), `--group-leave`, `--duel-leave`, `--leave` (deletes your row). A row with no check-in for 180 days deletes itself. |
+| **You control** | `--leave` (opts out: deletes your row and never joins again by itself), `--world off` (off the lists at once), `--auto off`, `--group-leave`, `--duel-leave`. A row with no check-in for 180 days deletes itself. |
 
 The word is **pseudonymous, not anonymous**: a row stays linked to the key on your machine. [PRIVACY.md](PRIVACY.md) lists every field, every request and what we cannot promise.
 
 ## Commands
 
-In Claude Code, `/pet` runs these for you. Network commands ask first, and so does Claude Code's permission prompt.
+In Claude Code, `/pet` runs these for you. Network commands you run ask first, and so does Claude Code's permission prompt. The session-start hook joins and checks in on its own until you opt out with `--leave`.
 
 | Command | What it does |
 |---|---|
@@ -126,10 +129,10 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--no-save` | Score without touching the ledger. |
 | `--preview` | Print exactly what a check-in would send. Sends and saves nothing. |
 | `--rank` | Your place on the world lists, the XP to pass the next place, and how rare your badges are, worked out locally from the public files. Uploads nothing. |
-| `--join` | Join the board. Shows the payload and asks first. If already joined, it sends nothing. |
+| `--join` | Join the board by hand, with the world ranking and auto check-in on (the hook usually did it already). Shows the payload and asks first. If already joined, it sends nothing. |
 | `--sync` | Check in. One accepted check-in per day. |
-| `--auto on` / `--auto off` | Check in by itself once a day, in the background, when a Claude Code session starts (on asks first). Off by default; sends nothing when you switch it. |
-| `--world on` / `--world off` | Be ranked on the public world lists, or not. Off at joining; on asks first; off works at once. |
+| `--auto on` / `--auto off` | Check in by itself once a day, in the background, when a Claude Code session starts (on asks first). On from joining; sends nothing when you switch it. Before joining, off keeps the hook from joining too. |
+| `--world on` / `--world off` | Be ranked on the public world lists, or not. On at joining; on asks first; off works at once. |
 | `--group-create` | Start a private group (asks first) and print its invite link. |
 | `--group-join LINK` | Join a friend's group with its invite link or code (asks first). If you are not on the board yet, one yes joins the board and the group. Without LINK, type it at a hidden prompt. |
 | `--group` | Show your group: names, levels, XP since joining, season XP, this week's XP with the ♛ weekly crown, Aura, sus marks. |
@@ -146,7 +149,7 @@ In Claude Code, `/pet` runs these for you. Network commands ask first, and so do
 | `--tips on` / `--tips off` | A how-to under each Need and one Claude Code tip a day on the card. Off by default; kept on this machine, sends nothing. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
-| `--leave` | Delete your row and the local token. |
+| `--leave` | Opt out: delete your row and the local token, and never join again by itself. Before joining, it only opts out. |
 | `--server URL` | Use a self-hosted board. A creature only talks to the board it joined. |
 | `--claude-dir DIR` | Scan another folder. |
 
@@ -174,7 +177,7 @@ The full rules, every name and the known limits are in [docs/scoring.md](docs/sc
 
 - **It ranks only what it saw.** After joining, a creature gains at most 550 XP per active day on the board, without badge XP. Its history and reported level never rank, so editing your local files does not get you to the top.
 - **Two lists:** Season (this month) and All-time, top 1,000 each. Below that, "top X%" bands, and `--rank` works out your place on your own machine.
-- **Listing is a choice.** Joining does not list you; `--world on` does, from your second day of check-ins.
+- **Listed by default, off in one command.** Joining lists you from your second day of check-ins; `--world off` takes you off at once.
 - **Sus** marks a creature whose witnessed days nearly all hit the daily maximum. It changes nothing else.
 - **Totals** for analysis (creatures per level, class, stat range and badge) appear once 100 creatures are counted.
 - **Four reasons to come back:**
@@ -196,7 +199,7 @@ Almost. It's pseudonymous: no account, no name, no e-mail, and the board never s
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
 
 **Does it slow down Claude Code or run in the background?**
-No. Nothing keeps running: it works when you call `/pet`. The one exception is opt-in: with auto check-in on (`/pet check in automatically`), a hook starts one quick check-in a day when Claude Code starts, without holding it up. While it is off, that hook sends nothing.
+No. Nothing keeps running: it works when you call `/pet`. The one exception: a hook starts one quick check-in a day when Claude Code starts (the first one joins the board), without holding it up. After `/pet leave` or `/pet auto off`, that hook sends nothing.
 
 **Does it read my prompts?**
 It reads your Claude Code folder to count things (days, tokens, tools used, prompt timestamps). Nothing from your prompts, code or file names is printed, stored or sent.
@@ -204,8 +207,8 @@ It reads your Claude Code folder to count things (days, tokens, tools used, prom
 **Why are invite links shown in full inside Claude Code?**
 So you can copy one. A link shown or pasted in a conversation becomes part of that chat's history. A link only grants a seat in that group, and you can always start a new group.
 
-**How do I get off the board?**
-`/pet leave the board`, or `--leave`. Your row is deleted at once; the database host's backups age out after up to 30 days (7 on the free plan).
+**How do I opt out, or get off the board?**
+`/pet leave`, or `--leave`. One command, before or after the plugin joins you: your row, if there is one, is deleted at once and the plugin never joins again by itself (`/pet join` brings you back); the database host's backups age out after up to 30 days (7 on the free plan).
 
 ## Contributing, security, licence
 

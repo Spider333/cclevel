@@ -37,7 +37,7 @@
 <ol class="toc" aria-label="On this page">
 <li><a href="#install">Install</a></li>
 <li><a href="#meet">Meet your creature</a></li>
-<li><a href="#join">Join the board</a></li>
+<li><a href="#join">You're on the board</a></li>
 <li><a href="#friends">Bring friends</a></li>
 <li><a href="#talk">Talk to /pet</a></li>
 <li><a href="#sent">What gets sent</a></li>
@@ -84,9 +84,10 @@
 
 <section class="step" id="join" aria-labelledby="join-title">
 <span class="step-num" aria-hidden="true">03</span>
-<h2 id="join-title">Join the board</h2>
-<p>Say <code>/pet join the leaderboard</code>. It shows you exactly what it would send and asks first. Joining doesn't list you publicly. To be ranked on the world lists, say <code>/pet put me on the world list</code>. You show up after check-ins on two different days.</p>
-<p>Check in once a day with <code>/pet check in</code>, or let it happen by itself: <code>/pet check in automatically</code> runs one quiet check-in a day when Claude Code starts (off until you say so). The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
+<h2 id="join-title">You're on the board</h2>
+<p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. You show on the lists after check-ins on two different days.</p>
+<p><b>Opting out is one command:</b> <code>/pet leave</code>. It works before or after your creature joins, deletes your row at once, and the plugin never joins again by itself. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet join the leaderboard</code>.</p>
+<p>The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
 </section>
 
 <section class="step" id="friends" aria-labelledby="friends-title">
@@ -104,16 +105,16 @@
 <section class="step" id="talk" aria-labelledby="talk-title">
 <span class="step-num" aria-hidden="true">05</span>
 <h2 id="talk-title">Talk to /pet</h2>
-<p>Just say what you want. Anything that sends something asks first.</p>
+<p>Just say what you want. Anything you ask for that sends something asks first; <code>/pet leave</code> opts out at once.</p>
 <div class="scroll">
 <table class="cheat">
 <thead><tr><th>Say</th><th>What happens</th></tr></thead>
 <tbody>
 <tr><td><code>/pet</code></td><td>Your card. Offline.</td></tr>
-<tr><td><code>/pet join the leaderboard</code></td><td>Join the board (shows the data, asks first)</td></tr>
+<tr><td><code>/pet join the leaderboard</code></td><td>Join by hand after opting out (shows the data, asks first)</td></tr>
 <tr><td><code>/pet check in</code></td><td>Update your row, once a day</td></tr>
-<tr><td><code>/pet check in automatically</code></td><td>One quiet check-in a day when Claude Code starts; <code>stop checking in automatically</code> turns it off</td></tr>
-<tr><td><code>/pet put me on the world list</code></td><td>Be ranked publicly; <code>off</code> works at once</td></tr>
+<tr><td><code>/pet stop checking in automatically</code></td><td>Ends the quiet daily check-in (on from joining); <code>check in automatically</code> turns it back on</td></tr>
+<tr><td><code>/pet take me off the world list</code></td><td>Stay on the board, off the public lists, at once; <code>put me back</code> asks first</td></tr>
 <tr><td><code>/pet rank me</code></td><td>Your place, the XP to pass the next one, and how rare your badges are; worked out on your machine, uploads nothing</td></tr>
 <tr><td><code>/pet start a group</code></td><td>A private group and its invite link</td></tr>
 <tr><td><code>/pet join &lt;link&gt;</code></td><td>Join a friend's group</td></tr>
@@ -121,7 +122,7 @@
 <tr><td><code>/pet duel</code></td><td>Challenge one friend: seven days, most XP wins the ♛. <code>/pet duel &lt;link&gt;</code> accepts one</td></tr>
 <tr><td><code>/pet card</code></td><td>Your card as a picture to save and post; drawn in your browser, sends nothing</td></tr>
 <tr><td><code>/pet wrapped</code></td><td>Your year in review from your own ledger: XP, best day, longest streak, level gained, how your stats moved; sends nothing</td></tr>
-<tr><td><code>/pet leave the board</code></td><td>Delete your row at once</td></tr>
+<tr><td><code>/pet leave</code></td><td>Opt out: delete your row at once and never join again by itself</td></tr>
 </tbody>
 </table>
 </div>
@@ -210,7 +211,7 @@
 </details>
 <details>
 <summary>Privacy</summary>
-<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists only while its owner keeps the world ranking on; <code>--world off</code> and <code>--leave</code> take it off at once. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
+<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> and <code>--leave</code> take it off at once, and <code>--leave</code> also keeps the plugin from joining again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
 </details>
 </section>
 
