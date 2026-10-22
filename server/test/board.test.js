@@ -1313,6 +1313,55 @@ describe("source and configuration hygiene", () => {
 	});
 });
 
+describe("the hero film", () => {
+	const SIZE = 1000;
+	const bytes = Uint8Array.from({ length: SIZE }, (_, i) => i % 251);
+	const assets = { fetch: async () => new Response(bytes, { headers: { "content-type": "video/mp4", "content-length": String(SIZE) } }) };
+	const film = (headers = {}, method = "GET", binding = assets) =>
+		worker.fetch(new Request("https://board.test/hero-loop.mp4", { method, headers }), { ...env, ASSETS: binding });
+
+	it("sends the whole film without a range", async () => {
+		const res = await film();
+		expect(res.status).toBe(200);
+		expect(res.headers.get("accept-ranges")).toBe("bytes");
+		expect(res.headers.get("content-type")).toBe("video/mp4");
+		expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+	});
+
+	it("answers byte ranges with 206, as Safari needs to play it", async () => {
+		const first = await film({ range: "bytes=0-1" });
+		expect(first.status).toBe(206);
+		expect(first.headers.get("content-range")).toBe(`bytes 0-1/${SIZE}`);
+		expect(new Uint8Array(await first.arrayBuffer())).toEqual(bytes.slice(0, 2));
+		const tail = await film({ range: "bytes=990-" });
+		expect(tail.headers.get("content-range")).toBe(`bytes 990-999/${SIZE}`);
+		expect(new Uint8Array(await tail.arrayBuffer())).toEqual(bytes.slice(990));
+		const suffix = await film({ range: "bytes=-5" });
+		expect(suffix.headers.get("content-range")).toBe(`bytes 995-999/${SIZE}`);
+		expect(new Uint8Array(await suffix.arrayBuffer())).toEqual(bytes.slice(995));
+		const long = await film({ range: "bytes=500-5000" });
+		expect(long.headers.get("content-range")).toBe(`bytes 500-999/${SIZE}`);
+		const head = await film({ range: "bytes=0-1" }, "HEAD");
+		expect(head.status).toBe(206);
+		expect((await head.arrayBuffer()).byteLength).toBe(0);
+	});
+
+	it("refuses a range past the end and passes a missing file through", async () => {
+		const past = await film({ range: `bytes=${SIZE}-` });
+		expect(past.status).toBe(416);
+		expect(past.headers.get("content-range")).toBe(`bytes */${SIZE}`);
+		expect((await film({ range: "bytes=-0" })).status).toBe(416);
+		const missing = await film({}, "GET", { fetch: async () => new Response("gone", { status: 404 }) });
+		expect(missing.status).toBe(404);
+	});
+
+	it("is the only static file the Worker serves itself", () => {
+		const config = JSON.parse(wrangler.replace(/^\s*\/\/.*$/gm, ""));
+		expect(config.assets.binding).toBe("ASSETS");
+		expect(config.assets.run_worker_first).toEqual(["/api/*", "/board.json", "/top.json", "/hero-loop.mp4"]);
+	});
+});
+
 describe("the board's first address", () => {
 	it("passes the scanner's calls on unchanged and sends browsers to the new address", async () => {
 		const seen = [];

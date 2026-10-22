@@ -388,7 +388,9 @@
 	});
 
 	// The hero creature evolves from Egg to GOAT while its level counts up, then hatches again.
-	// Under reduced motion it stays as written in the page: one still GOAT.
+	// The 3D film plays it and the caption follows the film's clock; if the film cannot play
+	// (data saver on, file missing), the ASCII creature does it instead.
+	// Under reduced motion it stays as written in the page: the GOAT poster, one still GOAT.
 	(function evolve() {
 		var pre = el("evo-art");
 		if (!pre || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) return;
@@ -427,7 +429,53 @@
 			paint();
 			setTimeout(step, 900);
 		};
-		restart();
+		var video = el("evo-video");
+		var source = video && video.querySelector("source");
+		var ascii = function () {
+			if (video) video.remove();
+			restart();
+		};
+		if (!source || video.networkState === 3 || (navigator.connection && navigator.connection.saveData)) {
+			ascii();
+			return;
+		}
+		// The second in the film where each stage appears (index into stages); the level counts up in between.
+		var keys = [[0, 0], [2.5, 1], [4.4, 2], [6.3, 3], [7.8, 4], [10, 5], [14, 0]];
+		var name = el("evo-stage");
+		var frame = 0;
+		var tick = function () {
+			var t = video.currentTime;
+			var k = 0;
+			while (k + 1 < keys.length && t >= keys[k + 1][0]) k += 1;
+			var next = keys[k + 1];
+			level = stages[keys[k][1]][1];
+			if (next && stages[next[1]][1] > level) {
+				level = Math.round(level + ((stages[next[1]][1] - level) * (t - keys[k][0])) / (next[0] - keys[k][0]));
+			}
+			if (name.textContent !== stages[keys[k][1]][0]) {
+				name.textContent = stages[keys[k][1]][0];
+				name.classList.remove("pop");
+				void name.offsetWidth; // restart the pop animation
+				name.classList.add("pop");
+			}
+			paint();
+			frame = video.paused ? 0 : requestAnimationFrame(tick);
+		};
+		video.addEventListener("playing", function () {
+			if (!frame) frame = requestAnimationFrame(tick);
+		});
+		source.addEventListener("error", ascii);
+		var play = function () {
+			var p = video.play();
+			if (p) p.catch(function () {}); // autoplay refused: the poster and the caption stay as written
+		};
+		// Play only while the hero is on screen.
+		if ("IntersectionObserver" in window) {
+			new IntersectionObserver(function (entries) {
+				if (entries[0].isIntersecting) play();
+				else video.pause();
+			}).observe(video);
+		} else play();
 	})();
 
 	var load = function (path) {
