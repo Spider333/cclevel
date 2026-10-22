@@ -1985,7 +1985,7 @@ def show_rank(server, ident, result):
             if line:
                 print(line)
         if listed:
-            print("  As of the board's last update; it updates every six hours.")
+            print("  As of the board's last update; it updates every hour.")
     total, totals = board.get("creatures"), as_dict(board.get("totals"))
     levels = totals.get("levels")
     if sane(total) and total > 0 and counts(levels, LEVEL_MAX + 1):
@@ -2019,7 +2019,7 @@ def world_command(args, cdir, server, ident):
     if on and not args.yes:
         print("Turning the world ranking on lists %s on the public board at %s:" % (name, server))
         print("its generated name, stage, class, level, Aura, the XP the board witnessed and a sus mark if it applies.")
-        print("A creature shows once it has check-ins on two different days; the lists update every six hours.")
+        print("A creature shows once it has check-ins on two different days; the lists update every hour.")
         print("--world off takes it off the lists at once.")
         try:
             answer = input("Turn it on? [y/N] ") if sys.stdin.isatty() else ""
@@ -2039,7 +2039,7 @@ def world_command(args, cdir, server, ident):
     if not on:
         print("World ranking off. %s is off the public lists now." % name)
     elif reply["listed"]:
-        print("World ranking on. %s shows on the public lists from the next board update (every six hours)." % name)
+        print("World ranking on. %s shows on the public lists from the next board update (every hour)." % name)
     else:
         print("World ranking on. %s shows once it has check-ins on two different days." % name)
     return 0

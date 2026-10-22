@@ -48,9 +48,9 @@
 	],
 	// The GitHub badge needs a GitHub key with no permissions: `npx wrangler secret put GITHUB_TOKEN`.
 	// Without it, the badge answers "not available" and everything else works.
-	// The public files are rebuilt four times a day, which also keeps check-in times vague on them.
+	// The public files are rebuilt every hour, which keeps check-in times to the hour on them.
 	// Members of a private group see each other's check-ins at once.
 	"triggers": {
-		"crons": ["0 */6 * * *"]
+		"crons": ["0 * * * *"]
 	}
 }
