@@ -175,6 +175,22 @@ body.landing { --page: 66rem; }
 	.landing .tiles article:nth-child(n+4) { grid-column: span 3; }
 }
 
+/* What it measures: the six stats, one per card, then the one rule that matters. */
+.measure { display: flex; flex-direction: column; gap: 1.75rem; scroll-margin-top: 5rem; }
+.measure .lead { color: var(--muted); font-size: 1rem; }
+.stats { margin: 0; display: grid; grid-template-columns: 1fr; gap: 1rem; }
+.stats > div { display: flex; flex-direction: column; gap: .35rem; padding: 1rem 1.25rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
+.stats > div:hover { border-color: var(--accent); }
+.stats dt { font-size: 1.05rem; font-weight: 800; color: var(--accent); }
+.stats dd { margin: 0; font-size: .85rem; color: var(--muted); }
+@media (min-width: 600px) {
+	.stats { grid-template-columns: repeat(2, 1fr); }
+	.stats > div { padding: 1.3rem 1.5rem 1.2rem; gap: .4rem; }
+}
+@media (min-width: 900px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+.punch { font-size: .95rem; color: var(--muted); max-width: 72ch; padding-left: 1rem; border-left: 2px solid var(--accent); }
+.punch b { color: var(--fg); }
+
 /* Podium */
 #panel { display: flex; flex-direction: column; gap: 1.25rem; }
 .podium { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; align-items: end; }
