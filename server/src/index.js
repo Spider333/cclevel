@@ -809,10 +809,34 @@ async function file(env, name) {
 	});
 }
 
+// The hero film. Static assets answer every request with the whole file, but Safari only plays video from a
+// server that answers byte ranges (206), so the Worker slices the asset itself. The file is a few MB.
+async function film(request, env) {
+	const asset = await env.ASSETS.fetch(new URL("/hero-loop.mp4", request.url));
+	if (!asset.ok) return asset;
+	const body = await asset.arrayBuffer();
+	const size = body.byteLength;
+	const headers = new Headers(asset.headers);
+	headers.delete("content-length"); // the runtime sets it for the body actually sent
+	headers.set("accept-ranges", "bytes");
+	const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") || "");
+	if (!range || (range[1] === "" && range[2] === "")) {
+		return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
+	}
+	const start = range[1] === "" ? Math.max(0, size - Number(range[2])) : Number(range[1]);
+	const end = range[1] === "" || range[2] === "" ? size - 1 : Math.min(Number(range[2]), size - 1);
+	if (start > end || start >= size) {
+		return new Response(null, { status: 416, headers: { "content-range": `bytes */${size}` } });
+	}
+	headers.set("content-range", `bytes ${start}-${end}/${size}`);
+	return new Response(request.method === "HEAD" ? null : body.slice(start, end + 1), { status: 206, headers });
+}
+
 export default {
 	async fetch(request, env) {
 		const { pathname } = new URL(request.url);
 		try {
+			if (pathname === "/hero-loop.mp4" && (request.method === "GET" || request.method === "HEAD")) return await film(request, env);
 			if (pathname === "/api/checkin" && request.method === "POST") return await checkin(request, env);
 			if (pathname === "/api/entry" && request.method === "DELETE") return await leave(request, env);
 			if (pathname === "/api/world" && request.method === "PUT") return await world(request, env);

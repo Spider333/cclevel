@@ -129,6 +129,7 @@ body.landing { --page: 66rem; }
 .landing .ctas { margin-top: .6rem; gap: .8rem; }
 .landing .btn { padding: .8rem 1.4rem; }
 .landing .evolve { padding: 3.75rem 2rem 2.75rem; gap: 1.25rem; }
+.landing .evolve:has(video) { padding: 1rem 1rem 1.75rem; }
 .landing .evolve pre { font-size: clamp(1.8rem, 3.6vw, 2.8rem); }
 .landing .evolve figcaption { font-size: 1rem; }
 /* The checks run as one line under the whole hero. */
@@ -262,7 +263,12 @@ h1 .hl { color: var(--accent); }
 .evolve { margin: 0; display: flex; flex-direction: column; align-items: center; gap: .7rem; padding: 2rem 1rem 1.4rem; border: 1px solid var(--line); border-radius: 16px; background: radial-gradient(circle at 50% 40%, var(--glow), transparent 65%), var(--surface); min-width: 0; }
 .evolve pre { font-size: clamp(1.4rem, 5vw, 2rem); line-height: 1.15; color: var(--fg); min-height: 4.6em; display: flex; align-items: center; }
 .evolve pre.pop { animation: pop .35s ease-out; }
+/* The film replaces the ASCII creature; the script removes the film and brings the ASCII back if it cannot play. */
+.evolve video { display: block; width: 100%; height: auto; aspect-ratio: 1; border-radius: 12px; background: var(--bg); }
+.evolve video + pre { display: none; }
 .evolve figcaption { display: flex; gap: .7rem; align-items: baseline; font-size: .9rem; }
+.evolve figcaption b { display: inline-block; }
+.evolve figcaption b.pop { animation: pop .35s ease-out; }
 .evolve figcaption span { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 4.5ch; }
 .xpbar { display: block; width: 80%; height: .5rem; border: 1px solid var(--line); border-radius: 99px; overflow: hidden; background: var(--raised); }
 .xpbar > span { display: block; height: 100%; width: 100%; background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 8px); }

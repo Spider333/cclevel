@@ -13,7 +13,9 @@
 		"directory": "./public",
 		// Unknown paths get the static 404 page and do not wake the Worker.
 		"not_found_handling": "404-page",
-		"run_worker_first": ["/api/*", "/board.json", "/top.json"]
+		// The hero film goes through the Worker so it can answer byte ranges, which Safari needs to play video.
+		"binding": "ASSETS",
+		"run_worker_first": ["/api/*", "/board.json", "/top.json", "/hero-loop.mp4"]
 	},
 	"d1_databases": [
 		{
