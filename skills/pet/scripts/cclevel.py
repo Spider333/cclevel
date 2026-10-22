@@ -8,8 +8,9 @@ The card is fully offline, and so are --card, which only prints a link, and
 the opt-in training (--learn, --tips), which is text shipped here. The
 network is used only by --join, --sync, --world, the --group and --duel
 commands, the GitHub badge commands, --leave and --rank, and by the
-plugin's session-start hook (--auto-run) once a day after the user turned
-it on with --auto on; and only for what payload() returns, the world
+plugin's session-start hook (--auto-run): it joins the board once on a
+machine that has not opted out (--leave), then checks in once a day while
+auto check-in is on; and only for what payload() returns, the world
 choice, a group or duel invite code and a GitHub login with the hash of a
 code.
 """
@@ -976,9 +977,10 @@ def need_text(n):
     return "missing: %s (Brains +%d)" % (BRAINS[int(n["code"].split("_")[1]) - 1], g)
 
 
-def render(r, joined=True, how=False, tip=None):
-    """The card. On a machine that is not on the board (`joined` false) with XP banked in the last 7 days, the last lines
-    say how much of it will never rank: the board counts only XP it sees after joining. Worked out here; nothing is sent.
+def render(r, board="on", how=False, tip=None, creature=None):
+    """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (the session-start hook joins it next
+    time) or "off" (opted out). Off, with XP banked in the last 7 days, the last lines say how much of it will never rank:
+    the board counts only XP it sees after joining. Worked out here; nothing is sent.
     With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
@@ -1016,7 +1018,11 @@ def render(r, joined=True, how=False, tip=None):
         stat, (_, text, page) = tip
         out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
-    if not joined and raw["xp_7d"] > 0:
+    if board == "on" and creature:
+        out.append("  On the board as %s. Opt out any time: /pet leave." % creature)
+    elif board == "soon":
+        out.append("  Joins the board at the next Claude Code start: nine numbers, no names. Opt out any time: /pet leave.")
+    if board == "off" and raw["xp_7d"] > 0:
         out += ["  Not on the board yet: your last 7 days earned {:,} XP that will never rank.".format(raw["xp_7d"]),
                 "  Start counting: /pet join the leaderboard. Post it as an image: /pet card."]
     else:
@@ -1327,6 +1333,31 @@ def left_path(cdir):
     return os.path.join(os.path.dirname(identity_path(cdir)), "left")
 
 
+def off_path(cdir):
+    return os.path.join(os.path.dirname(identity_path(cdir)), "opted-out")
+
+
+def opted_out(cdir):
+    """True once --leave (or --auto off before joining) has kept this machine off the board. Anything at the path counts."""
+    return os.path.lexists(off_path(cdir))
+
+
+def opt_out(cdir):
+    """Keeps the session-start hook from ever joining this machine. Written under the board lock."""
+    os.makedirs(os.path.dirname(off_path(cdir)), exist_ok=True)
+    write_private(off_path(cdir), "off\n")
+
+
+def opt_back_in(cdir):
+    """A join by hand: the hook may check in again. A note that cannot be removed only stops the hook joining afresh."""
+    try:
+        os.remove(off_path(cdir))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        clear_odd(off_path(cdir))
+
+
 def write_private(path, text):
     """A small private file, replaced in one step: readers see the old one or the new one, never half of it."""
     try:
@@ -1499,7 +1530,7 @@ def remember(cdir, ident, reply, create=False):
 
     def change(now):
         if not now.get("token"):
-            now.update(token=ident["token"], server=ident["server"], name=ident["name"])
+            now.update(ident)   # a first join: the new token, its board, and auto check-in on
         now.update(numbers)
     saved = update_identity(cdir, ident["token"], change, create=create)
     if saved is not None:
@@ -1648,16 +1679,17 @@ def join_terms(data, server):
     """What joining the board sends and means, shown before the first check-in."""
     print(json.dumps(data, indent=1))
     print("\nJoining sends exactly this to %s, with a random token made on this machine." % server)
-    print("It does not put you on the public lists: the world ranking stays off until you run --world on.")
-    print("Every creature with check-ins on two different days is counted in the board's public totals")
-    print("(how many creatures per level, stat range, class, stage and badge), listed or not.")
+    print("It also turns on the world ranking (your generated name, stage, class, level, Aura and witnessed XP on the public")
+    print("lists) and a quiet check-in once a day when a Claude Code session starts. Opt out any time: --world off, --auto off,")
+    print("or --leave to delete your row. Every creature with check-ins on two different days is counted in the board's public")
+    print("totals (how many creatures per level, stat range, class, stage and badge), listed or not.")
 
 
 def group_terms(create):
     print("%s a private group. Its members, up to %d, see each other's generated name, level, XP since joining,"
           % ("Starting" if create else "Joining", GROUP_MAX))
     print("season XP, six stats and sus mark, as soon as each one checks in. No other creature can see the group.")
-    print("Being in a group does not put you on the world lists. --group-leave leaves at once.")
+    print("Being in a group does not change your world ranking. --group-leave leaves at once.")
 
 
 START_COUNTING = "Check in today (--sync), or turn on --auto on: duel XP counts only after a check-in from today on."
@@ -1668,7 +1700,7 @@ def duel_terms(create):
           % ("Starting" if create else "Accepting", DUEL_DAYS))
     print("It starts at 00:00 UTC the day after it is accepted. Duel XP counts from each side's first check-in on or after")
     print("the day it is accepted. The two of you see each other's generated name, level, duel XP, six stats and sus mark.")
-    print("Nobody else can see the duel, and it does not put you on the world lists.")
+    print("Nobody else can see the duel, and it does not change your world ranking.")
     print("A duel sits beside your group, if you have one. --duel-leave leaves at once.")
 
 
@@ -1958,7 +1990,7 @@ def show_rank(server, ident, result):
     witnessed, season = ident.get("witnessed_xp"), ident.get("season_xp")
     if not ident or not sane(witnessed):
         print("World list: {:,} creatures ranked.".format(lists["all"][0]))
-        print("Ranks count only the XP the board saw you earn after joining. Join with --join, check in, then --world on.")
+        print("Ranks count only the XP the board saw you earn after joining. Join with --join and check in.")
     else:
         listed = ident.get("world") is True
         if not listed:
@@ -2047,6 +2079,15 @@ def world_command(args, cdir, server, ident):
 
 def auto_command(args, cdir, ident):
     """Turn the daily auto check-in on (asks first) or off. A choice kept on this machine only: nothing is sent."""
+    if not ident and args.auto == "off":
+        # Before joining, off means the session-start hook never joins this machine. Under the board lock, so a hook
+        # already joining finishes first; if it did, its auto check-in is turned off below.
+        with board_lock(cdir, 30):
+            opt_out(cdir)
+            ident = load_identity(cdir)
+        if not ident:
+            print("Auto check-in off. This machine will not join the board by itself; --join joins by hand.")
+            return 0
     if not ident:
         print("Not joined. Run with --join first.")
         return 1
@@ -2198,10 +2239,14 @@ def auto_wanted(cdir, token):
 
 
 def auto_run(cdir, args, default_dir):
-    """The plugin's session-start hook. Without --auto on it reads one file and stops; with it, one quiet check-in a UTC day."""
+    """The plugin's session-start hook. On a machine that has not joined and has not opted out, it joins the board with
+    the defaults (world ranking and auto check-in on); with auto check-in on, one quiet check-in a UTC day. Otherwise it
+    reads a file or two and stops."""
     ident = load_identity(cdir)
     token = ident.get("token")
-    if not token or ident.get("auto") is not True or ident.get("auto_day") == today_utc():
+    if token and (ident.get("auto") is not True or ident.get("auto_day") == today_utc()):
+        return 0
+    if not token and opted_out(cdir):
         return 0
     # Nothing reaches the screen or Claude's context: the hook runs in the background and its output is discarded here too.
     sys.stdout = sys.stderr = open(os.devnull, "w")
@@ -2211,9 +2256,26 @@ def auto_run(cdir, args, default_dir):
     # One board write at a time: when a check-in or a leave from this machine is under way, this session stops at once.
     try:
         with board_lock(cdir, 0):
-            return auto_once(cdir, token, server, default_dir)
+            return auto_once(cdir, token, server, default_dir) if token else auto_join(cdir, server, default_dir)
     except Busy:
         return 0
+
+
+def auto_join(cdir, server, default_dir):
+    """The first session start on a machine that is not on the board: one join, as --join --yes would make it."""
+    # Read again now that this hook holds the lock: the owner may have opted out, or another session joined, meanwhile.
+    if opted_out(cdir) or load_identity(cdir):
+        return 0
+    real = os.path.realpath(cdir) == os.path.realpath(default_dir)
+    result = score(cdir, machine_jobs=real, save=True)
+    token = secrets.token_hex(32)
+    try:
+        rc, _ = checked_in(cdir, server, {}, token, payload(result), result)
+    except SystemExit:
+        return 0   # the board could not be reached: the next session start tries again
+    if rc == 0:   # the join was today's check-in
+        update_identity(cdir, token, lambda now: now.update(auto_day=today_utc()), require=lambda now: now.get("auto") is True)
+    return 0
 
 
 def auto_once(cdir, token, server, default_dir):
@@ -2278,16 +2340,18 @@ def board_command(args, cdir, result):
                 return duel_command(args, cdir, server, ident, data, result)
             return group_command(args, cdir, server, ident, data, result)
     if args.leave:
-        if not ident:
-            print("Not on the board, nothing to leave.")
-            return 0
-        # Under the board lock: a check-in from this machine already on its way finishes first, and none starts until the
-        # row and the token are gone. If this run is stopped half way, nothing is left half done.
-        token = ident["token"]
+        # Under the board lock: a check-in from this machine already on its way (the session-start hook's first join too)
+        # finishes first, and none starts until the row and the token are gone. If this run is stopped half way, nothing
+        # is left half done.
         with board_lock(cdir, 30):
-            if load_identity(cdir).get("token") != token:
-                print("Not on the board, nothing to leave.")
+            # The opt-out comes first, so the session-start hook never joins this machine again, whatever happens next.
+            opt_out(cdir)
+            ident = load_identity(cdir)
+            if not ident:
+                print("Opted out. This machine is not on the board and will not join it by itself; --join joins by hand.")
                 return 0
+            token = ident["token"]
+            server = resolve_server(args, ident)
             status, reply = call(server, "DELETE", "/api/entry", token)
             if status != 200 or type(reply.get("deleted")) is not bool:
                 print("cclevel: the board did not confirm the deletion (HTTP %d). The token is kept so you can retry." % status)
@@ -2321,6 +2385,7 @@ def board_command(args, cdir, result):
             print("Left the board. Your row is deleted and %s." % token_line)
         else:
             print("The board had no row for this token. %s%s." % (token_line[0].upper(), token_line[1:]))
+        print("This machine will not join again by itself; --join joins by hand.")
         return 0
     if ident and args.join:
         print("Already on the board as %s. Use --sync to check in. Nothing sent." % creature_name(ident["token"]))
@@ -2362,9 +2427,9 @@ def checked_in(cdir, server, ident, token, data, result):
     if type(level) is not int or not 1 <= level <= LEVEL_MAX:
         print("cclevel: the board sent a reply this copy of cclevel does not understand. Nothing was saved.")
         return 1, ident
-    # The token is kept only once the board has taken the first check-in.
+    # The token is kept only once the board has taken the first check-in. A first join turns on auto check-in.
     joined = bool(ident)
-    ident = ident or {"token": token, "server": server, "name": name}
+    ident = ident or {"token": token, "server": server, "name": name, "auto": True}
     try:
         saved = remember(cdir, ident, reply, create=not joined)
     except (OSError, Busy) as e:
@@ -2376,6 +2441,19 @@ def checked_in(cdir, server, ident, token, data, result):
     if saved is None:
         print("cclevel: this machine's board settings changed while checking in. Run it again.")
         return 1, load_identity(cdir)
+    if not joined:
+        opt_back_in(cdir)
+        # ...and the world ranking. Still under the board lock, so a --leave cannot cross it.
+        try:
+            status, listing = call(server, "PUT", "/api/world", token, {"on": True})
+        except SystemExit:
+            status, listing = 0, {}   # joined all the same; the line below says how to turn it on
+        if status == 200 and listing.get("world") is True and type(listing.get("listed")) is bool:
+            reply = dict(reply, world=True, listed=listing["listed"])
+            try:
+                remember(cdir, ident, listing)
+            except (OSError, Busy):
+                pass   # the board has the choice; the local copy catches up at the next check-in
     stage = next(s for floor, s in STAGES if level >= floor)
     print("You are %s · %s %s · Lv %d" % (name, stage, result["class"], level))
     witnessed, season = reply.get("witnessed_xp"), reply.get("season_xp")
@@ -2390,6 +2468,8 @@ def checked_in(cdir, server, ident, token, data, result):
         print("World ranking: on, listed.")
     else:
         print("World ranking: on. You show once you have check-ins on two different days.")
+    if not joined:
+        print("Auto check-in: on, once a day when a Claude Code session starts. Opt out any time: --leave.")
     line = badge_line(reply.get("verified"), reply.get("commits"))
     if line:
         print(line)
@@ -2436,7 +2516,7 @@ def main():
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
-    board.add_argument("--leave", action="store_true", help="delete your row and the local token")
+    board.add_argument("--leave", action="store_true", help="opt out: delete your row and the local token, and never join by itself again")
     board.add_argument("--rank", action="store_true", help="compare with the public board; uploads nothing")
     board.add_argument("--auto", choices=("on", "off"),
                        help="check in once a day by itself when a Claude Code session starts (on asks first); sends nothing now")
@@ -2489,8 +2569,11 @@ def main():
         print(json.dumps({k: v for k, v in result.items() if k != "lessons"}, indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
-        # Whether this machine is on the board is read from its own token file; nothing is sent.
-        print(render(result, joined=bool(load_identity(cdir)), how=how, tip=tip))
+        # Whether this machine is on the board is read from its own files; nothing is sent. Only the folder Claude Code
+        # itself uses gets the session-start hook, so only that one joins by itself.
+        token = load_identity(cdir).get("token")
+        board = "on" if token else "soon" if real and not opted_out(cdir) else "off"
+        print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token)))
 
 
 if __name__ == "__main__":

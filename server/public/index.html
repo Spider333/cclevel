@@ -36,7 +36,7 @@
 <p class="eyebrow">Claude Code, gamified</p>
 <h1>How big is your<br><span class="hl">Claude&nbsp;Code</span>?</h1>
 <p class="tagline"><span>Measure it.</span> <span>Compare it.</span> <span>Stay nameless.</span></p>
-<p class="lede">CC level turns your setup into a creature that levels up as you actually use it. Put it on the world board, or race your friends in private.</p>
+<p class="lede">CC level turns your setup into a creature that levels up as you actually use it. It lands on the world board by itself, and you can race your friends in private.</p>
 <div class="ctas">
 <a class="btn primary" href="#install">Install it ↓</a>
 <a class="btn" href="#board">See the board ↓</a>
@@ -67,6 +67,7 @@
 <div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
 </div>
 <p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
+<p class="note">From your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Opting out is one command: <code>/pet leave</code>.</p>
 <p class="note">Already have it? Update: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. Pick Enable auto-update there too, and new features arrive on their own.</p>
 </section>
 
@@ -83,7 +84,7 @@
 <span class="tile-num">02</span>
 <h3>The world board</h3>
 <p>Season and all-time lists, ranked only on XP the board watched you earn. Max 550 a day, and a rival to beat.</p>
-<span class="tag">only if you join</span>
+<span class="tag">on by default · /pet leave opts out</span>
 </article>
 <article>
 <span class="tile-num">03</span>
@@ -173,7 +174,7 @@
 </details>
 <details>
 <summary>Does it slow down Claude Code or run in the background?</summary>
-<p>No. Nothing keeps running: it works when you call <code>/pet</code>. The one exception is opt-in: with auto check-in on, a hook starts one quick check-in a day when Claude Code starts, without holding it up. While it's off, that hook sends nothing.</p>
+<p>No. Nothing keeps running: it works when you call <code>/pet</code>. The one exception: a hook starts one quick check-in a day when Claude Code starts (the first one puts you on the board), without holding it up. After <code>/pet leave</code>, that hook sends nothing.</p>
 </details>
 <details>
 <summary>Does it read my prompts?</summary>
@@ -184,8 +185,8 @@
 <p>So you can copy one. A link shown or pasted in a conversation becomes part of that chat's history. It only grants a seat in that group, and you can always start a new group.</p>
 </details>
 <details>
-<summary>How do I get off the board?</summary>
-<p>Ask <code>/pet</code> to leave the board. Your row is deleted at once; the database host's backups age out after up to 30 days (7 on the free plan). <a href="/how#fine-print">More in the fine print</a>.</p>
+<summary>How do I opt out?</summary>
+<p>Type <code>/pet leave</code>. One command, before or after your creature joins: your row is deleted at once and the plugin never joins again by itself. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Backups of a deleted row age out after up to 30 days (7 on the free plan). <a href="/how#fine-print">More in the fine print</a>.</p>
 </details>
 </section>
 

@@ -1,6 +1,6 @@
 # Privacy
 
-Short version: the card is offline. The leaderboard is opt-in, takes nine numbers and a list of badge codes, and needs no account. Being listed publicly is a second, separate choice. More extras are optional and send one thing each: an invite code for a private group or a duel, and a GitHub login for the verified badge.
+Short version: the card is offline. The leaderboard is on by default: from version 0.7.0, the first time a Claude Code session starts with the plugin installed, your machine joins the board under a generated creature name, is listed on the world board, and checks in once a day. A check-in is nine numbers and a list of badge codes, with no account, no names and nothing you wrote. Opting out is one command, `/pet leave` (`--leave`): it deletes your row, if there is one, and keeps this machine off the board for good. `--world off` keeps your creature off the public lists and `--auto off` stops the daily check-in. More extras are optional and send one thing each: an invite code for a private group or a duel, and a GitHub login for the verified badge.
 
 ## What runs where
 
@@ -9,12 +9,13 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 | the card (default) | none | nothing |
 | `--preview` | none | nothing; it prints what a check-in would send |
 | `--rank` | one download of the public numbers file, and of the public list when someone in it is ahead of you (to name your rival) | nothing about you is uploaded |
-| `--join`, `--sync` | one request to the board | the payload below, and a random token |
+| `--join` | two requests to the board | the payload below and a random token, then the token and `{"on": true}` to turn the world ranking on |
+| `--sync` | one request to the board | the payload below, and the token |
 | `--world on`, `--world off` | one request to the board | the token, and `{"on": true}` or `{"on": false}` |
-| `--group-create`, `--group-join LINK` | one request to the board (two when joining from an invite before you are on the board: the first check-in, then the group) | the token and the group's invite code (and, to start a group, `"new": true`); never the address in a link |
+| `--group-create`, `--group-join LINK` | one request to the board (three when joining from an invite before you are on the board: the first check-in, the world ranking, then the group) | the token and the group's invite code (and, to start a group, `"new": true`); never the address in a link |
 | `--group`, `--group-leave` | one request to the board | the token |
 | `--group-code` | none | nothing; it shows the saved invite link |
-| `--duel-create`, `--duel-join LINK` | one request to the board (two when accepting from an invite before you are on the board: the first check-in, then the duel) | the token and the duel's invite code (and, to start a duel, `"new": true`); never the address in a link |
+| `--duel-create`, `--duel-join LINK` | one request to the board (three when accepting from an invite before you are on the board: the first check-in, the world ranking, then the duel) | the token and the duel's invite code (and, to start a duel, `"new": true`); never the address in a link |
 | `--duel`, `--duel-leave` | one request to the board | the token |
 | `--duel-code` | none | nothing; it shows the saved duel invite link |
 | opening an invite link (group or duel) in a browser | one request for the invite page | nothing about you; the code after `#` stays in your browser and the page makes no request with it |
@@ -24,13 +25,14 @@ Short version: the card is offline. The leaderboard is opt-in, takes nine number
 | `--verify-github LOGIN`, first run | one request to the board | the token, the GitHub login and the SHA-256 hash of a code made on your machine |
 | `--verify-github LOGIN`, second run | one request to the board | the token; the board then looks at that account's public gists and counts its public commits |
 | `--unverify-github` | one request to the board | the token |
-| `--leave` | one request to the board | the token, to delete your row |
-| `--auto on`, `--auto off` | none | nothing; the choice is kept in `identity.json` on your machine |
+| `--leave` | one request to the board (none when this machine is not on it) | the token, to delete your row. It also writes a note, `opted-out`, on your machine, so the session-start hook never joins it again |
+| `--auto on`, `--auto off` | none | nothing; the choice is kept in `identity.json` on your machine. Before this machine has joined, `--auto off` writes the `opted-out` note too |
 | `--learn` | none | nothing; the lessons it ticked are kept in `training.json` on your machine |
 | `--tips on`, `--tips off` | none | nothing; the choice and the tips already shown are kept in `training.json` on your machine |
-| a Claude Code session starts, with `--auto on` | one check-in per UTC day, in the background; a try that fails is repeated at the next session start | the same as `--sync` |
+| a Claude Code session starts, on a machine that has not joined and has not opted out | one join, in the background, the same as `--join` | the same as `--join`: the payload, a new random token, then `{"on": true}` |
+| a Claude Code session starts, with auto check-in on | one check-in per UTC day, in the background; a try that fails is repeated at the next session start | the same as `--sync` |
 
-The plugin ships one hook, for the optional auto check-in, and nothing that keeps running. Until you turn auto check-in on with `--auto on`, the hook reads a file or two on your machine when a Claude Code session starts and stops; it sends nothing. With it on, the hook runs one check-in a UTC day, in the background, and prints nothing; a try that fails is repeated at the next session start. `--auto off` stops it: no new check-in starts after that, though one already on its way still arrives. `--leave` waits for a check-in from this machine that is still running, then deletes the row. Only a check-in from a run that was killed, or gave up waiting for the board, while its request was on the way could still reach the board after that; such a row has a single day of check-ins and is deleted after 7 days. Inside Claude Code the plugin pre-approves only the offline commands. Network commands are left to Claude Code's normal permission rules, so with default settings each one asks first.
+The plugin ships one hook and nothing that keeps running. When a Claude Code session starts on a machine that is not on the board and has not opted out, the hook joins it: one check-in with a new random token, then the world ranking on, in the background and printing nothing; a try that fails is repeated at the next session start. From then on, with auto check-in on (it comes on with the join), the hook runs one check-in a UTC day the same way. Your next `/pet` card says which creature you are and how to opt out. On a machine that opted out, or that joined before version 0.7.0 and never turned auto check-in on, the hook reads a file or two and stops; it sends nothing. `--auto off` stops the daily check-in: no new check-in starts after that, though one already on its way still arrives. `--leave` waits for a check-in from this machine that is still running, then deletes the row. Only a check-in from a run that was killed, or gave up waiting for the board, while its request was on the way could still reach the board after that; such a row has a single day of check-ins and is deleted after 7 days. Inside Claude Code the plugin pre-approves only the offline commands. Network commands that Claude runs for you are left to Claude Code's normal permission rules, so with default settings each one asks first. The session-start hook is not one of them: it joins and checks in on its own, as described above, until you opt out.
 
 ## The whole payload
 
@@ -56,7 +58,7 @@ Names of skills, projects, files or connectors. Prompts, code and paths. Your e-
 
 ## Identity
 
-- The first `--join` creates a random 64-character token on your machine. Once the board has accepted the first check-in, the token is stored in `~/.claude/cclevel/identity.json`, readable only by you.
+- The first join (the session-start hook's, `--join`, or joining from an invite) creates a random 64-character token on your machine. Once the board has accepted the first check-in, the token is stored in `~/.claude/cclevel/identity.json`, readable only by you.
 - The board stores the SHA-256 hash of that token, never the token.
 - A token is only ever sent to the board it joined.
 - There is no account, login or e-mail address. Your name on the board is generated from the hash, for example "Mossy Falcon 4821". Your own copy works out the same name locally.
@@ -106,7 +108,7 @@ It does not store IP addresses or user agents, and the service writes no request
 - **`/board.json`**, for `--rank`: numbers only. The XP values of the listed rows in order, the XP needed for each "top X%" band once more than 1,000 are listed, how many are listed, and the totals.
 - **Totals** count every creature with check-ins on two different days, listed or not: how many there are per level, stage, class, stat range (0-9, 10-19 and so on) and badge, how many are marked sus, and, for the class wars, the season XP the board credited per class added up (`class_xp`). They are worked out once a day and published only from 100 creatures. They are counts and sums, not records, but a count of one still says that one such creature exists.
 
-A creature is on the world lists only while its owner keeps the world ranking on (it starts off) and after check-ins on two different days.
+A creature is on the world lists only while its owner keeps the world ranking on (joining turns it on; `--world off` turns it off at once) and after check-ins on two different days.
 
 **Private groups are never published.** A group is up to 25 creatures that share an invite code. Only a creature in the group can read it, with its own token; the code alone shows nothing. Members see each other's generated name, level, XP since joining, season XP, this week's XP, six stats and sus mark, as soon as each one checks in. Being in a group does not put anyone on the world lists. A creature is in at most one group, and two creatures with the same generated name cannot be in the same group. Anyone who has the invite link or code can join until the group is full, so share it only with friends. Nobody can remove another member. If a code leaks, or someone fills the group or takes a seat to keep a friend out, start a new group and have your friends join that one.
 
@@ -130,8 +132,8 @@ A creature is on the world lists only while its owner keeps the world ranking on
 ## Your controls
 
 - `--world off` takes you off the world lists at once, `--group-leave` takes you out of your group at once, and `--duel-leave` out of your duel. None of them is ever limited. Turning the world ranking on, starting or joining a group or a duel and starting the GitHub badge share a limit of three a day. `--unverify-github` is never limited.
-- `--auto off` stops the daily auto check-in at once. It is off until you turn it on.
-- `--leave` deletes your row and removes the local token. The token is kept if the board does not confirm, so you can retry.
+- **Opting out is one command: `--leave`** (in Claude Code, `/pet leave`). It deletes your row and removes the local token, and keeps this machine from joining again by itself. On a machine that has not joined yet, it only does the last part and sends nothing. The token is kept if the board does not confirm the deletion, so you can retry. `--join` joins by hand later.
+- `--auto off` stops the daily auto check-in at once. Joining turns it on.
 - `--join` on a machine that is already on the board sends nothing.
 - A creature that never comes back after its first day is deleted after 7 days.
 - A row with no check-in for 45 days leaves the lists and the totals. After 180 days it is deleted.
