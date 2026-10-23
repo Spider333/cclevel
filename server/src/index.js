@@ -169,14 +169,21 @@ async function checkin(request, env) {
 
 	const prev = await env.DB.prepare("SELECT * FROM entries WHERE id = ?").bind(id).first();
 	if (!prev) {
-		// Spam control: five new creatures a minute per network, so friends on one wifi can join together. The address becomes a counter key that
+		// Spam control: two new creatures a minute per network, so friends on one wifi can join together and one network can never take
+		// the whole day's ceiling (2 x 1,440 is under 5,000). The address becomes a counter key that
 		// Cloudflare holds for up to a minute. It is never written to the database and never logged.
 		if (!env.NEW_ROWS) return json({ error: "the board is not taking new creatures right now" }, 503);
 		const key = await sha256(network(request.headers.get("cf-connecting-ip") || ""));
 		const { success } = await env.NEW_ROWS.limit({ key });
 		if (!success) return json({ error: "too many new creatures from this network, try again in a minute", reason: "network" }, 429);
-		const joined = await env.DB.prepare("SELECT joins FROM days WHERE day = ?").bind(day).first();
-		if (joined && joined.joins >= NEW_ROWS_PER_DAY) {
+		// Take one of the day's places before adding the row, in one statement, so requests arriving together never go past the
+		// ceiling. A place taken for a row that already existed (a repeated first check-in) is given back below.
+		const place = await env.DB.prepare(
+			"INSERT INTO days (day, joins) VALUES (?1, 1) ON CONFLICT (day) DO UPDATE SET joins = joins + 1 WHERE joins < ?2",
+		)
+			.bind(day, NEW_ROWS_PER_DAY)
+			.run();
+		if (place.meta.changes === 0) {
 			return json({ error: "the board is full for today, try again tomorrow", reason: "full_today" }, 429);
 		}
 		// Witnessed XP starts at zero: nothing claimed before joining ever ranks.
@@ -194,10 +201,8 @@ async function checkin(request, env) {
 				...STATS.map((s) => body.stats[s]), JSON.stringify(body.badges), day, day, season, isoWeek(day),
 			)
 			.run();
-		if (inserted.meta.changes > 0) {
-			await env.DB.prepare("INSERT INTO days (day, joins) VALUES (?1, 1) ON CONFLICT (day) DO UPDATE SET joins = joins + 1")
-				.bind(day)
-				.run();
+		if (inserted.meta.changes === 0) {
+			await env.DB.prepare("UPDATE days SET joins = joins - 1 WHERE day = ?").bind(day).run();
 		}
 		return json(view(row, true, season));
 	}
@@ -237,19 +242,25 @@ async function checkin(request, env) {
 		...prev, ...derive(xp, body.stats), xp_days: xpDays, season, season_xp: seasonXp, days_seen: prev.days_seen + 1,
 		witnessed_xp: prev.witnessed_xp + daily, capped_days: cappedDays,
 	};
-	await env.DB.prepare(
+	// The one-a-day rule above read the row before this write. Only a write that still finds that same last day lands, so
+	// check-ins of one creature arriving together are credited once, duel XP included.
+	const done = await env.DB.prepare(
 		`UPDATE entries SET xp = ?, xp_days = ?, level = ?, stage = ?, class = ?,
 			grind = ?, appetite = ?, arsenal = ?, brains = ?, autonomy = ?, craft = ?,
 			badges = ?, last_day = ?, days_seen = ?, season = ?, season_xp = ?, witnessed_xp = ?, capped_days = ?, week = ?, week_xp = ?,
 			duel_xp = CASE WHEN duel_day BETWEEN ? AND ? AND ? >= date(duel_day, '-1 day') THEN duel_xp + ? ELSE duel_xp END
-		WHERE id = ?`,
+		WHERE id = ? AND last_day = ?`,
 	)
 		.bind(
 			xp, xpDays, next.level, next.stage, next.cls, ...STATS.map((s) => body.stats[s]),
 			JSON.stringify(badges), day, next.days_seen, season, seasonXp, next.witnessed_xp, cappedDays, week, weekXp,
-			duelFrom, day, prev.last_day, duelGain, id,
+			duelFrom, day, prev.last_day, duelGain, id, prev.last_day,
 		)
 		.run();
+	if (done.meta.changes === 0) {
+		const now = await env.DB.prepare("SELECT * FROM entries WHERE id = ?").bind(id).first();
+		return json(view(now || prev, false, season));
+	}
 	return json({ ...view(next, true, season), capped: xp < body.xp });
 }
 

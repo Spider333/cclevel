@@ -1228,7 +1228,21 @@ GROUP_MAX = 25           # must match the board
 DUEL_DAYS = 7            # must match the board
 CARD_VERSION = 1         # must match the card page, server/public/card.js
 GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")   # GitHub's rule for a login
-SERVER_RE = re.compile(r"https://|http://(localhost|127\.0\.0\.1)[:/]")
+
+
+def server_ok(server):
+    """https to any host, or plain http to this machine only. Checked on the parsed address, and an address with a
+    name@ part is refused, since the text before the @ can look like a host it is not."""
+    try:
+        parts = urllib.parse.urlsplit(server)
+        parts.port   # an out-of-range or non-numeric port raises
+    except ValueError:
+        return False
+    if "@" in parts.netloc or not parts.hostname:
+        return False
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1"))
+
+
 # Word lists for creature names. They must match server/src/names.js.
 ADJECTIVES = [
     "Amber", "Brave", "Bright", "Calm", "Clever", "Cosmic", "Crisp", "Curious", "Dapper", "Daring",
@@ -1406,7 +1420,7 @@ def load_identity(cdir):
         return {}
     ident = load_dict(identity_path(cdir))
     token, server = ident.get("token"), ident.get("server")
-    ok = isinstance(token, str) and TOKEN_RE.fullmatch(token) and isinstance(server, str) and SERVER_RE.match(server + "/")
+    ok = isinstance(token, str) and TOKEN_RE.fullmatch(token) and isinstance(server, str) and server_ok(server)
     return ident if ok and not has_left(cdir, token) else {}
 
 
@@ -1463,8 +1477,8 @@ def resolve_server(args, ident):
     if home and asked and asked.rstrip("/") != home.rstrip("/"):
         sys.exit("cclevel: this creature lives on %s. Leave that board first, or drop --server and CCLEVEL_SERVER." % home)
     server = (home or asked or DEFAULT_SERVER).rstrip("/")
-    if server and not SERVER_RE.match(server + "/"):
-        sys.exit("cclevel: the server address must start with https://")
+    if server and not server_ok(server):
+        sys.exit("cclevel: the server address must start with https:// (http:// only for localhost), with no name@ part")
     return server
 
 
@@ -2480,7 +2494,8 @@ def checked_in(cdir, server, ident, token, data, result):
 
 def main():
     default_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-    ap = argparse.ArgumentParser(description="Score a Claude Code setup and show it as a creature.")
+    # Whole flag names only: an abbreviation such as --ye would otherwise count as --yes.
+    ap = argparse.ArgumentParser(description="Score a Claude Code setup and show it as a creature.", allow_abbrev=False)
     ap.add_argument("--claude-dir", default=default_dir, help="Claude Code folder to scan (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="print numbers only, as JSON")
     ap.add_argument("--no-save", action="store_true", help="do not write the ledger")

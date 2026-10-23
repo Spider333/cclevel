@@ -952,6 +952,26 @@ class Leaderboard(unittest.TestCase):
         self.assertIn("https://", out.stderr)
         self.assertFalse(os.path.exists(self.identity))
 
+    def test_a_server_address_is_checked_on_its_parsed_host(self):
+        for good in ("https://example.com", "https://board.example.com:8443/", "http://localhost:8787", "http://127.0.0.1:8787"):
+            self.assertTrue(cclevel.server_ok(good), good)
+        for bad in ("http://127.0.0.1:80@example.com", "http://localhost:x@example.com", "http://localhost:@example.com",
+                    "https://name@example.com", "http://localhost.example.com", "http://127.0.0.1.example.com",
+                    "http://example.com", "https://", "http://127.0.0.1:99999", "ftp://localhost"):
+            self.assertFalse(cclevel.server_ok(bad), bad)
+            out = run("--claude-dir", self.dir, "--join", "--yes", "--server", bad)
+            self.assertNotEqual(out.returncode, 0, bad)
+            self.assertIn("https://", out.stderr, bad)
+        self.assertEqual(FakeBoard.seen, [])
+        self.assertFalse(os.path.exists(self.identity))
+
+    def test_flags_must_be_spelled_out_in_full(self):
+        out = run("--claude-dir", self.dir, "--join", "--ye", "--server", self.url)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("--ye", out.stderr)
+        self.assertEqual(FakeBoard.seen, [])
+        self.assertFalse(os.path.exists(self.identity))
+
     def test_a_failed_join_leaves_no_token_and_the_next_join_still_asks(self):
         dead = run("--claude-dir", self.dir, "--join", "--yes", "--server", "http://127.0.0.1:1")
         self.assertNotEqual(dead.returncode, 0)
