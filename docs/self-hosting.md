@@ -11,7 +11,7 @@ The board in `server/` is a small Cloudflare Worker with a D1 database and stati
 - **GitHub badge.** Optional. You prove a GitHub account is yours with a public gist (no password or key leaves your machine); the board then shows the login and how many of its public commits carry Claude Code's co-author line. It never changes a place or XP. Without a GitHub key on the board, it answers "not available".
 - **Sus** marks a creature with at least 14 witnessed days of which 80% or more were credited at the full 550. It changes nothing else, and a script that claims a little less is not caught.
 - **Totals** (creatures per level, stage, class, stat range and badge, and the sus count) count every creature with check-ins on two days, listed or not, and appear only from 100 creatures.
-- **Limits.** One network can add roughly five new creatures a minute (the host's limiter is approximate), and the board takes at most 5,000 new creatures a day. Turning the world ranking on and starting or joining a group share a limit of three a day per creature; turning off and leaving are never limited. Group requests are limited to ten a minute per creature.
+- **Limits.** One network can add roughly two new creatures a minute (the host's limiter is approximate), and the board takes at most 5,000 new creatures a day. Turning the world ranking on and starting or joining a group share a limit of three a day per creature; turning off and leaving are never limited. Group requests are limited to ten a minute per creature.
 - The service keeps no request logs and stores no IP address. See [PRIVACY.md](../PRIVACY.md) for what that does and does not cover.
 
 ## Deploy

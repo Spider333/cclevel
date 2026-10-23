@@ -26,7 +26,7 @@ const score = (over = {}) => ({
 
 // Each new creature comes from its own address, as real clients would.
 let caller = 0;
-const checkin = (body, bearer = TOKEN, ip = `10.0.${caller >> 8}.${caller++ & 255}`) => {
+const checkin = (body, bearer = TOKEN, ip = `10.0.${caller >> 8}.${caller++ & 255}`, bindings = env) => {
 	const text = typeof body === "string" ? body : JSON.stringify(body);
 	return worker.fetch(
 		new Request("https://board.test/api/checkin", {
@@ -38,8 +38,22 @@ const checkin = (body, bearer = TOKEN, ip = `10.0.${caller >> 8}.${caller++ & 25
 			},
 			body: text,
 		}),
-		env,
+		bindings,
 	);
+};
+// The same bindings with a database whose every statement takes a few milliseconds each way, as the real one does,
+// so requests sent together overlap the way they can in production.
+const slowEnv = () => {
+	const pause = () => new Promise((resolve) => setTimeout(resolve, 5));
+	const slow = (stmt) => ({
+		real: stmt,
+		bind: (...values) => slow(stmt.bind(...values)),
+		first: async (...a) => { await pause(); const r = await stmt.first(...a); await pause(); return r; },
+		run: async (...a) => { await pause(); const r = await stmt.run(...a); await pause(); return r; },
+		all: async (...a) => { await pause(); const r = await stmt.all(...a); await pause(); return r; },
+	});
+	const DB = { prepare: (sql) => slow(env.DB.prepare(sql)), batch: (list) => env.DB.batch(list.map((s) => s.real ?? s)) };
+	return new Proxy(env, { get: (target, key) => (key === "DB" ? DB : target[key]) });
 };
 const leave = (bearer = TOKEN) =>
 	worker.fetch(
@@ -189,14 +203,14 @@ describe("joining", () => {
 		expect(stored.first_day).toBe("2026-10-13");
 	});
 
-	it("lets one network add five creatures a minute, counting an IPv6 /64 as one network", async () => {
+	it("lets one network add two creatures a minute, counting an IPv6 /64 as one network", async () => {
 		expect(env.NEW_ROWS).toBeDefined();
 		const from = (ip, n) => checkin(score(), token(n), ip).then((r) => r.status);
-		for (let n = 500; n < 505; n++) expect(await from("198.51.100.9", n)).toBe(200);
-		const sixth = await checkin(score(), token(505), "198.51.100.9");
-		expect(sixth.status).toBe(429);
-		expect((await sixth.json()).reason).toBe("network");
-		for (let n = 510; n < 515; n++) expect(await from("2001:db8:1:2::" + (n - 509), n)).toBe(200);
+		for (let n = 500; n < 502; n++) expect(await from("198.51.100.9", n)).toBe(200);
+		const third = await checkin(score(), token(502), "198.51.100.9");
+		expect(third.status).toBe(429);
+		expect((await third.json()).reason).toBe("network");
+		for (let n = 510; n < 512; n++) expect(await from("2001:db8:1:2::" + (n - 509), n)).toBe(200);
 		expect(await from("2001:db8:1:2:aaaa:bbbb:cccc:dddd", 515)).toBe(429);
 		expect(await from("2001:db8:1:3::1", 516)).toBe(200);
 	});
@@ -223,6 +237,17 @@ describe("joining", () => {
 		expect((await checkin(score())).status).toBe(200);
 		goTo("2026-10-14");
 		expect((await checkin(score(), token(701))).status).toBe(200);
+	});
+
+	it("never goes past the daily ceiling when new creatures arrive together", async () => {
+		await checkin(score());
+		await env.DB.prepare("UPDATE days SET joins = 4999 WHERE day = '2026-10-13'").run();
+		const slow = slowEnv();
+		const replies = await Promise.all([900, 901, 902, 903].map((n) => checkin(score(), token(n), undefined, slow)));
+		expect(replies.map((r) => r.status).sort()).toEqual([200, 429, 429, 429]);
+		expect((await env.DB.prepare("SELECT joins FROM days WHERE day = '2026-10-13'").first()).joins).toBe(5000);
+		const { n } = await env.DB.prepare("SELECT COUNT(*) AS n FROM entries").first();
+		expect(n).toBe(2);
 	});
 
 	it("treats a repeated first check-in as one creature", async () => {
@@ -899,6 +924,19 @@ describe("duels", () => {
 		expect((await row(token(2))).duel_xp).toBe(3850);
 	});
 
+	it("credit check-ins of one creature that arrive together once, duel XP included", async () => {
+		await pair(token(1), token(2));
+		await checkin(score(), token(1));
+		goTo("2026-10-14");
+		const slow = slowEnv();
+		const replies = await Promise.all([0, 1, 2, 3, 4].map(() => checkin(score({ xp: 1550, xp_days: 6 }), token(1), undefined, slow)));
+		const bodies = await Promise.all(replies.map((r) => r.json()));
+		expect(replies.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
+		expect(bodies.filter((b) => b.accepted)).toHaveLength(1);
+		const after = await row(token(1));
+		expect([after.duel_xp, after.witnessed_xp, after.days_seen, after.last_day]).toEqual([550, 550, 3, "2026-10-14"]);
+	});
+
 	it("keep only the SHA-256 of the code, and reply with numbers, yes/no values and null only", async () => {
 		await pair(token(1), token(2));
 		expect((await row(token(1))).duel).toBe(await sha256(CODE));
@@ -1284,7 +1322,7 @@ describe("source and configuration hygiene", () => {
 		expect(config.observability).toEqual({ enabled: false });
 		expect(config.workers_dev).toBe(true);
 		for (const key of ["routes", "route", "logpush", "tail_consumers"]) expect(config).not.toHaveProperty(key);
-		expect(config.ratelimits[0]).toMatchObject({ name: "NEW_ROWS", simple: { limit: 5, period: 60 } });
+		expect(config.ratelimits[0]).toMatchObject({ name: "NEW_ROWS", simple: { limit: 2, period: 60 } });
 		expect(config.ratelimits[1]).toMatchObject({ name: "PER_CREATURE", simple: { limit: 10, period: 60 } });
 		expect(config.ratelimits[2]).toMatchObject({ name: "GITHUB_CALLS", simple: { limit: 20, period: 60 } });
 	});
@@ -1304,10 +1342,10 @@ describe("source and configuration hygiene", () => {
 		// The same statement the board runs for a check-in, run here to read its cost, for a creature in a group and in a
 		// running duel. The last four values take the duel's counting branch: it runs from 14 October, and the previous
 		// check-in was on the day it was accepted.
-		const update = source.match(/`UPDATE entries SET xp = [\s\S]*?WHERE id = \?`/)[0].slice(1, -1);
-		const values = Array(update.split("?").length - 2).fill(1);
+		const update = source.match(/`UPDATE entries SET xp = [\s\S]*?WHERE id = \? AND last_day = \?`/)[0].slice(1, -1);
+		const values = Array(update.split("?").length - 3).fill(1);
 		values.splice(-4, 4, "2026-10-08", "2026-10-14", "2026-10-13", 550);
-		const { meta } = await env.DB.prepare(update).bind(...values, id).run();
+		const { meta } = await env.DB.prepare(update).bind(...values, id, (await row(token(5))).last_day).run();
 		expect(meta.rows_written).toBe(1);
 		expect((await row(token(5))).duel_xp).toBe(550);
 	});
