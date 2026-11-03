@@ -1,8 +1,8 @@
 {
 	"name": "cclevel",
 	"displayName": "CC level",
-	"version": "0.7.2",
-	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next. Joins the public leaderboard by default under a generated name (nine numbers, no account); opt out any time with /pet leave.",
+	"version": "0.8.0",
+	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next, with the creature above your prompt while you work (/creature off hides it). Joins the public leaderboard by default under a generated name (nine numbers, no account); opt out any time with /pet leave.",
 	"author": { "name": "cclevel contributors" },
 	"homepage": "https://cclevel.com",
 	"repository": "https://github.com/Spider333/cclevel",
@@ -10,5 +10,6 @@
 	"privacyPolicyUrl": "https://github.com/Spider333/cclevel/blob/main/PRIVACY.md",
 	"supportUrl": "https://github.com/Spider333/cclevel/issues",
 	"license": "FSL-1.1-MIT",
+	"types": "./types/index.d.ts",
 	"keywords": ["level", "stats", "leaderboard", "setup", "gamification"]
 }

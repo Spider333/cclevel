@@ -55,6 +55,10 @@ The board is on by default: the plugin's session-start hook joins this machine (
 
 If no public board is configured the script says so. `--server 'ADDRESS'` (in single quotes) points it at a self-hosted one; use it only with an address the user typed, and only if it has no spaces or quote marks.
 
+## Creature band
+
+The plugin also draws the creature above the prompt in each session (Claude Code 2.1.287 or later, terminal and Desktop app): it walks while Claude works and sleeps when Claude is idle, rescoring offline at most every six hours. It is not a `cclevel.py` flag: when the user asks to hide or show it, tell them to type `/creature off` or `/creature on` themselves.
+
 ## Facts to keep straight
 
 - Only finished days earn XP; today shows as "today so far". A banked day never shrinks.
