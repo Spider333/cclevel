@@ -944,6 +944,7 @@ def score(cdir, machine_jobs, save):
     return {
         "version": 1, "generated": today_s, "scope": "one machine, self-reported",
         "level": level, "xp": xp, "xp_next_level": LEVEL_DIVISOR * (level + 1) ** 2,
+        "xp_level_start": 0 if level <= 1 else LEVEL_DIVISOR * level ** 2,   # where this level began, for progress bars
         "xp_today_pending": pending,
         "stage": next(name for floor, name in STAGES if level >= floor), "class": class_of(stats),
         "brain": next((name for floor, name in BRAIN_TITLES if stats["brains"] >= floor), ""),
