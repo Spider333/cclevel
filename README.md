@@ -81,7 +81,7 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | Feature | What it is | Sends anything? |
 |---|---|---|
 | **The card** | Level, six stats, mood, badges and the top things to fix. | No. Fully offline. |
-| **Creature band** | Your creature above the prompt in every Claude Code session, with its level and mood: it walks while Claude works and sleeps when Claude is idle. `/creature off` hides it. Needs Claude Code 2.1.287 or later, in the terminal or the Desktop app. | No. Fully offline. |
+| **Creature band** | Your creature above the prompt in every Claude Code session, with a level bar, today's XP and its mood. While Claude works it walks (each stage its own way) and acts out the tool: writing while files are edited, sniffing around while Claude searches, lifting while a command runs, flexing when a commit lands, sweating when a tool fails. It sleeps when Claude is idle and bursts on a level up, and in the terminal Claude's spinner says what it is up to ("Gigachad is grinding"). `/creature off` hides it. Needs Claude Code 2.1.287 or later, in the terminal or the Desktop app. | No. Fully offline. |
 | **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Yes, by default: nine numbers a day. Opt out with `/pet leave`. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
 | **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
@@ -110,7 +110,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 | | |
 |---|---|
 | **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running. |
-| **The creature band** | Offline. Draws above your prompt and, when its last score is more than six hours old, rescores in the background with `--json --no-save`, which writes nothing. It keeps the level, stage, mood and time of that score in the plugin's own store. `/creature off` stops it. |
+| **The creature band** | Offline. Draws above your prompt and, when its last score is more than an hour old, rescores in the background with `--json --no-save`, which writes nothing. It keeps the level, stage, mood, XP and time of that score in the plugin's own store. To act out Claude's work it notes which tool runs, whether it failed and whether a command is a commit; it keeps only which action it is showing, for this session, never the command itself. `/creature off` stops it. |
 | **The board** | On by default. The plugin's check-in hook joins the board at the first Claude Code start and checks in once a day. `/pet leave` opts out in one command and the hook then sends nothing. |
 | **Where data goes** | Only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only for the board: joining and the daily check-in (both on by default), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
@@ -201,7 +201,7 @@ Almost. It's pseudonymous: no account, no name, no e-mail, and the board never s
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
 
 **Does it slow down Claude Code or run in the background?**
-Hardly. Two things run on their own. A hook starts one quick check-in a day when Claude Code starts (the first one joins the board), without holding it up; after `/pet leave` or `/pet auto off`, it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than six hours old (about ten seconds of work on a big setup); `/creature off` stops the band and its rescoring.
+Hardly. Two things run on their own. A hook starts one quick check-in a day when Claude Code starts (the first one joins the board), without holding it up; after `/pet leave` or `/pet auto off`, it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than an hour old (about ten seconds of work on a big setup); `/creature off` stops the band and its rescoring.
 
 **Does it read my prompts?**
 It reads your Claude Code folder to count things (days, tokens, tools used, prompt timestamps). Nothing from your prompts, code or file names is printed, stored or sent.
