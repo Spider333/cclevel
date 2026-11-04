@@ -1290,6 +1290,27 @@ def render_learn(result, done):
     return "\n".join(out)
 
 
+def panel_extras(cdir, result):
+    """What the menu bar panel's Fix next and Learn tabs show: the top Needs with how to fix each, the training path with
+    each stat's next lesson, and the tip of the day. Worked out like the card, --learn and the tips; offline, saves nothing."""
+    fix = []
+    for n in result["needs"][:5]:   # every Need the card shows; the how-to and docs page where there is one
+        how, page = HOWTO.get(n["code"], ("", ""))
+        fix.append({"text": need_text(n), "how": how, "docs": DOCS + page if page else ""})
+    state = load_training(cdir)
+    done = set(state["done"]) | set(result["lessons"])
+    stats = []
+    for stat in STAT_ORDER:
+        lessons = LESSONS[stat]
+        nxt = next((l for l in lessons if l[0] not in done), None)
+        stats.append({"stat": stat, "done": sum(1 for l in lessons if l[0] in done), "total": len(lessons),
+                      "next": nxt and {"title": nxt[1], "how": nxt[2], "docs": DOCS + nxt[3]}})
+    tip, _ = tip_of_the_day(state, result)   # read only: the panel never records a tip as shown
+    return {"fix": fix,
+            "learn": {"done": len(done), "total": sum(len(ls) for ls in LESSONS.values()), "stats": stats, "checked": TIPS_CHECKED},
+            "tip": tip and {"stat": tip[0], "text": tip[1][1], "docs": DOCS + tip[1][2]}}
+
+
 def learn_command(cdir, result, save):
     """Shows the training path. Offline: it reads the logs like the card and remembers the ticks on this machine."""
     state = load_training(cdir)
@@ -2686,8 +2707,10 @@ def main():
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
     if args.json:
-        # The numbers behind the card, and the creature's art (the menu bar panel draws it); the lessons are --learn's to show.
-        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]]), indent=1))
+        # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
+        # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
+        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]],
+                              **panel_extras(cdir, result)), indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
         # Whether this machine is on the board is read from its own files; nothing is sent. Only the folder Claude Code

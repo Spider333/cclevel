@@ -2406,11 +2406,32 @@ class Panel(unittest.TestCase):
         self.assertFalse(os.path.exists(self.agent))
         self.assertFalse(any(c.startswith("launchctl bootstrap") for c in self.calls()))
 
-    def test_the_json_carries_the_creatures_art_for_the_panel(self):
+    def test_the_json_carries_what_the_panel_shows_and_still_saves_nothing(self):
         out = run("--claude-dir", self.dir, "--json", "--no-save")
         self.assertEqual(out.returncode, 0, out.stderr)
         data = json.loads(out.stdout)
         self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+        # Fix next: the card's own Needs, in order, each with how to fix it and its docs page.
+        self.assertTrue(data["needs"], "the test folder has Needs")
+        self.assertEqual([f["text"] for f in data["fix"]], [cclevel.need_text(n) for n in data["needs"][:5]])
+        for f in data["fix"]:
+            self.assertTrue(f["how"])
+            self.assertTrue(f["docs"].startswith(cclevel.DOCS))
+        # Learn: every stat once, totals that add up, each unfinished stat's next lesson, and the tip of the day.
+        learn = data["learn"]
+        self.assertEqual([s["stat"] for s in learn["stats"]], list(cclevel.STAT_ORDER))
+        self.assertEqual(learn["total"], sum(len(ls) for ls in cclevel.LESSONS.values()))
+        self.assertEqual(learn["done"], sum(s["done"] for s in learn["stats"]))
+        for s in learn["stats"]:
+            if s["done"] < s["total"]:
+                self.assertTrue(s["next"]["docs"].startswith(cclevel.DOCS))
+            else:
+                self.assertIsNone(s["next"])
+        self.assertIn(data["tip"]["stat"], cclevel.STAT_ORDER)
+        self.assertTrue(data["tip"]["docs"].startswith(cclevel.DOCS))
+        # Still --no-save: no ledger, and the tip is not recorded as shown.
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "training.json")))
 
     @unittest.skipUnless(shutil.which("swiftc"), "needs Apple's swiftc")
     def test_the_real_panel_builds_and_draws_a_card(self):
@@ -2423,12 +2444,24 @@ class Panel(unittest.TestCase):
         with open(card, "w", encoding="utf-8") as f:
             f.write(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
         png = os.path.join(self.tmp.name, "panel.png")
-        drawn = subprocess.run([binary, "--snapshot", png, "--card", card], capture_output=True, text=True, timeout=60)
-        self.assertEqual(drawn.returncode, 0, drawn.stderr)
-        with open(png, "rb") as f:
-            head = f.read(24)
-        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 672))
+
+        def draw(card_path, *tab):
+            return subprocess.run([binary, "--snapshot", png, "--card", card_path, *tab], capture_output=True, text=True, timeout=60)
+
+        for tab in ((), ("--tab", "creature"), ("--tab", "fix"), ("--tab", "learn")):
+            drawn = draw(card, *tab)
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            with open(png, "rb") as f:
+                head = f.read(24)
+            self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 800))
+        self.assertEqual(draw(card, "--tab", "zzq").returncode, 1, "an unknown tab is refused")
+        # A card saved by 0.9.0, before the tabs had data: every tab still draws (the new two say they fill in later).
+        with open(card, encoding="utf-8") as f:
+            old = {k: v for k, v in json.load(f).items() if k not in ("fix", "learn", "tip")}
+        write(self.tmp.name, "old.json", old)
+        for tab in ("creature", "fix", "learn"):
+            self.assertEqual(draw(os.path.join(self.tmp.name, "old.json"), "--tab", tab).returncode, 0)
         write(self.tmp.name, "bad.json", {"stage": "Gigachad"})
         refused = subprocess.run([binary, "--snapshot", png, "--card", os.path.join(self.tmp.name, "bad.json")],
                                  capture_output=True, text=True, timeout=60)
