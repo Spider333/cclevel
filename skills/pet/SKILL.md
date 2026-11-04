@@ -61,7 +61,7 @@ The plugin also draws the creature above the prompt in each session (Claude Code
 
 ## Menu bar panel (Mac, only when the user asks)
 
-`--panel on` puts the creature in the Mac menu bar, with a small black panel of its stats. It builds a program on this Mac and starts it at login, so run `--panel on` without `--yes` first, show what it says, ask in this conversation, and only after an explicit yes run `--panel on --yes`. If it says Apple's command line tools are missing, tell the user to run `xcode-select --install` themselves. `--panel off` removes it and needs no confirmation. After a plugin update, `--panel on --yes` again updates it.
+`--panel on` puts the creature in the Mac menu bar, with a small black panel: tabs for the creature and its stats, Fix next (the top Needs with how to fix them) and Learn (lessons and a tip of the day). It builds a program on this Mac and starts it at login, so run `--panel on` without `--yes` first, show what it says, ask in this conversation, and only after an explicit yes run `--panel on --yes`. If it says Apple's command line tools are missing, tell the user to run `xcode-select --install` themselves. `--panel off` removes it and needs no confirmation. After a plugin update, `--panel on --yes` again updates it.
 
 ## Facts to keep straight
 
