@@ -2353,8 +2353,16 @@ class Panel(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertIn("in your menu bar", out.stdout)
         binary, scanner, card = (os.path.join(self.folder, n) for n in ("cclevel-panel", "cclevel.py", "card.json"))
-        self.assertEqual(sorted(os.listdir(self.folder)), ["cclevel-panel", "cclevel.py"])
+        self.assertEqual(sorted(os.listdir(self.folder)), ["cclevel-panel", "cclevel.py", "creatures"])
         self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)
+        clips = os.path.join(self.folder, "creatures")
+        self.assertEqual(stat.S_IMODE(os.stat(clips).st_mode), 0o700)
+        self.assertEqual(sorted(os.listdir(clips)), sorted(n + ".mp4" for n in cclevel.PANEL_CLIP_NAMES))
+        for name in cclevel.PANEL_CLIP_NAMES:   # the plugin's own loops, byte for byte, private
+            copied = os.path.join(clips, name + ".mp4")
+            self.assertEqual(stat.S_IMODE(os.stat(copied).st_mode), 0o600)
+            with open(copied, "rb") as a, open(os.path.join(ROOT, "mac", "creatures", name + ".mp4"), "rb") as b:
+                self.assertEqual(a.read(), b.read())
         self.assertEqual(stat.S_IMODE(os.stat(binary).st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(os.stat(scanner).st_mode), 0o600)
         with open(scanner, encoding="utf-8") as a, open(SCRIPT, encoding="utf-8") as b:
@@ -2374,14 +2382,17 @@ class Panel(unittest.TestCase):
         write(self.dir, "cclevel/ledger.json", "{}")
         self.assertEqual(self.panel("on", "--yes").returncode, 0)
         write(self.dir, "cclevel/panel/notes.txt", "mine")   # not the panel's: it stays, and so does its folder
+        write(self.dir, "cclevel/panel/creatures/mine.mp4", "mine")   # the same inside the creatures folder
         out = self.panel("off")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("Panel off", out.stdout)
         self.assertFalse(os.path.exists(self.agent))
-        self.assertEqual(os.listdir(self.folder), ["notes.txt"])
+        self.assertEqual(sorted(os.listdir(self.folder)), ["creatures", "notes.txt"])
+        self.assertEqual(os.listdir(os.path.join(self.folder, "creatures")), ["mine.mp4"])
         self.assertTrue(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
         self.assertIn("launchctl bootout gui/%d/com.cclevel.panel" % os.getuid(), self.calls()[-1])
         os.remove(os.path.join(self.folder, "notes.txt"))
+        os.remove(os.path.join(self.folder, "creatures", "mine.mp4"))
         again = self.panel("off")
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("was not on", again.stdout)
@@ -2454,8 +2465,19 @@ class Panel(unittest.TestCase):
             with open(png, "rb") as f:
                 head = f.read(24)
             self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 800))
+            self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 832))
         self.assertEqual(draw(card, "--tab", "zzq").returncode, 1, "an unknown tab is refused")
+        # With the creature loops the Creature tab shows the stage's rendered first frame, not the text art. (Video needs
+        # macOS's media services: inside a sandboxed shell the frame does not load and both pictures come out the same.)
+        self.assertEqual(draw(card, "--tab", "creature").returncode, 0)
+        with open(png, "rb") as f:
+            text_art = f.read()
+        drawn = draw(card, "--tab", "creature", "--clips", os.path.join(ROOT, "mac", "creatures"))
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        with open(png, "rb") as f:
+            self.assertNotEqual(f.read(), text_art, "the rendered creature replaces the text art")
+        missing = draw(card, "--tab", "creature", "--clips", os.path.join(self.tmp.name, "no-clips-here"))
+        self.assertEqual(missing.returncode, 0, "a missing clips folder falls back to the text art")
         # A card saved by 0.9.0, before the tabs had data: every tab still draws (the new two say they fill in later).
         with open(card, encoding="utf-8") as f:
             old = {k: v for k, v in json.load(f).items() if k not in ("fix", "learn", "tip")}

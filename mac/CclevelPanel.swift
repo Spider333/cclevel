@@ -8,9 +8,13 @@
 // Three tabs: Creature (the art and the stats), Fix next (the card's top Needs, how to fix each, and its docs page) and Learn
 // (the training path, each stat's next lesson, and the tip of the day). Links open Claude Code's docs pages only.
 //
-// `--snapshot OUT.png --card CARD.json [--tab creature|fix|learn]` draws the panel into a picture and exits (for tests and
-// previews).
+// The Creature tab plays the stage's rendered loop (creatures/<stage>.mp4 beside the panel) while the panel is open, a
+// still of its first frame otherwise or with Reduce Motion on, and the card's own text art when there is no clip.
+//
+// `--snapshot OUT.png --card CARD.json [--tab creature|fix|learn] [--clips DIR]` draws the panel into a picture and
+// exits (for tests and previews).
 import AppKit
+import AVFoundation
 
 let statOrder = ["grind", "appetite", "arsenal", "brains", "autonomy", "craft"]
 let staleAfter: TimeInterval = 60 * 60
@@ -20,7 +24,30 @@ let dim = NSColor(white: 0.55, alpha: 1)
 let track = NSColor(white: 0.16, alpha: 1)
 let panelWidth: CGFloat = 360
 let tabBarHeight: CGFloat = 44
-let contentHeight: CGFloat = 356
+let contentHeight: CGFloat = 372
+let creatureBox = NSRect(x: 14, y: 4, width: 124, height: 124)
+/// The rendered loop for each stage, beside the panel in creatures/<name>.mp4 (copied there by --panel on).
+let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "Big Guy": "big_guy",
+                 "Gigachad": "gigachad", "GOAT": "goat"]
+
+/// Holds the first frame while it is decoded on another queue.
+final class FrameBox: @unchecked Sendable {
+    var image: CGImage?
+}
+
+/// The first frame of a clip, to show before it plays, in pictures, and when Reduce Motion is on.
+func firstFrame(_ url: URL) -> NSImage? {
+    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+    generator.appliesPreferredTrackTransform = true
+    let box = FrameBox()
+    let done = DispatchSemaphore(value: 0)
+    generator.generateCGImageAsynchronously(for: .zero) { image, _, _ in
+        box.image = image
+        done.signal()
+    }
+    guard done.wait(timeout: .now() + 5) == .success, let image = box.image else { return nil }
+    return NSImage(cgImage: image, size: creatureBox.size)
+}
 let docsPrefix = "https://code.claude.com/docs/"
 
 /// A docs page from data this program does not control: only Claude Code's own docs, over https.
@@ -150,12 +177,22 @@ func grouped(_ n: Int) -> String {
     return f.string(from: NSNumber(value: n)) ?? String(n)
 }
 
-/// The panel: pure black, the creature in the card's own art, and the stats the card shows.
+/// The panel: pure black, the creature (its rendered loop, or the card's own art), and the stats the card shows.
 final class PanelView: NSView {
-    var card: Card? { didSet { updateAccessibility(); needsDisplay = true } }
+    var card: Card? { didSet { updateAccessibility(); loadClip(); needsDisplay = true } }
     var status = "" { didSet { needsDisplay = true } }
     var updated: Date? { didSet { needsDisplay = true } }
     var isBlinking = false { didSet { needsDisplay = true } }
+    /// Where the stage loops are; nil, or a stage without its file, draws the card's art instead.
+    var clipsDir: URL? { didSet { clipStage = nil; loadClip() } }
+
+    private var clipStage: String?
+    private var still: NSImage?
+    private let video = NSView(frame: creatureBox)
+    private let playerLayer = AVPlayerLayer()
+    private var player: AVQueuePlayer?
+    private var looper: AVPlayerLooper?
+    private var wantsPlay = false
 
     override var isFlipped: Bool { true }
 
@@ -164,6 +201,60 @@ final class PanelView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         updateAccessibility()
+        video.wantsLayer = true
+        video.layer?.backgroundColor = NSColor.black.cgColor
+        playerLayer.frame = video.bounds
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = NSColor.black.cgColor
+        video.layer?.addSublayer(playerLayer)
+        video.isHidden = true
+        video.setAccessibilityElement(false)   // decorative: the group's label says who the creature is
+        addSubview(video)
+        // Reduce Motion switched on (or off) while the panel is open takes effect at once.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(motionSettingChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+    }
+
+    @objc private func motionSettingChanged() { setPlaying(wantsPlay) }
+
+    /// Loads the loop for the card's stage, once per stage: its first frame now, the player for later.
+    private func loadClip() {
+        let stage = card?.stage
+        guard stage != clipStage else { return }
+        clipStage = stage
+        player?.pause()
+        looper = nil
+        player = nil
+        playerLayer.player = nil
+        still = nil
+        video.isHidden = true
+        guard let stage, let name = clipNames[stage], let dir = clipsDir else { return }
+        let url = dir.appendingPathComponent("\(name).mp4")
+        guard FileManager.default.isReadableFile(atPath: url.path), let frame = firstFrame(url) else { return }
+        still = frame
+        let queue = AVQueuePlayer()
+        queue.isMuted = true
+        queue.preventsDisplaySleepDuringVideoPlayback = false
+        looper = AVPlayerLooper(player: queue, templateItem: AVPlayerItem(url: url))
+        player = queue
+        playerLayer.player = queue
+        setPlaying(wantsPlay)
+    }
+
+    /// Plays the loop while the panel is open on this tab, unless Reduce Motion is on: then the still stays.
+    func setPlaying(_ on: Bool) {
+        wantsPlay = on
+        guard let player else { return }
+        if on && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            video.isHidden = false
+            player.play()
+        } else {
+            player.pause()
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                video.isHidden = true   // the first-frame still drawn underneath shows instead
+            }
+        }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -196,21 +287,26 @@ final class PanelView: NSView {
             put("Run /pet in Claude Code to hatch it.", mono(12), dim, at: NSPoint(x: left, y: 80))
             return
         }
-        // The creature, in the card's own art; it blinks now and then while the panel is open.
-        var y: CGFloat = 20
-        for line in c.art {
-            let shown = isBlinking ? line.replacingOccurrences(of: "o", with: "-").replacingOccurrences(of: "@", with: "-") : line
-            put(shown, mono(16, .semibold), orange, at: NSPoint(x: left, y: y))
-            y += 20
+        // The creature: its rendered loop's first frame (the loop plays over it while the panel is open), or
+        // the card's own art, which blinks now and then.
+        var y: CGFloat = 40
+        if let still {
+            still.draw(in: creatureBox)
+        } else {
+            for line in c.art {
+                let shown = isBlinking ? line.replacingOccurrences(of: "o", with: "-").replacingOccurrences(of: "@", with: "-") : line
+                put(shown, mono(16, .semibold), orange, at: NSPoint(x: left, y: y))
+                y += 20
+            }
         }
-        let side: CGFloat = left + 118
+        let side: CGFloat = creatureBox.maxX + 12
         let who = c.cls == "Unhatched" ? c.stage : "\(c.stage) \(c.cls)"
-        put(who, NSFont.systemFont(ofSize: 15, weight: .semibold), .white, at: NSPoint(x: side, y: 20))
-        put("Lv \(c.level)", NSFont.systemFont(ofSize: 22, weight: .bold), .white, at: NSPoint(x: side, y: 40))
-        put("\(c.mood) · Health \(c.health)", NSFont.systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 70))
+        put(who, NSFont.systemFont(ofSize: 15, weight: .semibold), .white, at: NSPoint(x: side, y: 28))
+        put("Lv \(c.level)", NSFont.systemFont(ofSize: 22, weight: .bold), .white, at: NSPoint(x: side, y: 48))
+        put("\(c.mood) · Health \(c.health)", NSFont.systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 80))
 
         // The level bar: from where this level began to the next one.
-        y = 112
+        y = 138
         bar(NSRect(x: left, y: y, width: bounds.width - 2 * left, height: 8), c.progress)
         let toNext = c.level >= 99 ? "Top level" : "\(grouped(max(0, c.xpNext - c.xp))) XP to Lv \(c.level + 1)"
         put(toNext, mono(11), dim, at: NSPoint(x: left, y: y + 14))
@@ -219,7 +315,7 @@ final class PanelView: NSView {
         put(today, mono(11, .medium), orange, at: NSPoint(x: bounds.width - left - todayWidth, y: y + 14))
 
         // The six stats, as the card shows them.
-        y = 160
+        y = 184
         for name in statOrder {
             let v = c.stats[name] ?? 0
             put(name.capitalized, mono(12), .white, at: NSPoint(x: left, y: y))
@@ -289,10 +385,19 @@ final class TabsView: NSView {
 
     @objc func switched() { show(tabs.selectedSegment) }
 
+    /// Whether the panel is on screen: the creature's loop plays only then, and only on its own tab.
+    private var isOpen = false
+
+    func setOpen(_ open: Bool) {
+        isOpen = open
+        creature.setPlaying(isOpen && tabs.selectedSegment == 0)
+    }
+
     func show(_ tab: Int) {
         tabs.selectedSegment = tab
         creature.isHidden = tab != 0
         scroll.isHidden = tab == 0
+        creature.setPlaying(isOpen && tab == 0)
         rebuild()
     }
 
@@ -406,6 +511,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        root.creature.clipsDir = cache.deletingLastPathComponent().appendingPathComponent("creatures")
         let vc = NSViewController()
         vc.view = root
         popover.contentViewController = vc
@@ -515,8 +621,9 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
-    // A blink every few seconds, only while the panel is open.
+    // The loop plays, or the text creature blinks every few seconds, only while the panel is open.
     func popoverDidShow(_ note: Notification) {
+        root.setOpen(true)
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
             self?.root.creature.isBlinking = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { self?.root.creature.isBlinking = false }
@@ -524,6 +631,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ note: Notification) {
+        root.setOpen(false)
         blinkTimer?.invalidate()
         blinkTimer = nil
     }
@@ -543,6 +651,9 @@ if let out = option("--snapshot") {
         exit(1)
     }
     let view = TabsView()
+    if let clips = option("--clips") {
+        view.creature.clipsDir = URL(fileURLWithPath: clips, isDirectory: true)
+    }
     view.card = card
     view.creature.updated = Date(timeIntervalSince1970: 0)
     if let tab = option("--tab") {
