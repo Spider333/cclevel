@@ -1185,7 +1185,10 @@ PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardi
 PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
 # The creature's rendered loops, one per stage; --panel on copies them into the panel's creatures/ folder.
 PANEL_CLIPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "creatures")
-PANEL_CLIP_NAMES = ("egg", "hatchling", "lil_guy", "big_guy", "gigachad", "goat")
+PANEL_STAGE_CLIPS = ("egg", "hatchling", "lil_guy", "big_guy", "gigachad", "goat")
+PANEL_CLASS_CLIPS = ("shipper", "afk_farmer", "loot_goblin", "tokenmaxxer", "balanced", "noob")
+# Every name a loop may have: one per stage, and <stage>_<class> for the class looks (the egg has no class).
+PANEL_CLIP_NAMES = PANEL_STAGE_CLIPS + tuple("%s_%s" % (s, c) for s in PANEL_STAGE_CLIPS[1:] for c in PANEL_CLASS_CLIPS)
 
 
 def panel_paths(cdir):
@@ -1239,7 +1242,7 @@ def panel_command(args, cdir):
         print("Turning it on will:")
         print("  1. build a small program from the plugin's own source (mac/CclevelPanel.swift) with Apple's swiftc,")
         print("     into %s" % folder)
-        print("  2. copy this scanner and the creature's animations (about 0.5 MB) there, so the panel keeps")
+        print("  2. copy this scanner and the creature's animations (about 1.7 MB) there, so the panel keeps")
         print("     working when the plugin updates")
         print("  3. start it now and at every login, with %s" % agent)
         print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, keeps the last")
