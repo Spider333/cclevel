@@ -1183,6 +1183,9 @@ def tips_command(args, cdir):
 PANEL_LABEL = "com.cclevel.panel"
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
 PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
+# The creature's rendered loops, one per stage; --panel on copies them into the panel's creatures/ folder.
+PANEL_CLIPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "creatures")
+PANEL_CLIP_NAMES = ("egg", "hatchling", "lil_guy", "big_guy", "gigachad", "goat")
 
 
 def panel_paths(cdir):
@@ -1204,14 +1207,17 @@ def panel_command(args, cdir):
     if args.panel == "off":
         panel_stop(launchctl)
         found = False
-        for path in (agent, *(os.path.join(folder, name) for name in PANEL_FILES)):
+        clips = os.path.join(folder, "creatures")
+        for path in (agent, *(os.path.join(folder, name) for name in PANEL_FILES),
+                     *(os.path.join(clips, name + ext) for name in PANEL_CLIP_NAMES for ext in (".mp4", ".mp4.copying"))):
             try:
                 os.remove(path)
                 found = True
             except FileNotFoundError:
                 pass
-        with contextlib.suppress(OSError):
-            os.rmdir(folder)
+        for path in (clips, folder):   # only if empty: anything else in there is not the panel's
+            with contextlib.suppress(OSError):
+                os.rmdir(path)
         print("Panel off: the creature has left the menu bar and no longer starts at login." if found
               else "The panel was not on. Nothing to remove.")
         return 0
@@ -1233,7 +1239,8 @@ def panel_command(args, cdir):
         print("Turning it on will:")
         print("  1. build a small program from the plugin's own source (mac/CclevelPanel.swift) with Apple's swiftc,")
         print("     into %s" % folder)
-        print("  2. copy this scanner there, so the panel keeps working when the plugin updates")
+        print("  2. copy this scanner and the creature's animations (about 0.5 MB) there, so the panel keeps")
+        print("     working when the plugin updates")
         print("  3. start it now and at every login, with %s" % agent)
         print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, keeps the last")
         print("result in %s, and sends nothing. --panel off removes all of it." % card)
@@ -1255,6 +1262,15 @@ def panel_command(args, cdir):
     os.replace(building, binary)
     with open(os.path.realpath(__file__), encoding="utf-8") as f:
         write_private(scanner, f.read())
+    clips = os.path.join(folder, "creatures")
+    os.makedirs(clips, mode=0o700, exist_ok=True)
+    for name in PANEL_CLIP_NAMES:   # a clip missing from this copy of the plugin: that stage shows its text art
+        src = os.path.realpath(os.path.join(PANEL_CLIPS, name + ".mp4"))
+        if os.path.isfile(src):
+            dst = os.path.join(clips, name + ".mp4")
+            shutil.copyfile(src, dst + ".copying")
+            os.chmod(dst + ".copying", 0o600)
+            os.replace(dst + ".copying", dst)
     program = [binary, "--python", sys.executable, "--scanner", scanner, "--claude-dir", cdir, "--cache", card]
     os.makedirs(os.path.dirname(agent), exist_ok=True)
     write_private(agent, plistlib.dumps({"Label": PANEL_LABEL, "ProgramArguments": program, "RunAtLoad": True,
