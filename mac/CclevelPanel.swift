@@ -8,7 +8,8 @@
 // Three tabs: Creature (the art and the stats), Fix next (the card's top Needs, how to fix each, and its docs page) and Learn
 // (the training path, each stat's next lesson, and the tip of the day). Links open Claude Code's docs pages only.
 //
-// The Creature tab plays the stage's rendered loop (creatures/<stage>.mp4 beside the panel) while the panel is open, a
+// The Creature tab plays the creature's rendered loop while the panel is open (creatures/<stage>_<class>.mp4 beside the
+// panel for its class look, else creatures/<stage>.mp4), a
 // still of its first frame otherwise or with Reduce Motion on, and the card's own text art when there is no clip.
 //
 // `--snapshot OUT.png --card CARD.json [--tab creature|fix|learn] [--clips DIR]` draws the panel into a picture and
@@ -29,6 +30,9 @@ let creatureBox = NSRect(x: 14, y: 4, width: 124, height: 124)
 /// The rendered loop for each stage, beside the panel in creatures/<name>.mp4 (copied there by --panel on).
 let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "Big Guy": "big_guy",
                  "Gigachad": "gigachad", "GOAT": "goat"]
+/// The class look's file suffix: creatures/<stage>_<class>.mp4, when that stage has one for the class.
+let classNames = ["Shipper": "shipper", "AFK Farmer": "afk_farmer", "Loot Goblin": "loot_goblin",
+                  "Tokenmaxxer": "tokenmaxxer", "Perfectly Balanced": "balanced", "Noob": "noob"]
 
 /// Holds the first frame while it is decoded on another queue.
 final class FrameBox: @unchecked Sendable {
@@ -218,20 +222,31 @@ final class PanelView: NSView {
 
     @objc private func motionSettingChanged() { setPlaying(wantsPlay) }
 
-    /// Loads the loop for the card's stage, once per stage: its first frame now, the player for later.
+    /// Loads the loop for the card's stage and class, once per look: its first frame now, the player for later.
+    /// The class look (<stage>_<class>.mp4) comes first; a stage without one plays the stage's own loop.
     private func loadClip() {
-        let stage = card?.stage
-        guard stage != clipStage else { return }
-        clipStage = stage
+        let key = card.map { "\($0.stage)|\($0.cls)" }
+        guard key != clipStage else { return }
+        clipStage = key
         player?.pause()
         looper = nil
         player = nil
         playerLayer.player = nil
         still = nil
         video.isHidden = true
-        guard let stage, let name = clipNames[stage], let dir = clipsDir else { return }
-        let url = dir.appendingPathComponent("\(name).mp4")
-        guard FileManager.default.isReadableFile(atPath: url.path), let frame = firstFrame(url) else { return }
+        guard let card, let name = clipNames[card.stage], let dir = clipsDir else { return }
+        let names = (classNames[card.cls].map { ["\(name)_\($0)"] } ?? []) + [name]
+        // The first one that is there AND decodes: a damaged class look falls back to the stage's own loop.
+        var found: (url: URL, frame: NSImage)?
+        for url in names.map({ dir.appendingPathComponent("\($0).mp4") })
+        where FileManager.default.isReadableFile(atPath: url.path) {
+            if let frame = firstFrame(url) {
+                found = (url, frame)
+                break
+            }
+        }
+        guard let found else { return }
+        let (url, frame) = found
         still = frame
         let queue = AVQueuePlayer()
         queue.isMuted = true

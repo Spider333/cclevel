@@ -2357,11 +2357,12 @@ class Panel(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)
         clips = os.path.join(self.folder, "creatures")
         self.assertEqual(stat.S_IMODE(os.stat(clips).st_mode), 0o700)
-        self.assertEqual(sorted(os.listdir(clips)), sorted(n + ".mp4" for n in cclevel.PANEL_CLIP_NAMES))
-        for name in cclevel.PANEL_CLIP_NAMES:   # the plugin's own loops, byte for byte, private
-            copied = os.path.join(clips, name + ".mp4")
+        shipped = sorted(f for f in os.listdir(os.path.join(ROOT, "mac", "creatures")) if f.endswith(".mp4"))
+        self.assertEqual(sorted(os.listdir(clips)), shipped)
+        for name in shipped:   # the plugin's own loops, byte for byte, private
+            copied = os.path.join(clips, name)
             self.assertEqual(stat.S_IMODE(os.stat(copied).st_mode), 0o600)
-            with open(copied, "rb") as a, open(os.path.join(ROOT, "mac", "creatures", name + ".mp4"), "rb") as b:
+            with open(copied, "rb") as a, open(os.path.join(ROOT, "mac", "creatures", name), "rb") as b:
                 self.assertEqual(a.read(), b.read())
         self.assertEqual(stat.S_IMODE(os.stat(binary).st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(os.stat(scanner).st_mode), 0o600)
@@ -2377,6 +2378,11 @@ class Panel(unittest.TestCase):
         built = "swiftc -O -o %s %s" % (os.path.join(self.folder, "cclevel-panel.building"), PANEL_SOURCE)
         started = ["launchctl bootout gui/%d/com.cclevel.panel" % uid, "launchctl bootstrap gui/%d %s" % (uid, self.agent)]
         self.assertEqual(self.calls(), [built, *started, built, *started])
+
+    def test_every_shipped_loop_has_a_name_panel_off_removes(self):
+        shipped = {f[:-4] for f in os.listdir(os.path.join(ROOT, "mac", "creatures")) if f.endswith(".mp4")}
+        self.assertTrue(set(cclevel.PANEL_STAGE_CLIPS) <= shipped, "every stage has its own loop")
+        self.assertEqual(shipped - set(cclevel.PANEL_CLIP_NAMES), set(), "a loop --panel on copies but --panel off would leave")
 
     def test_off_removes_only_what_on_added_and_is_safe_twice(self):
         write(self.dir, "cclevel/ledger.json", "{}")
@@ -2478,6 +2484,28 @@ class Panel(unittest.TestCase):
             self.assertNotEqual(f.read(), text_art, "the rendered creature replaces the text art")
         missing = draw(card, "--tab", "creature", "--clips", os.path.join(self.tmp.name, "no-clips-here"))
         self.assertEqual(missing.returncode, 0, "a missing clips folder falls back to the text art")
+        # A class look: the same Noob Gigachad card, drawn with all the loops, wears its beanie; drawn with only the
+        # stage's own loop (no class look for it), it plays that. Only the loop differs between the two pictures.
+        with open(card, encoding="utf-8") as f:
+            base = json.load(f)
+        write(self.tmp.name, "noob.json", dict(base, stage="Gigachad", art=cclevel.ART["Gigachad"], **{"class": "Noob"}))
+        only_stage = os.path.join(self.tmp.name, "only-stage")
+        os.makedirs(only_stage)
+        shutil.copyfile(os.path.join(ROOT, "mac", "creatures", "gigachad.mp4"), os.path.join(only_stage, "gigachad.mp4"))
+        looks = {}
+        for name, clips in (("class look", os.path.join(ROOT, "mac", "creatures")), ("stage loop", only_stage)):
+            drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--tab", "creature", "--clips", clips)
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            with open(png, "rb") as f:
+                looks[name] = f.read()
+        self.assertNotEqual(looks["class look"], looks["stage loop"], "the Noob's class look replaces the stage's own loop")
+        # A damaged class look falls back to the stage's own loop, not to the text art.
+        with open(os.path.join(only_stage, "gigachad_noob.mp4"), "wb") as f:
+            f.write(b"not a video" * 100)
+        drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--tab", "creature", "--clips", only_stage)
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        with open(png, "rb") as f:
+            self.assertEqual(f.read(), looks["stage loop"], "a damaged class look plays the stage's loop instead")
         # A card saved by 0.9.0, before the tabs had data: every tab still draws (the new two say they fill in later).
         with open(card, encoding="utf-8") as f:
             old = {k: v for k, v in json.load(f).items() if k not in ("fix", "learn", "tip")}
