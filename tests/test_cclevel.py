@@ -5,7 +5,9 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -2293,6 +2295,144 @@ class Leaderboard(unittest.TestCase):
         self.joined()
         self.assertIn("  %s/card#" % self.url, run("--claude-dir", self.dir, "--card").stdout)
         self.assertEqual(FakeBoard.seen, [])
+
+
+PANEL_SOURCE = os.path.realpath(os.path.join(ROOT, "mac", "CclevelPanel.swift"))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "the menu bar panel is for macOS")
+class Panel(unittest.TestCase):
+    """The opt-in menu bar panel: asks first, builds from the plugin's own source, starts at login, and goes away whole.
+    swiftc and launchctl are stand-ins that log their arguments, and HOME is a test folder: no test touches real login items."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.tmp.name, "home")
+        self.dir = os.path.join(self.home, ".claude")
+        make_folder(self.dir)
+        self.bin = os.path.join(self.tmp.name, "bin")
+        self.log = os.path.join(self.tmp.name, "calls.log")
+        self.fake("swiftc", 'out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; printf bin > "$out"')
+        self.fake("launchctl", "exit 0")
+        self.env = {"HOME": self.home, "PATH": self.bin + os.pathsep + "/usr/bin:/bin"}
+        self.folder = os.path.join(self.dir, "cclevel", "panel")
+        self.agent = os.path.join(self.home, "Library", "LaunchAgents", "com.cclevel.panel.plist")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fake(self, name, body):
+        os.makedirs(self.bin, exist_ok=True)
+        path = os.path.join(self.bin, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\necho "%s $*" >> "%s"\n%s\n' % (name, self.log, body))
+        os.chmod(path, 0o755)
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log, encoding="utf-8") as f:
+            return f.read().splitlines()
+
+    def panel(self, *args):
+        return run("--claude-dir", self.dir, "--panel", *args, env=self.env)
+
+    def test_on_asks_first_and_changes_nothing(self):
+        out = self.panel("on")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Run again with --yes", out.stdout)
+        self.assertIn("sends nothing", out.stdout)
+        self.assertIn("at every login", out.stdout)
+        self.assertFalse(os.path.exists(self.folder))
+        self.assertFalse(os.path.exists(self.agent))
+        self.assertEqual(self.calls(), [], "nothing is built or started before the yes")
+
+    def test_on_builds_from_the_plugins_own_source_and_starts_at_login(self):
+        for _ in range(2):   # a second --panel on replaces the running copy
+            out = self.panel("on", "--yes")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertIn("in your menu bar", out.stdout)
+        binary, scanner, card = (os.path.join(self.folder, n) for n in ("cclevel-panel", "cclevel.py", "card.json"))
+        self.assertEqual(sorted(os.listdir(self.folder)), ["cclevel-panel", "cclevel.py"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(binary).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(scanner).st_mode), 0o600)
+        with open(scanner, encoding="utf-8") as a, open(SCRIPT, encoding="utf-8") as b:
+            self.assertEqual(a.read(), b.read(), "the panel runs its own copy of this scanner")
+        with open(self.agent, "rb") as f:
+            agent = plistlib.load(f)
+        self.assertEqual(agent["Label"], "com.cclevel.panel")
+        self.assertIs(agent["RunAtLoad"], True)
+        self.assertEqual(agent["ProgramArguments"],
+                         [binary, "--python", sys.executable, "--scanner", scanner, "--claude-dir", self.dir, "--cache", card])
+        uid = os.getuid()
+        built = "swiftc -O -o %s %s" % (os.path.join(self.folder, "cclevel-panel.building"), PANEL_SOURCE)
+        started = ["launchctl bootout gui/%d/com.cclevel.panel" % uid, "launchctl bootstrap gui/%d %s" % (uid, self.agent)]
+        self.assertEqual(self.calls(), [built, *started, built, *started])
+
+    def test_off_removes_only_what_on_added_and_is_safe_twice(self):
+        write(self.dir, "cclevel/ledger.json", "{}")
+        self.assertEqual(self.panel("on", "--yes").returncode, 0)
+        write(self.dir, "cclevel/panel/notes.txt", "mine")   # not the panel's: it stays, and so does its folder
+        out = self.panel("off")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("Panel off", out.stdout)
+        self.assertFalse(os.path.exists(self.agent))
+        self.assertEqual(os.listdir(self.folder), ["notes.txt"])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
+        self.assertIn("launchctl bootout gui/%d/com.cclevel.panel" % os.getuid(), self.calls()[-1])
+        os.remove(os.path.join(self.folder, "notes.txt"))
+        again = self.panel("off")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("was not on", again.stdout)
+        self.assertFalse(os.path.exists(self.folder))
+
+    def test_without_apples_tools_it_says_how_to_get_them(self):
+        os.remove(os.path.join(self.bin, "swiftc"))
+        self.env["PATH"] = self.bin   # only the stand-in launchctl: no swiftc anywhere on the way
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("xcode-select --install", out.stdout)
+        self.assertFalse(os.path.exists(self.folder))
+        self.assertFalse(os.path.exists(self.agent))
+
+    def test_a_failed_build_leaves_nothing_half_done(self):
+        self.fake("swiftc", 'echo "error: zzq broke" >&2; exit 1')
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("building the panel failed", out.stdout)
+        self.assertIn("zzq broke", out.stdout)
+        self.assertEqual(os.listdir(self.folder), [])
+        self.assertFalse(os.path.exists(self.agent))
+        self.assertFalse(any(c.startswith("launchctl bootstrap") for c in self.calls()))
+
+    def test_the_json_carries_the_creatures_art_for_the_panel(self):
+        out = run("--claude-dir", self.dir, "--json", "--no-save")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        data = json.loads(out.stdout)
+        self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+
+    @unittest.skipUnless(shutil.which("swiftc"), "needs Apple's swiftc")
+    def test_the_real_panel_builds_and_draws_a_card(self):
+        binary = os.path.join(self.tmp.name, "cclevel-panel")
+        build = subprocess.run(["swiftc", "-module-cache-path", os.path.join(self.tmp.name, "mc"), "-o", binary, PANEL_SOURCE],
+                               capture_output=True, text=True, timeout=600)
+        self.assertEqual(build.returncode, 0, build.stderr)
+        self.assertEqual(build.stderr.strip(), "", "the panel builds without warnings")
+        card = os.path.join(self.tmp.name, "card.json")
+        with open(card, "w", encoding="utf-8") as f:
+            f.write(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
+        png = os.path.join(self.tmp.name, "panel.png")
+        drawn = subprocess.run([binary, "--snapshot", png, "--card", card], capture_output=True, text=True, timeout=60)
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        with open(png, "rb") as f:
+            head = f.read(24)
+        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 672))
+        write(self.tmp.name, "bad.json", {"stage": "Gigachad"})
+        refused = subprocess.run([binary, "--snapshot", png, "--card", os.path.join(self.tmp.name, "bad.json")],
+                                 capture_output=True, text=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, "a card with missing fields is refused, not drawn")
 
 
 if __name__ == "__main__":
