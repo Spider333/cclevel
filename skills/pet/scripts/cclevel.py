@@ -27,6 +27,7 @@ import os
 import plistlib
 import re
 import secrets
+import shutil
 import subprocess
 import stat
 import sys
@@ -1172,6 +1173,100 @@ def tips_command(args, cdir):
         print("They come with cclevel and are kept on this machine; nothing is sent. --tips off stops them.")
     else:
         print("Tips off. The card is back to its short form. /pet learn still shows the lessons.")
+    return 0
+
+
+# ---------------------------------------------------------------- menu bar panel (macOS, opt-in)
+# --panel on builds a small menu bar program from the plugin's own Swift source (mac/CclevelPanel.swift) with Apple's
+# swiftc, keeps it beside a copy of this scanner in <claude dir>/cclevel/panel/, and starts it at login with a LaunchAgent.
+# The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour and sends nothing.
+PANEL_LABEL = "com.cclevel.panel"
+PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
+PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
+
+
+def panel_paths(cdir):
+    folder = os.path.join(cdir, "cclevel", "panel")
+    agent = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", PANEL_LABEL + ".plist")
+    return folder, agent
+
+
+def panel_stop(launchctl):
+    """Stops the running panel, if there is one; quiet either way."""
+    if launchctl:
+        subprocess.run([launchctl, "bootout", "gui/%d/%s" % (os.getuid(), PANEL_LABEL)], capture_output=True, timeout=30)
+
+
+def panel_command(args, cdir):
+    """Puts the creature in the macOS menu bar (on, which asks first) or takes it out again (off)."""
+    folder, agent = panel_paths(cdir)
+    launchctl = shutil.which("launchctl")
+    if args.panel == "off":
+        panel_stop(launchctl)
+        found = False
+        for path in (agent, *(os.path.join(folder, name) for name in PANEL_FILES)):
+            try:
+                os.remove(path)
+                found = True
+            except FileNotFoundError:
+                pass
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)
+        print("Panel off: the creature has left the menu bar and no longer starts at login." if found
+              else "The panel was not on. Nothing to remove.")
+        return 0
+    if sys.platform != "darwin":
+        print("cclevel: the panel is for macOS. The card and the creature band above the prompt work everywhere.")
+        return 1
+    swiftc = shutil.which("swiftc")
+    if not swiftc or not launchctl:
+        print("cclevel: the panel is built on this Mac with Apple's free command line tools, and they are not installed.")
+        print("  Install them with: xcode-select --install   Then run --panel on again.")
+        return 1
+    source = os.path.realpath(PANEL_SOURCE)
+    if not os.path.isfile(source):
+        print("cclevel: this copy of the plugin has no panel source (%s)." % source)
+        return 1
+    card = os.path.join(folder, "card.json")
+    if not args.yes:
+        print("The panel puts your creature in the Mac menu bar: click it for a small black panel with the creature and its stats.")
+        print("Turning it on will:")
+        print("  1. build a small program from the plugin's own source (mac/CclevelPanel.swift) with Apple's swiftc,")
+        print("     into %s" % folder)
+        print("  2. copy this scanner there, so the panel keeps working when the plugin updates")
+        print("  3. start it now and at every login, with %s" % agent)
+        print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, keeps the last")
+        print("result in %s, and sends nothing. --panel off removes all of it." % card)
+        print("Run again with --yes to go ahead.")
+        return 0
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    binary, building, scanner = (os.path.join(folder, n) for n in ("cclevel-panel", "cclevel-panel.building", "cclevel.py"))
+    print("Building the panel with swiftc (a minute or so the first time)...", flush=True)
+    try:
+        build = subprocess.run([swiftc, "-O", "-o", building, source], capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        build = None
+    if build is None or build.returncode != 0 or not os.path.isfile(building):
+        with contextlib.suppress(OSError):
+            os.remove(building)
+        print("cclevel: building the panel failed%s" % (". swiftc said:\n" + build.stderr.strip()[-2000:] if build else " (it took too long)."))
+        return 1
+    os.chmod(building, 0o700)
+    os.replace(building, binary)
+    with open(os.path.realpath(__file__), encoding="utf-8") as f:
+        write_private(scanner, f.read())
+    program = [binary, "--python", sys.executable, "--scanner", scanner, "--claude-dir", cdir, "--cache", card]
+    os.makedirs(os.path.dirname(agent), exist_ok=True)
+    write_private(agent, plistlib.dumps({"Label": PANEL_LABEL, "ProgramArguments": program, "RunAtLoad": True,
+                                         "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"}).decode("utf-8"))
+    panel_stop(launchctl)   # a copy from an earlier --panel on
+    start = subprocess.run([launchctl, "bootstrap", "gui/%d" % os.getuid(), agent], capture_output=True, text=True, timeout=30)
+    if start.returncode != 0:
+        print("cclevel: the panel was built but did not start (%s). Try --panel on --yes again, or --panel off."
+              % (start.stderr.strip() or "launchctl exit %d" % start.returncode))
+        return 1
+    print("The creature is in your menu bar. Click it for the panel; right-click it for Refresh or Quit.")
+    print("It starts at every login. After a plugin update, run --panel on --yes again to update it. --panel off removes it.")
     return 0
 
 
@@ -2502,7 +2597,8 @@ def main():
     ap.add_argument("--no-save", action="store_true", help="do not write the ledger")
     ap.add_argument("--server", help="leaderboard address (default: the public board, or $CCLEVEL_SERVER)")
     ap.add_argument("--yes", action="store_true",
-                    help="with --join, --world on, --auto on, a group or duel start or join, or --verify-github: do not ask again")
+                    help="with --join, --world on, --auto on, --panel on, a group or duel start or join, or --verify-github: "
+                         "do not ask again")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
     board.add_argument("--join", action="store_true", help="join the leaderboard (asks first)")
@@ -2530,6 +2626,9 @@ def main():
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
+    board.add_argument("--panel", choices=("on", "off"),
+                       help="macOS: your creature in the menu bar, with a small panel (on asks first; builds it on this Mac and "
+                            "starts it at login); sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
     board.add_argument("--leave", action="store_true", help="opt out: delete your row and the local token, and never join by itself again")
@@ -2556,6 +2655,12 @@ def main():
         except OSError as e:
             print("cclevel: could not save the tips setting (%s)." % (e.strerror or type(e).__name__))
         sys.exit(1)
+    if args.panel:
+        try:
+            sys.exit(panel_command(args, cdir))
+        except (OSError, subprocess.SubprocessError) as e:
+            print("cclevel: could not set up the panel (%s)." % (getattr(e, "strerror", None) or type(e).__name__))
+        sys.exit(1)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
@@ -2581,8 +2686,8 @@ def main():
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
     if args.json:
-        # The numbers behind the card; the lessons are --learn's to show.
-        print(json.dumps({k: v for k, v in result.items() if k != "lessons"}, indent=1))
+        # The numbers behind the card, and the creature's art (the menu bar panel draws it); the lessons are --learn's to show.
+        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]]), indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
         # Whether this machine is on the board is read from its own files; nothing is sent. Only the folder Claude Code

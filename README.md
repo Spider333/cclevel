@@ -82,6 +82,7 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 |---|---|---|
 | **The card** | Level, six stats, mood, badges and the top things to fix. | No. Fully offline. |
 | **Creature band** | Your creature above the prompt in every Claude Code session, with a level bar, today's XP and its mood. While Claude works it walks (each stage its own way) and acts out the tool: writing while files are edited, sniffing around while Claude searches, lifting while a command runs, flexing when a commit lands, sweating when a tool fails. It sleeps when Claude is idle and bursts on a level up, and in the terminal Claude's spinner says what it is up to ("Gigachad is grinding"). `/creature off` hides it. Needs Claude Code 2.1.287 or later, in the terminal or the Desktop app. | No. Fully offline. |
+| **Menu bar panel** (Mac, opt-in) | Your creature in the Mac menu bar. Click it for a small black panel with the creature, its level bar, today's XP and the six stats; right-click for Refresh or Quit. `/pet panel on` builds it on your Mac from the plugin's own source with Apple's free command line tools and starts it at login; `/pet panel off` removes it. | No. Fully offline. |
 | **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Yes, by default: nine numbers a day. Opt out with `/pet leave`. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Only if you start or join one. |
 | **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
@@ -111,6 +112,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 |---|---|
 | **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running. |
 | **The creature band** | Offline. Draws above your prompt and, when its last score is more than an hour old, rescores in the background with `--json --no-save`, which writes nothing. It keeps the level, stage, mood, XP and time of that score in the plugin's own store. To act out Claude's work it notes which tool runs, whether it failed and whether a command is a commit; it keeps only which action it is showing, for this session, never the command itself. `/creature off` stops it. |
+| **The menu bar panel** | Off until you turn it on (Mac only). It keeps a program and a copy of the scanner in `~/.claude/cclevel/panel/`, starts at login through `~/Library/LaunchAgents/com.cclevel.panel.plist`, and runs the card offline with `--json --no-save` at most once an hour, keeping the last result in `card.json` there. `/pet panel off` removes all of it. |
 | **The board** | On by default. The plugin's check-in hook joins the board at the first Claude Code start and checks in once a day. `/pet leave` opts out in one command and the hook then sends nothing. |
 | **Where data goes** | Only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only for the board: joining and the daily check-in (both on by default), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
@@ -149,6 +151,7 @@ In Claude Code, `/pet` runs these for you. Network commands you run ask first, a
 | `--wrapped [YEAR]` | Your year in review, this year so far by default. Sends nothing. |
 | `--learn` | The training path: five lessons per stat, ticked by what your logs show, with how to do the next one. Offline. |
 | `--tips on` / `--tips off` | A how-to under each Need and one Claude Code tip a day on the card. Off by default; kept on this machine, sends nothing. |
+| `--panel on` / `--panel off` | Mac only: your creature in the menu bar, with a small panel. On asks first, then builds it on this Mac with Apple's `swiftc` and starts it at login; off removes it. Sends nothing. After a plugin update, run `--panel on --yes` again to update it. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
 | `--leave` | Opt out: delete your row and the local token, and never join again by itself. Before joining, it only opts out. |
@@ -201,7 +204,7 @@ Almost. It's pseudonymous: no account, no name, no e-mail, and the board never s
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
 
 **Does it slow down Claude Code or run in the background?**
-Hardly. Two things run on their own. A hook starts one quick check-in a day when Claude Code starts (the first one joins the board), without holding it up; after `/pet leave` or `/pet auto off`, it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than an hour old (about ten seconds of work on a big setup); `/creature off` stops the band and its rescoring.
+Hardly. Two things run on their own. A hook starts one quick check-in a day when Claude Code starts (the first one joins the board), without holding it up; after `/pet leave` or `/pet auto off`, it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than an hour old (about ten seconds of work on a big setup); `/creature off` stops the band and its rescoring. If you turn on the Mac menu bar panel, it keeps running too and rescores the same way, at most once an hour; `/pet panel off` removes it.
 
 **Does it read my prompts?**
 It reads your Claude Code folder to count things (days, tokens, tools used, prompt timestamps). Nothing from your prompts, code or file names is printed, stored or sent.

@@ -1,6 +1,6 @@
 ---
 name: pet
-description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against, leave or opt out of the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), to share or post their card as a picture, for their year in review ('wrapped'), or to learn Claude Code step by step ('/pet learn', lessons, 'how do I get better at Claude Code', '/pet tips on', tips)."
+description: "Claude Code Level card: level, six stats, a creature, its mood and what to fix next, scored from the local Claude Code folder. Use when the user says 'pet', '/pet', 'my level', 'claude code level', 'cclevel', 'score my setup', 'how is my setup doing', or asks to preview, join, check in to (also automatically, once a day), rank against, leave or opt out of the cclevel leaderboard, to start, join or share a private group (an invite link), to challenge a friend to a duel or accept one (a duel link), to share or post their card as a picture, for their year in review ('wrapped'), to learn Claude Code step by step ('/pet learn', lessons, 'how do I get better at Claude Code', '/pet tips on', tips), or to put the creature in the Mac menu bar or take it out ('/pet panel on', '/pet panel off', menu bar, top bar, panel)."
 allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --json), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --no-save), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --preview), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --card), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --wrapped), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --learn), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --tips on), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py --tips off)
 ---
 
@@ -58,6 +58,10 @@ If no public board is configured the script says so. `--server 'ADDRESS'` (in si
 ## Creature band
 
 The plugin also draws the creature above the prompt in each session (Claude Code 2.1.287 or later, terminal and Desktop app): while Claude works it walks and acts out the tool (writing, sniffing around, lifting, flexing on a commit, sweating on a failure), it sleeps when Claude is idle, shows a level bar and today's XP, bursts on a level up, and in the terminal renames Claude's spinner word. It rescores offline at most once an hour. It is not a `cclevel.py` flag: when the user asks to hide or show it, tell them to type `/creature off` or `/creature on` themselves.
+
+## Menu bar panel (Mac, only when the user asks)
+
+`--panel on` puts the creature in the Mac menu bar, with a small black panel of its stats. It builds a program on this Mac and starts it at login, so run `--panel on` without `--yes` first, show what it says, ask in this conversation, and only after an explicit yes run `--panel on --yes`. If it says Apple's command line tools are missing, tell the user to run `xcode-select --install` themselves. `--panel off` removes it and needs no confirmation. After a plugin update, `--panel on --yes` again updates it.
 
 ## Facts to keep straight
 
