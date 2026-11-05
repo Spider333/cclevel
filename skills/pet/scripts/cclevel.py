@@ -1293,6 +1293,10 @@ def panel_command(args, cdir):
     write_private(agent, plistlib.dumps({"Label": PANEL_LABEL, "ProgramArguments": program, "RunAtLoad": True,
                                          "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"}).decode("utf-8"))
     panel_stop(launchctl)   # a copy from an earlier --panel on
+    # Its card was written by the scanner copy it ran, which may be an older version without what this one shows (the
+    # Friends page came with 0.16.0). With no card, the new panel scores the setup as soon as it starts.
+    with contextlib.suppress(OSError):   # none there, or one that cannot go: the panel still starts, as before
+        os.remove(card)
     # macOS finishes stopping that copy in the background, and starting the new one before it has fails ("5:
     # Input/output error"). So a start that fails is tried again, up to three times, a second apart.
     for attempt in range(PANEL_START_TRIES):

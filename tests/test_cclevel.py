@@ -2962,6 +2962,23 @@ class Panel(unittest.TestCase):
         self.assertFalse(os.path.exists(self.agent))
         self.assertEqual(self.calls(), [], "nothing is built or started before the yes")
 
+    def test_a_rebuild_drops_the_old_card_so_the_new_panel_scores_at_once(self):
+        # After a plugin update the old panel's card came from the old scanner (no Friends data before 0.16.0). A rebuild
+        # removes it, so the new panel finds no card and scores at once instead of showing the old one for up to an hour.
+        self.assertEqual(self.panel("on", "--yes").returncode, 0)
+        card = os.path.join(self.folder, "card.json")
+        write(self.folder, "card.json", {"stage": "Egg", "level": 1})   # what an older panel left behind
+        os.utime(card, None)   # just written: by age alone the new panel would keep it for an hour
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertFalse(os.path.exists(card), "the old card is gone before the new panel starts")
+        self.assertIn("in your menu bar", out.stdout)
+        # One that cannot be removed (here a folder in its place) does not stop the rebuild.
+        os.makedirs(os.path.join(card, "x"))
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn("in your menu bar", out.stdout)
+
     def test_on_builds_from_the_plugins_own_source_and_starts_at_login(self):
         for _ in range(2):   # a second --panel on replaces the running copy
             out = self.panel("on", "--yes")
