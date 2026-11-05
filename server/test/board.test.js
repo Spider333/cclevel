@@ -7,6 +7,11 @@ import source from "../src/index.js?raw";
 import wrangler from "../wrangler.jsonc?raw";
 import legacy from "../legacy/index.js";
 import legacyWrangler from "../legacy/wrangler.jsonc?raw";
+import indexPage from "../public/index.html?raw";
+import howPage from "../public/how.html?raw";
+import joinPage from "../public/join.html?raw";
+import duelPage from "../public/duel.html?raw";
+import cardPage from "../public/card.html?raw";
 
 const TOKEN = "a".repeat(64);
 const token = (n) => n.toString(16).padStart(64, "0");
@@ -1317,11 +1322,13 @@ describe("source and configuration hygiene", () => {
 		expect(source.match(/user-agent/gi)).toHaveLength(1);
 	});
 
-	it("keeps request logs off and stays on the default address", () => {
+	it("keeps request logs off, keeps the workers.dev check-in address, and adds only the website's domain", () => {
 		const config = JSON.parse(wrangler.replace(/^\s*\/\/.*$/gm, ""));
 		expect(config.observability).toEqual({ enabled: false });
 		expect(config.workers_dev).toBe(true);
-		for (const key of ["routes", "route", "logpush", "tail_consumers"]) expect(config).not.toHaveProperty(key);
+		// The public board adds only its website's domain; a self-hosted copy deletes the block (docs/self-hosting.md).
+		expect([[], [{ pattern: "cclevel.com", custom_domain: true }]]).toContainEqual(config.routes ?? []);
+		for (const key of ["route", "logpush", "tail_consumers"]) expect(config).not.toHaveProperty(key);
 		expect(config.ratelimits[0]).toMatchObject({ name: "NEW_ROWS", simple: { limit: 2, period: 60 } });
 		expect(config.ratelimits[1]).toMatchObject({ name: "PER_CREATURE", simple: { limit: 10, period: 60 } });
 		expect(config.ratelimits[2]).toMatchObject({ name: "GITHUB_CALLS", simple: { limit: 20, period: 60 } });
@@ -1427,5 +1434,65 @@ describe("the board's first address", () => {
 		for (const key of ["routes", "route", "logpush", "tail_consumers", "d1_databases", "ratelimits"]) {
 			expect(config).not.toHaveProperty(key);
 		}
+	});
+});
+
+describe("the website's domain", () => {
+	const count = async () => (await env.DB.prepare("SELECT COUNT(*) AS n FROM entries").first()).n;
+
+	it("refuses every API call on cclevel.com and www, and writes nothing", async () => {
+		expect((await checkin(score(), token(9001))).status).toBe(200); // a row that a refused call could touch
+		const before = await count();
+		const rows = await env.DB.prepare("SELECT * FROM entries").all();
+		for (const host of ["cclevel.com", "www.cclevel.com"]) {
+			for (const [method, path] of [["POST", "/api/checkin"], ["DELETE", "/api/entry"], ["PUT", "/api/world"],
+				["POST", "/api/group"], ["GET", "/api/group"], ["POST", "/api/duel"], ["PUT", "/api/github"], ["GET", "/api/nothing"]]) {
+				const res = await worker.fetch(new Request(`https://${host}${path}`, {
+					method,
+					headers: { authorization: `Bearer ${token(9001)}`, "cf-connecting-ip": "10.9.9.9" },
+					body: method === "GET" ? undefined : JSON.stringify(score({ xp: 5000 })),
+				}), env);
+				expect(res.status).toBe(404);
+				expect((await res.json()).error).toMatch(/board's own address/);
+			}
+		}
+		expect(await count()).toBe(before);
+		expect((await env.DB.prepare("SELECT * FROM entries").all()).results).toEqual(rows.results);
+	});
+
+	it("still answers check-ins on the board's own address and serves the lists on the website", async () => {
+		expect((await checkin(score(), token(9002))).status).toBe(200); // positive control: the same body, own address
+		for (const path of ["/board.json", "/top.json"]) {
+			const res = await worker.fetch(new Request(`https://cclevel.com${path}`), env);
+			expect(res.status).toBe(200);
+			expect(res.headers.get("content-type")).toMatch(/json/);
+		}
+	});
+
+	it("also refuses the website's names written with a trailing dot", async () => {
+		const before = await count();
+		for (const host of ["cclevel.com.", "www.cclevel.com."]) {
+			const res = await worker.fetch(new Request(`https://${host}/api/checkin`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token(9003)}`, "cf-connecting-ip": "10.9.9.8" },
+				body: JSON.stringify(score()),
+			}), env);
+			expect(res.status).toBe(404);
+			expect((await res.json()).error).toContain("https://go.cclevel.workers.dev");
+		}
+		expect(await count()).toBe(before);
+	});
+
+	it("keeps the contact address on every page out of Cloudflare's e-mail rewriting", () => {
+		for (const page of [indexPage, howPage, joinPage, duelPage, cardPage]) {
+			expect(page).toContain("<!--email_off-->cclevel.grimace562@passmail.net<!--/email_off-->");
+			expect(page.match(/grimace562@passmail\.net/g)).toHaveLength(1);
+		}
+	});
+
+	it("leaves any other host alone, so a self-hosted board keeps its API", async () => {
+		const res = await worker.fetch(new Request("https://my-board.example.workers.dev/api/nothing"), env);
+		expect(res.status).toBe(404);
+		expect((await res.json()).error).toBe("not found");
 	});
 });

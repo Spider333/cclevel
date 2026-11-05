@@ -843,9 +843,16 @@ async function film(request, env) {
 	return new Response(request.method === "HEAD" ? null : body.slice(start, end + 1), { status: 206, headers });
 }
 
+// The public board's website. Cloudflare keeps sampled visit logs, with IP addresses, for every custom domain, so
+// the API never answers there: check-ins go only to the workers.dev address, which keeps no such logs (PRIVACY.md).
+// Keyed on the host names, so a self-hosted board is not affected.
+const SITE_HOSTS = new Set(["cclevel.com", "www.cclevel.com"]);
+const SITE_API_REFUSED = "Check-ins go to the board's own address, https://go.cclevel.workers.dev. Update the plugin: /plugin marketplace update cclevel";
+
 export default {
 	async fetch(request, env) {
-		const { pathname } = new URL(request.url);
+		const { pathname, hostname } = new URL(request.url);
+		if (SITE_HOSTS.has(hostname.replace(/\.$/, "")) && pathname.startsWith("/api/")) return json({ error: SITE_API_REFUSED }, 404);
 		try {
 			if (pathname === "/hero-loop.mp4" && (request.method === "GET" || request.method === "HEAD")) return await film(request, env);
 			if (pathname === "/api/checkin" && request.method === "POST") return await checkin(request, env);
