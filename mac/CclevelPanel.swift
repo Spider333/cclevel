@@ -27,10 +27,12 @@ let dim = NSColor(white: 0.55, alpha: 1)
 let track = NSColor(white: 0.22, alpha: 1)
 let cardFill = NSColor(white: 0.1, alpha: 1)
 let panelWidth: CGFloat = 360
-let panelHeight: CGFloat = 696
+let panelHeight: CGFloat = 754
 /// The scanner's DAY_CAP: the most XP one day can bank (a test keeps the two the same).
 let dayCap = 550
 let trendDays = 14
+/// The scanner's and the board's GROUP_MAX: the most creatures one private group holds (a test keeps them the same).
+let groupMax = 25
 let edge: CGFloat = 12      // page edge to a card
 let inset: CGFloat = 14     // card edge to what is in it
 let gap: CGFloat = 10       // between cards
@@ -65,6 +67,41 @@ func firstFrame(_ url: URL) -> NSImage? {
     }
     guard done.wait(timeout: .now() + 5) == .success, let image = box.image else { return nil }
     return NSImage(cgImage: image, size: creatureBox.size)
+}
+
+/// Small stills of friends' creatures (their stage and class look), each look decoded once, misses included.
+var faceCache: [String: NSImage?] = [:]
+
+func faceImage(stage: String, cls: String, dir: URL?) -> NSImage? {
+    guard let dir, let name = clipNames[stage] else { return nil }
+    let key = "\(dir.path)|\(stage)|\(cls)"
+    if let hit = faceCache[key] { return hit }
+    var found: NSImage?
+    for url in ((classNames[cls].map { ["\(name)_\($0)"] } ?? []) + [name]).map({ dir.appendingPathComponent("\($0).mp4") })
+    where FileManager.default.isReadableFile(atPath: url.path) {
+        if let frame = firstFrame(url) {
+            found = frame
+            break
+        }
+    }
+    faceCache[key] = found
+    return found
+}
+
+/// A friend's face in a small rounded square: the still, or the stage's first letter when there is none.
+func drawFace(_ image: NSImage?, in rect: NSRect, stage: String) {
+    NSGraphicsContext.saveGraphicsState()
+    NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.22, yRadius: rect.width * 0.22).addClip()
+    NSColor.black.setFill()
+    rect.fill()
+    if let image {
+        image.draw(in: rect)
+    } else {
+        let font = NSFont.systemFont(ofSize: rect.width * 0.45, weight: .semibold)
+        let letter = String(stage.prefix(1))
+        put(letter, font, orange, at: NSPoint(x: rect.midX - textWidth(letter, font) / 2, y: rect.midY - font.pointSize * 0.62))
+    }
+    NSGraphicsContext.restoreGraphicsState()
 }
 let docsPrefix = "https://code.claude.com/docs/"
 
@@ -145,6 +182,136 @@ struct Training {
     }
 }
 
+/// True or false from data this program does not control (JSON booleans arrive as NSNumber).
+func flag(_ value: Any?) -> Bool? {
+    guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+    return n.boolValue
+}
+
+/// A whole number from data this program does not control, from 0 up to (not including) `limit`.
+func whole(_ value: Any?, limit: Double = 1_000_000_000) -> Int? {
+    guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.rounded() == n.doubleValue,
+          n.doubleValue >= 0, n.doubleValue < limit else { return nil }
+    return n.intValue
+}
+
+/// One creature in the private group, as the scanner worked it out from its saved copy of the board's reply.
+struct Friend {
+    let name: String, stage: String, cls: String
+    let place: Int, level: Int, xp: Int
+    var weekXP: Int
+    let you: Bool, sus: Bool
+    var crown: Bool
+
+    init?(_ value: Any?) {
+        guard let o = value as? [String: Any], let place = whole(o["place"]), (1...groupMax).contains(place),
+              let name = shortText(o["name"], 40), let stage = shortText(o["stage"], 20),
+              clipNames[stage] != nil, let cls = shortText(o["class"], 30), let level = whole(o["level"]), (1...99).contains(level),
+              let xp = whole(o["xp"]), let weekXP = whole(o["week_xp"]), let you = flag(o["you"]), let sus = flag(o["sus"]),
+              let crown = flag(o["crown"]) else { return nil }
+        self.name = name; self.stage = stage; self.cls = cls
+        self.place = place; self.level = level; self.xp = xp; self.weekXP = weekXP
+        self.you = you; self.sus = sus; self.crown = crown
+    }
+}
+
+/// The Friends page's data. The panel never asks the board for it: the daily check-in (or /pet group) saves the group,
+/// and the scanner hides a copy older than a day and a half, and everything in Privacy mode.
+struct Friends {
+    enum State: String { case ok, none, stale, privacy }
+    let state: State, auto: Bool, fetched: Date?, members: [Friend]
+
+    init?(_ value: Any?) {
+        guard let o = value as? [String: Any], let raw = shortText(o["state"], 10), let state = State(rawValue: raw) else { return nil }
+        self.state = state
+        self.auto = flag(o["auto"]) ?? false
+        guard state == .ok else {
+            self.fetched = nil
+            self.members = []
+            return
+        }
+        guard let fetched = whole(o["fetched"], limit: 10_000_000_000), let list = o["members"] as? [Any],
+              (1...groupMax).contains(list.count) else { return nil }
+        let members = list.compactMap(Friend.init)
+        guard members.count == list.count else { return nil }
+        self.fetched = Date(timeIntervalSince1970: TimeInterval(fetched))
+        self.members = members
+    }
+
+    /// What to show now. The scanner already hides an old copy, but a card can sit unrescored (a sleeping Mac, a failed
+    /// score), so the panel checks again when it draws: a copy older than 36 hours is stale, one from the future is ignored.
+    func shown(now: Date = Date()) -> State {
+        guard state == .ok, let fetched else { return state }
+        let age = now.timeIntervalSince(fetched)
+        return age < -300 ? .none : age > friendsFresh ? .stale : .ok
+    }
+
+    /// The members as they may be shown now: a copy read in an earlier ISO week (Monday 00:00 UTC on, as the board counts
+    /// them) shows nobody's XP this week, and nobody wears the crown. The scanner does the same when it writes the card.
+    func members(now: Date = Date()) -> [Friend] {
+        guard let fetched, isoWeek(fetched) != isoWeek(now) else { return members }
+        return members.map { m in
+            var last = m
+            last.weekXP = 0
+            last.crown = false
+            return last
+        }
+    }
+}
+
+func isoWeek(_ date: Date) -> String {
+    var calendar = Calendar(identifier: .iso8601)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let c = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+    return "\(c.yearForWeekOfYear ?? 0)-W\(c.weekOfYear ?? 0)"
+}
+
+/// The scanner's FRIENDS_FRESH: no saved copy of the group older than this is shown (a test keeps them the same).
+let friendsFresh: TimeInterval = 36 * 3600
+
+/// The group's invite link: only one of cclevel's own join links (https, or http on this machine for a test board).
+func inviteLinkOK(_ s: String) -> Bool {
+    guard let url = URL(string: s), url.path == "/join" || url.path.hasSuffix("/join"), url.query == nil, url.user == nil,
+          url.password == nil,
+          let code = url.fragment, code.count == 32, code.allSatisfy({ "0123456789abcdef".contains($0) }),
+          let host = url.host, !host.isEmpty else { return false }
+    return url.scheme == "https" || (url.scheme == "http" && (host == "localhost" || host == "127.0.0.1"))
+}
+
+/// The invite card's data: the group's generated name and its link, which anyone can open to join.
+struct Invite {
+    let name: String, link: String, max: Int
+
+    init?(_ value: Any?) {
+        guard let o = value as? [String: Any], let name = shortText(o["name"], 60), let link = shortText(o["link"], 200),
+              inviteLinkOK(link), let max = whole(o["max"]), (1...100).contains(max) else { return nil }
+        self.name = name; self.link = link; self.max = max
+    }
+}
+
+/// Whether this machine is in Privacy mode now: the scanner's opted-out note. Anything at that path counts, as it does for
+/// the scanner, and a link is not followed.
+func privacyCheck(_ claudeDir: String) -> () -> Bool {
+    let note = URL(fileURLWithPath: claudeDir).appendingPathComponent("cclevel").appendingPathComponent("opted-out").path
+    return { (try? FileManager.default.attributesOfItem(atPath: note)) != nil }
+}
+
+/// Puts text on the clipboard.
+func copyToClipboard(_ text: String) -> Bool {
+    let board = NSPasteboard.general
+    board.clearContents()
+    return board.setString(text, forType: .string)
+}
+
+/// What the invite card's Copy button does, and --copy-invite too: copies the card's invite link, unless the card or this
+/// machine is in Privacy mode or the link is not one of cclevel's join links. Returns whether it copied.
+func copyInviteLink(_ card: Card, privacyOn: (() -> Bool)?) -> Bool {
+    guard card.friends?.state != .privacy, privacyOn?() != true, let invite = card.invite, inviteLinkOK(invite.link) else {
+        return false
+    }
+    return copyToClipboard(invite.link)
+}
+
 /// The numbers behind the card, from data this program does not control: every field is checked.
 struct Card {
     let stage: String, cls: String, brain: String, mood: String
@@ -159,6 +326,9 @@ struct Card {
     let xpByDay: [Int]?
     /// The UTC day the card was scored, yyyy-mm-dd: where the Trend ends, and what the Today tile is about.
     let generated: String?
+    /// The Friends page: nil on a card from before 0.16.0 (it fills in at the next score). The invite only with a group.
+    let friends: Friends?
+    let invite: Invite?
 
     init?(json: Any) {
         guard let o = json as? [String: Any] else { return nil }
@@ -198,6 +368,9 @@ struct Card {
         // The day stands on its own (the Today tile needs it on any card); the Trend needs both.
         self.generated = day
         self.xpByDay = day == nil ? nil : trend
+        let friends = Friends(o["friends"])
+        self.friends = friends
+        self.invite = friends?.state == .privacy ? nil : Invite(o["invite"])
     }
 
     /// How far through its level the creature is, 0 to 1.
@@ -477,9 +650,11 @@ final class DocsButton: NSButton {
     var url: URL?
 }
 
-/// A half-width card at the bottom of the overview that opens one of the two lists, Fix next or Learn.
+/// A card at the bottom of the overview that opens one of its lists: Friends (full width), Fix next or Learn.
 final class TileButton: NSButton {
     private let name: String, symbol: String, note: String
+    /// Small creature faces drawn left of the note (the Friends button): each a still or nil, with its stage.
+    var faces: [(NSImage?, String)] = [] { didSet { needsDisplay = true } }
     private var hovering = false { didSet { needsDisplay = true } }
     private var hover: NSTrackingArea?
 
@@ -514,7 +689,15 @@ final class TileButton: NSButton {
         // A little lighter while the pointer is on it, lighter still while it is pressed.
         NSColor(white: isHighlighted ? 0.18 : hovering ? 0.14 : 0.1, alpha: 1).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: corner, yRadius: corner).fill()
-        heading(name, symbol, right: note.isEmpty ? "›" : "\(note)  ›", width: bounds.width, top: (bounds.height - 17) / 2)
+        let right = note.isEmpty ? "›" : "\(note)  ›"
+        heading(name, symbol, right: right, width: bounds.width, top: (bounds.height - 17) / 2)
+        guard !faces.isEmpty else { return }
+        let side: CGFloat = 24, step: CGFloat = 28
+        var x = bounds.width - inset - textWidth(right, .systemFont(ofSize: 11.5)) - 10 - CGFloat(faces.count) * step + (step - side)
+        for (image, stage) in faces {
+            drawFace(image, in: NSRect(x: x, y: (bounds.height - side) / 2, width: side, height: side), stage: stage)
+            x += step
+        }
     }
 
     // The keyboard focus ring follows the card's rounded corners.
@@ -525,9 +708,9 @@ final class TileButton: NSButton {
     override var focusRingMaskBounds: NSRect { bounds }
 }
 
-/// What the panel shows: the overview of cards, or one of the two lists it opens.
+/// What the panel shows: the overview of cards, or one of the three lists it opens.
 enum Page: String {
-    case home, fix, learn
+    case home, fix, learn, friends
 }
 
 /// The whole panel, in a popover of a fixed size: the overview of cards, or the Fix next or Learn list with a way back.
@@ -549,6 +732,18 @@ final class PageView: NSView {
     private let footer = NSTextField(labelWithString: "")
     private var kept: [NSView] { [title, back, note, footer, creature] }
     private var isOpen = false
+    /// True while this machine is in Privacy mode, read from its own files each time the page is drawn (the panel sets it),
+    /// so turning Privacy mode on hides friends at once, before the next score rewrites the card.
+    var privacyOn: (() -> Bool)?
+    /// The time the Friends page is drawn at: the clock, or a fixed time a snapshot is given (--now, for tests).
+    var clock: () -> Date = { Date() }
+
+    /// The Friends data as it may be shown now: in Privacy mode nothing, and the saved copy's age checked again.
+    private func friendsNow(_ c: Card) -> (state: Friends.State, friends: Friends, invite: Invite?)? {
+        guard let f = c.friends else { return nil }
+        if f.state == .privacy || privacyOn?() == true { return (.privacy, f, nil) }
+        return (f.shown(now: clock()), f, c.invite)
+    }
     /// The page's width: the panel's, less the scroller when the page is taller than the panel.
     private var pageWidth = panelWidth
     private var cardWidth: CGFloat { pageWidth - 2 * edge }
@@ -626,7 +821,18 @@ final class PageView: NSView {
 
     @objc private func openFix() { show(.fix) }
     @objc private func openLearn() { show(.learn) }
+    @objc private func openFriends() { show(.friends) }
     @objc private func goBack() { show(.home) }
+
+    @objc private func copyInvite(_ sender: NSButton) {
+        guard let c = card, copyInviteLink(c, privacyOn: privacyOn) else { return }
+        sender.title = "Copied"
+        sender.setAccessibilityLabel("Invite link copied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak sender] in
+            sender?.title = "Copy invite link"
+            sender?.setAccessibilityLabel("Copy the invite link")
+        }
+    }
 
     private func updateHeader() {
         let when = updated.map { "Updated " + DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) + " · offline" }
@@ -709,15 +915,19 @@ final class PageView: NSView {
                     place(view, x: edge, y: y, width: cardWidth, height: height)
                     y += height + gap
                 }
+                place(friendsButton(c), x: edge, y: y, width: cardWidth, height: buttonHeight)
+                y += buttonHeight + gap
                 place(fixButton(c), x: edge, y: y, width: half, height: buttonHeight)
                 place(learnButton(c), x: edge + half + gap, y: y, width: half, height: buttonHeight)
                 y += buttonHeight + gap
             }
         } else if let c = card {
             cards.append(back)
-            let (view, height) = page == .fix ? fixCard(c) : learnCard(c)
-            place(view, x: edge, y: y, width: cardWidth, height: height)
-            y += height + gap
+            let parts = page == .fix ? [fixCard(c)] : page == .learn ? [learnCard(c)] : friendsCards(c)
+            for (view, height) in parts {
+                place(view, x: edge, y: y, width: cardWidth, height: height)
+                y += height + gap
+            }
         }
         footer.stringValue = card.map { "Aura \(grouped($0.power)) · right-click for Refresh or Quit" }
             ?? "Right-click the creature in the menu bar for Refresh or Quit"
@@ -885,6 +1095,113 @@ final class PageView: NSView {
         return (card, y + 8)
     }
 
+    private func friendsButton(_ c: Card) -> TileButton {
+        let now = friendsNow(c)
+        let members = now?.state == .ok ? now?.friends.members ?? [] : []
+        let label: String
+        switch now?.state {
+        case .ok?: label = "Friends: \(members.count) \(members.count == 1 ? "creature" : "creatures") in your group. Opens the list"
+        case .privacy?: label = "Friends: off in Privacy mode. Opens the page"
+        case .stale?: label = "Friends: need a fresh check-in. Opens the page"
+        case .none?: label = now?.invite == nil ? "Friends: no group yet. Opens the page" : "Friends: your invite link. Opens the page"
+        case nil: label = "Friends: fills in at the next score. Opens the page"
+        }
+        let button = TileButton("Friends", "person.2.fill", note: members.isEmpty ? "" : String(members.count), label: label,
+                                target: self, action: #selector(openFriends))
+        button.faces = members.prefix(5).map { (faceImage(stage: $0.stage, cls: $0.cls, dir: creature.clipsDir), $0.stage) }
+        return button
+    }
+
+    /// The Friends page: the invite card (when a group code is saved here), then the group's creatures.
+    private func friendsCards(_ c: Card) -> [(NSView, CGFloat)] {
+        guard let now = friendsNow(c) else { return [waiting("Friends", "person.2.fill")] }
+        if now.state == .privacy {
+            return [message("Friends: off in Privacy mode", "Friends are off in Privacy mode.")]
+        }
+        var parts: [(NSView, CGFloat)] = []
+        if let invite = now.invite { parts.append(inviteCard(invite)) }
+        switch now.state {
+        case .ok: parts.append(membersCard(now.friends))
+        case .stale: parts.append(message("Friends: need a fresh check-in", "Friends need a fresh check-in: run /pet group."))
+        default:
+            if now.invite == nil {
+                parts.append(message("Friends: no group yet",
+                                     "No group yet. In Claude Code, /pet group create starts one, or open a friend's invite link to join."))
+            } else if now.friends.auto {
+                parts.append(message("Friends: they show here after the next check-in",
+                                     "Your friends show here after the next daily check-in, or run /pet group."))
+            } else {
+                parts.append(message("Friends: run /pet group to see them", "Run /pet group in Claude Code to see them."))
+            }
+        }
+        return parts
+    }
+
+    private func inviteCard(_ invite: Invite) -> (NSView, CGFloat) {
+        let card = CardView("Invite friends: \(invite.name). Anyone with the link can join, up to \(invite.max)") { w in
+            heading("Invite friends", "link", width: w)
+        }
+        var y: CGFloat = 40
+        label(invite.name, .systemFont(ofSize: 13, weight: .semibold), .white, in: card, y: &y, gap: 2)
+        label("Anyone with this link can join, up to \(invite.max).", .systemFont(ofSize: 11), dim, in: card, y: &y, gap: 10)
+        let copy = NSButton(title: "Copy invite link", target: self, action: #selector(copyInvite(_:)))
+        copy.bezelStyle = .rounded
+        copy.controlSize = .regular
+        copy.setAccessibilityLabel("Copy the invite link")
+        copy.sizeToFit()
+        copy.frame.origin = NSPoint(x: inset - 6, y: y)
+        card.addSubview(copy)
+        y += copy.frame.height + 12
+        return (card, y)
+    }
+
+    /// The group's creatures, best first by XP since joining, as of the saved copy's time.
+    private func membersCard(_ f: Friends) -> (NSView, CGFloat) {
+        let members = f.members(now: clock())   // last week's copy shows nobody's XP this week
+        let top: CGFloat = 40, row: CGFloat = 44, faceSide: CGFloat = 32
+        let faces = members.map { faceImage(stage: $0.stage, cls: $0.cls, dir: creature.clipsDir) }
+        let spoken = members.enumerated().map { i, m in
+            "\(m.place), \(m.name), Lv \(m.level) \(m.stage), \(grouped(m.weekXP)) XP this week" +
+                (m.crown ? ", most XP this week" : "") + (m.you ? ", you" : "") + (m.sus ? ", sus" : "")
+        }
+        var when = ""
+        if let fetched = f.fetched {
+            when = DateFormatter.localizedString(from: fetched, dateStyle: Calendar.current.isDateInToday(fetched) ? .none : .short,
+                                                 timeStyle: .short)
+        }
+        let foot = "As of \(when). " + (f.auto ? "Updates with the daily check-in." : "Run /pet group to update.")
+        let card = CardView("Friends: \(members.count) in your group. " + spoken.joined(separator: "; ") + ". " + foot) { w in
+            heading("Friends", "person.2.fill", right: "\(members.count) in your group", width: w)
+            for (i, m) in members.enumerated() {
+                let y = top + CGFloat(i) * row
+                put("\(m.place)", mono(11, .medium), dim, at: NSPoint(x: inset, y: y + 13))
+                drawFace(faces[i], in: NSRect(x: inset + 18, y: y + 4, width: faceSide, height: faceSide), stage: m.stage)
+                let x = inset + 18 + faceSide + 10
+                let tags = [m.crown ? "♛" : "", m.you ? "(you)" : "", m.sus ? "sus" : ""].filter { !$0.isEmpty }.joined(separator: " ")
+                let tagFont = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+                let tagWidth = tags.isEmpty ? 0 : textWidth(tags, tagFont)
+                let textWidth = w - x - inset - (tagWidth > 0 ? tagWidth + 8 : 0)
+                put(m.name, .systemFont(ofSize: 12.5, weight: .medium), .white, at: NSPoint(x: x, y: y + 4), width: textWidth)
+                put("Lv \(m.level) \(m.stage) · +\(grouped(m.weekXP)) XP this week", .systemFont(ofSize: 11), dim,
+                    at: NSPoint(x: x, y: y + 21), width: textWidth)
+                if !tags.isEmpty {
+                    put(tags, tagFont, m.crown ? orange : dim, at: NSPoint(x: w - inset - tagWidth, y: y + 13))
+                }
+            }
+            put(foot, .systemFont(ofSize: 10.5), dim, at: NSPoint(x: inset, y: top + CGFloat(members.count) * row + 4),
+                width: w - 2 * inset)
+        }
+        return (card, top + CGFloat(members.count) * row + 28)
+    }
+
+    /// A Friends page card with one message under its title.
+    private func message(_ spoken: String, _ text: String) -> (NSView, CGFloat) {
+        let card = CardView(spoken) { w in heading("Friends", "person.2.fill", width: w) }
+        var y: CGFloat = 40
+        label(text, .systemFont(ofSize: 12), dim, in: card, y: &y)
+        return (card, y + 10)
+    }
+
     /// A card whose data comes with the next score (the card on disk is older than the panel).
     private func waiting(_ name: String, _ symbol: String) -> (NSView, CGFloat) {
         let card = CardView("\(name): fills in at the next score") { w in
@@ -919,6 +1236,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             NSWorkspace.shared.open(url)
             self?.popover.performClose(nil)
         }
+        root.privacyOn = privacyCheck(claudeDir)
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
@@ -1052,6 +1370,20 @@ func option(_ name: String) -> String? {
 
 let app = NSApplication.shared
 
+// What the invite card's Copy button does (the same function, Privacy mode check included, with --claude-dir for the
+// folder to check), without the panel: for tests. Prints nothing; the link is on the clipboard.
+if CommandLine.arguments.contains("--copy-invite") {
+    guard let path = option("--card"), let data = FileManager.default.contents(atPath: path), let card = readCard(data) else {
+        FileHandle.standardError.write("cclevel-panel: --copy-invite needs --card with a card from `cclevel.py --json`\n".data(using: .utf8)!)
+        exit(1)
+    }
+    guard copyInviteLink(card, privacyOn: option("--claude-dir").map(privacyCheck)) else {
+        FileHandle.standardError.write("cclevel-panel: no invite link to copy (no group, or Privacy mode)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    exit(0)
+}
+
 if let out = option("--snapshot") {
     guard let path = option("--card"), let data = FileManager.default.contents(atPath: path), let card = readCard(data) else {
         FileHandle.standardError.write("cclevel-panel: --snapshot needs --card with a card from `cclevel.py --json`\n".data(using: .utf8)!)
@@ -1068,11 +1400,17 @@ if let out = option("--snapshot") {
     if let clips = option("--clips") {
         view.creature.clipsDir = URL(fileURLWithPath: clips, isDirectory: true)
     }
+    if let dir = option("--claude-dir") {
+        view.privacyOn = privacyCheck(dir)   // as the running panel checks it
+    }
+    if let text = option("--now"), let seconds = Double(text) {
+        view.clock = { Date(timeIntervalSince1970: seconds) }   // the Friends page drawn as at that moment
+    }
     view.card = card
     view.updated = Date(timeIntervalSince1970: 0)
     if CommandLine.arguments.contains("--page") {
         guard let name = option("--page"), let page = Page(rawValue: name) else {
-            FileHandle.standardError.write("cclevel-panel: --page is home, fix or learn\n".data(using: .utf8)!)
+            FileHandle.standardError.write("cclevel-panel: --page is home, fix, learn or friends\n".data(using: .utf8)!)
             exit(1)
         }
         view.show(page)

@@ -196,7 +196,11 @@
 </details>
 <details>
 <summary>Does it slow down Claude Code or run in the background?</summary>
-<p>Hardly. Two things run on their own. In Default mode, a hook starts one quick check-in a day when Claude Code starts (the first one puts you on the board), without holding it up; in Privacy mode it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than an hour old (about ten seconds of work on a big setup); <code>/creature off</code> stops the band and its rescoring.</p>
+<p>Hardly. Two things run on their own. In Default mode, a hook starts one quick check-in a day when Claude Code starts (the first one puts you on the board), then reads your own private group once for the Mac panel, without holding it up; in Privacy mode it sends nothing. The creature band above your prompt rescores your setup offline, in the background, when its last score is more than an hour old (about ten seconds of work on a big setup); <code>/creature off</code> stops the band and its rescoring.</p>
+</details>
+<details>
+<summary>Can I see my friends in the Mac panel?</summary>
+<p>Yes, in Default mode. The panel's Friends page has your group's invite link with a Copy button, and each friend's creature, level and XP this week. The panel itself makes no network call: it shows the copy saved by the daily check-in or by <code>/pet group</code>, and hides it after 36 hours. A friend who just left, or turned Privacy mode on, can still show on your panel until your next refresh. In Privacy mode cclevel sends nothing, and the Friends page says friends are off.</p>
 </details>
 <details>
 <summary>Does it read my prompts?</summary>

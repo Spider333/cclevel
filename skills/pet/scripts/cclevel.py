@@ -1258,6 +1258,8 @@ def panel_command(args, cdir):
         print("  3. start it now and at every login, with %s" % agent)
         print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, keeps the last")
         print("result in %s, and sends nothing. --panel off removes all of it." % card)
+        print("Its Friends page shows your private group as the last daily check-in or --group saved it (Default mode);")
+        print("in Privacy mode cclevel sends nothing and the page says friends are off.")
         print("Run again with --yes to go ahead.")
         return 0
     os.makedirs(folder, mode=0o700, exist_ok=True)
@@ -1692,15 +1694,15 @@ def parse_reply(raw):
         return {}
 
 
-def call(server, method, path, token=None, body=None):
-    """One request to the board. Returns (status, reply dict)."""
+def call(server, method, path, token=None, body=None, timeout=15):
+    """One request to the board. Returns (status, reply dict). `timeout` is in seconds, per socket operation."""
     req = urllib.request.Request(server + path, method=method,
                                  data=None if body is None else json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json", "User-Agent": "cclevel"})
     if token:
         req.add_header("Authorization", "Bearer " + token)
     try:
-        with (LOCAL_OPENER if server.startswith("http://") else OPENER).open(req, timeout=15) as resp:
+        with (LOCAL_OPENER if server.startswith("http://") else OPENER).open(req, timeout=timeout) as resp:
             return resp.status, parse_reply(resp.read(MAX_REPLY + 1))
     except urllib.error.HTTPError as e:
         # A refusal's body goes through the same checks. Only its one-word reason is ever looked up, never printed.
@@ -1840,6 +1842,104 @@ def group_name(code):
     return "%s %s Crew" % (ADJECTIVES[first % len(ADJECTIVES)], ANIMALS[second % len(ANIMALS)])
 
 
+# The menu bar panel's Friends page. The panel itself never calls the board: the daily check-in (and /pet group) save the
+# group's reply in identity.json, and --json shows it from there. A friend who left stays in an older copy only until the
+# next read, and no copy older than FRIENDS_FRESH is shown at all.
+FRIENDS_FRESH = 36 * 3600   # seconds
+# The hook's group read: skipped when the score and check-in already took this long, with a short socket timeout and a
+# short wait to save it, so the hook lets go of the board lock soon after its check-in (--leave and --privacy on wait 30 s).
+GROUP_READ_AFTER, GROUP_READ_TIMEOUT, GROUP_SAVE_WAIT = 15, 5, 2
+# The footer promises an update with the daily check-in only while the saved copy is about a day old or newer; a copy
+# older than this (a slow setup whose read was skipped, a few days without Claude Code) says to run /pet group instead.
+FRIENDS_DAILY = 26 * 3600
+FRIEND_FIELDS = ("name", "level", "witnessed_xp", "week_xp", "stats", "sus", "you")   # what a saved copy keeps
+FRIEND_XP = ("witnessed_xp", "week_xp")
+
+
+def friends_snapshot(reply):
+    """A group reply as it is saved for the panel: the checked members and when they were read, or None for a reply this
+    copy does not understand. An empty list means the board has this creature in no group."""
+    members = reply.get("members")
+    if not isinstance(members, list) or len(members) > GROUP_MAX:
+        return None
+    checked = [member(m) for m in members]
+    if None in checked:
+        return None
+    # Only the fields the Friends page shows from: anything else a board sends never reaches identity.json.
+    keep = FRIEND_FIELDS
+    return {"fetched": int(time.time()), "members": [{k: m[k] for k in keep} for m in checked]}
+
+
+def save_friends(cdir, token, status, reply, wait=10.0):
+    """Keeps the group's numbers for the panel, or drops them when the board says there is no group (an empty list) or no
+    such creature (a 404 with that reason). Any other answer, a bare 404 from a misrouted address included, leaves the saved
+    copy and the group code alone (the code is the only copy of the invite), and FRIENDS_FRESH hides the copy in time.
+    Never fails."""
+    no_creature = status == 404 and reply.get("reason") == "no_creature"
+    if status != 200 and not no_creature:
+        return
+    snap = friends_snapshot(reply) if status == 200 else {"members": []}
+    if snap is None:
+        return
+
+    def change(now):
+        if snap["members"]:
+            now["friends"] = snap
+        else:
+            # The board says this creature is in no group: its members go, and so does a saved code for that group,
+            # so the panel never offers an invite to a group this creature is not in.
+            now.pop("friends", None)
+            now.pop("group", None)
+    try:
+        update_identity(cdir, token, change, require=lambda now: not opted_out(cdir), wait=wait)
+    except (Busy, OSError):
+        pass
+
+
+def friends_view(cdir, result, now=None):
+    """What the Friends page shows, from this machine's own files; sends nothing. In Privacy mode (or while leaving) it
+    shows nothing at all, whatever is still on disk."""
+    ident = load_identity(cdir)
+    if privacy_state(cdir, ident):
+        return {"friends": {"state": "privacy"}, "invite": None}
+    invite = None
+    code = ident.get("group")
+    server = moved(ident.get("server") or "")
+    if isinstance(code, str) and GROUP_RE.fullmatch(code) and server_ok(server):
+        invite = {"name": group_name(code), "link": invite_link(server, code), "max": GROUP_MAX}
+    auto = ident.get("auto") is True
+    snap = as_dict(ident.get("friends"))
+    fetched, members = snap.get("fetched"), snap.get("members")
+    now = time.time() if now is None else now
+    checked = ([member(m, xp=FRIEND_XP) for m in members]
+               if isinstance(members, list) and 0 < len(members) <= GROUP_MAX else [None])
+    if type(fetched) is not int or fetched > now + 300 or None in checked:
+        return {"friends": {"state": "none", "auto": auto}, "invite": invite}
+    if now - fetched > FRIENDS_FRESH:
+        return {"friends": {"state": "stale", "auto": auto}, "invite": invite}
+    # The board zeroes a week's XP only when it is read: a copy from last week shows nobody's XP this week.
+    this_week = iso_week(datetime.fromtimestamp(fetched, timezone.utc).date()) == iso_week(datetime.fromtimestamp(now, timezone.utc).date())
+    rows = []
+    place = 0
+    for i, m in enumerate(checked):
+        # Places as /pet group gives them: the board's order, most XP since joining first, and equal XP shares a place.
+        if i == 0 or m["witnessed_xp"] != checked[i - 1]["witnessed_xp"]:
+            place = i + 1
+        stats = dict(zip(STAT_ORDER, m["stats"]))
+        level, stage, cls = m["level"], stage_of(m["level"]), class_of(stats)
+        if m["you"]:   # this machine's own creature: its live numbers, not the board's copy from the last check-in
+            level, stage, cls = result["level"], result["stage"], result["class"]
+        rows.append({"place": place, "name": name_of(m["name"]), "level": level, "stage": stage, "class": cls,
+                     "xp": m["witnessed_xp"], "week_xp": m["week_xp"] if this_week else 0,
+                     "you": m["you"], "sus": m["sus"]})
+    best = max(r["week_xp"] for r in rows)
+    for r in rows:
+        r["crown"] = best > 0 and r["week_xp"] == best
+    # "auto" is what the footer goes by: it says the daily check-in updates the list only while that has been happening.
+    daily = auto and now - fetched <= FRIENDS_DAILY
+    return {"friends": {"state": "ok", "auto": daily, "fetched": fetched, "members": rows}, "invite": invite}
+
+
 def invite_link(server, code):
     """The link friends open or paste. Shown in full: it can land in a chat transcript, and it only grants a seat."""
     return "%s/join#%s" % (site(server), code)
@@ -1896,7 +1996,8 @@ def join_terms(data, server, privacy=False):
     print("lists) and a quiet check-in once a day when a Claude Code session starts. Opt out any time: --world off, --auto off,")
     print("or --leave, which turns Privacy mode on: your row is deleted and cclevel sends nothing after. Every creature with")
     print("check-ins on two different days is counted in the board's public totals (how many creatures per level, stat range,")
-    print("class, stage and badge), listed or not.")
+    print("class, stage and badge), listed or not. After each daily check-in it also reads your private group once (the")
+    print("token only), for the Mac menu bar panel's Friends page.")
     if privacy:
         print("This turns Privacy mode off: back in Default mode, this machine checks in by itself. --privacy on goes back.")
 
@@ -1979,7 +2080,7 @@ def group_command(args, cdir, server, ident, data, result):
         if status != 200 or type(reply.get("left")) is not bool:
             print("cclevel: the board did not confirm: %s." % group_refusal(status, reply))
             return 1
-        keep_local(cdir, ident["token"], lambda now: now.pop("group", None))
+        keep_local(cdir, ident["token"], lambda now: (now.pop("group", None), now.pop("friends", None)))
         print("Left the group." if reply["left"] else "You were not in a group.")
         return 0
     if args.group_create or args.group_join is not None:
@@ -1995,7 +2096,8 @@ def group_command(args, cdir, server, ident, data, result):
             print("cclevel: the board did not add you to the group: %s." % group_refusal(status, reply))
             return 1
         try:
-            keep_local(cdir, token, lambda now: now.update(group=code))
+            # A new group: the panel's copy of the old one's members goes, and the next read fills in this one's.
+            keep_local(cdir, token, lambda now: (now.update(group=code), now.pop("friends", None)))
         except OSError:
             pass  # the board has the membership; the local copy only lets --group-code print the code again
         if create:
@@ -2007,6 +2109,7 @@ def group_command(args, cdir, server, ident, data, result):
             print("Joined %s: %d members. --group shows them." % (group_name(code), members))
         return 0
     status, reply = call(server, "GET", "/api/group", ident["token"])
+    save_friends(cdir, ident["token"], status, reply)   # the panel's Friends page shows this read until the next one
     members = reply.get("members")
     if status != 200 or not isinstance(members, list) or len(members) > GROUP_MAX:
         print("cclevel: the board did not show the group: %s." % group_refusal(status, reply))
@@ -2323,6 +2426,7 @@ def auto_command(args, cdir, ident):
     if not args.yes:
         print("Auto check-in runs --sync for you once a day, in the background, when a Claude Code session starts.")
         print("It sends the same nine numbers and badge codes as --sync, to the same board, and prints nothing.")
+        print("Then it reads your private group once (the same token, nothing else) for the Mac panel's Friends page.")
         print("It is kept on this machine only; --auto off stops it.")
         try:
             answer = input("Turn it on? [y/N] ") if sys.stdin.isatty() else ""
@@ -2501,6 +2605,7 @@ def auto_join(cdir, server, default_dir):
 
 def auto_once(cdir, token, server, default_dir):
     """One background check-in, run while holding the board lock."""
+    started = time.monotonic()
     # Read again now that this hook holds the lock: another session may have checked in, or the owner left, meanwhile.
     fresh = auto_wanted(cdir, token)
     if fresh is None or opted_out(cdir) or fresh.get("auto_day") == today_utc():
@@ -2518,6 +2623,16 @@ def auto_once(cdir, token, server, default_dir):
         # Kept only while auto check-in is still on: --auto off in the meantime stays off.
         numbers = dict(board_numbers(reply), auto_day=today_utc())
         update_identity(cdir, token, lambda now: now.update(numbers), require=lambda now: now.get("auto") is True)
+        # Then, with the day already marked (so a slow or killed read never repeats the check-in), one read of the
+        # group for the menu bar panel's Friends page. It sends the same token and nothing else. It is short, and skipped
+        # on a slow day, so the hook always lets go of the board lock well within the time --leave waits for it.
+        if not auto_wanted(cdir, token) or opted_out(cdir) or time.monotonic() - started > GROUP_READ_AFTER:
+            return 0
+        try:
+            status, reply = call(server, "GET", "/api/group", token, timeout=GROUP_READ_TIMEOUT)
+        except SystemExit:
+            return 0
+        save_friends(cdir, token, status, reply, wait=GROUP_SAVE_WAIT)
     return 0
 
 
@@ -2529,14 +2644,14 @@ def privacy_off(args, cdir, ident, data, state):
     if state == "leaving":
         print(json.dumps(data, indent=1))
         print("\nThis machine is still on the board as %s. In Default mode it checks in by itself again, sending exactly"
-              " this once a day when auto check-in is on." % creature_name(ident["token"]))
+              " this once a day when auto check-in is on, then reading its private group once." % creature_name(ident["token"]))
     else:
         # The board the session-start hook will use: it runs without --server, so a --server given here is not it.
         hook_board = resolve_server(argparse.Namespace(server=None), ident)
         print(json.dumps(data, indent=1))
         print("\nIn Default mode the session-start hook joins the board at the next Claude Code start and sends exactly this")
         print("to %s with a random token made on this machine. It also turns on the world ranking and a quiet" % send_to(hook_board))
-        print("check-in once a day. --privacy on goes back at any time.")
+        print("check-in once a day, followed by one read of your private group. --privacy on goes back at any time.")
     if not confirmed(args, "Turn Privacy mode off? [y/N] ", "Privacy mode stays on. Re-run with --yes to turn it off."):
         return 1
     with board_lock(cdir, 30):
@@ -2871,7 +2986,7 @@ def main():
         # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
         # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
         print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]],
-                              **panel_extras(cdir, result)), indent=1))
+                              **panel_extras(cdir, result), **friends_view(cdir, result)), indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
         # Whether this machine is on the board is read from its own files; nothing is sent. Only the folder Claude Code

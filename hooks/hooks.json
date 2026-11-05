@@ -1,5 +1,5 @@
 {
-	"description": "cclevel board check-in. In Default mode, when a Claude Code session starts, it joins the public board once and then checks in at most once a UTC day, in the background and silently. /pet privacy on turns Privacy mode on: your row is deleted and this hook sends nothing; /pet auto off stops the daily check-in (before joining, it turns Privacy mode on). The creature band module draws your creature above the prompt, offline; /creature off hides it.",
+	"description": "cclevel board check-in. In Default mode, when a Claude Code session starts, it joins the public board once and then checks in at most once a UTC day, in the background and silently, then reads your private group once for the menu bar panel's Friends page. /pet privacy on turns Privacy mode on: your row is deleted and this hook sends nothing; /pet auto off stops the daily check-in (before joining, it turns Privacy mode on). The creature band module draws your creature above the prompt, offline; /creature off hides it.",
 	"modules": ["./creature.tsx"],
 	"hooks": {
 		"SessionStart": [
