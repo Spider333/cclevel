@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
@@ -78,6 +79,42 @@ def run_counted(*args, env=None):
     if not count:
         raise AssertionError("the counting hook did not report: %s" % out.stderr[-500:])
     return out, int(count)
+
+
+def png_rows(path):
+    """The pixel rows of an 8-bit RGBA PNG, as the panel's --snapshot writes them: 4 bytes a pixel, filters undone."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pos, idat, width, height = 8, b"", 0, 0
+    while pos < len(data):
+        n, kind = int.from_bytes(data[pos:pos + 4], "big"), data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            width, height = int.from_bytes(body[:4], "big"), int.from_bytes(body[4:8], "big")
+            assert body[8:10] == b"\x08\x06" and body[12] == 0, "an 8-bit RGBA PNG, not interlaced"
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    raw, stride, rows = zlib.decompress(idat), width * 4, []
+    prev = bytearray(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            a, b, c = (line[i - 4] if i >= 4 else 0), prev[i], (prev[i - 4] if i >= 4 else 0)
+            if kind == 1:
+                line[i] = (line[i] + a) & 255
+            elif kind == 2:
+                line[i] = (line[i] + b) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line))
+        prev = line
+    return rows
 
 
 def write(root, path, content):
@@ -1981,6 +2018,23 @@ class Leaderboard(unittest.TestCase):
             self.assertGreater(sent, 0, (args, out.stdout, out.stderr))
             self.assertTrue(FakeBoard.seen, args)
 
+    def test_the_panels_scan_sends_nothing_in_either_mode(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        # Privacy mode (the opted-out note from setUp): the menu bar panel's hourly scan.
+        out, sent = run_counted("--claude-dir", self.dir, "--json", "--no-save", env=board)
+        self.assertEqual((out.returncode, sent), (0, 0), out.stderr)
+        self.assertIn("xp_by_day", json.loads(out.stdout)["raw"])
+        # Default mode, on the board: the same scan still sends nothing.
+        self.joined()
+        self.assertFalse(os.path.exists(self.off))
+        out, sent = run_counted("--claude-dir", self.dir, "--json", "--no-save", env=board)
+        self.assertEqual((out.returncode, sent), (0, 0), out.stderr)
+        self.assertEqual(FakeBoard.seen, [])
+        # Positive control: the same machine does reach the board when it is asked to.
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0, (out.stdout, out.stderr))
+        self.assertTrue(FakeBoard.seen)
+
     def test_leaving_sends_nothing_by_itself_until_the_delete_goes_through(self):
         board = {"CCLEVEL_SERVER": self.url}
         self.joined()
@@ -2557,6 +2611,54 @@ class Leaderboard(unittest.TestCase):
 PANEL_SOURCE = os.path.realpath(os.path.join(ROOT, "mac", "CclevelPanel.swift"))
 
 
+class PanelData(unittest.TestCase):
+    """What the menu bar panel reads from the scanner: worked out on any system, so these run off macOS too."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = os.path.join(self.tmp.name, "home", ".claude")
+        make_folder(self.dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_trend_is_the_last_14_utc_days_and_a_hand_edited_ledger_cannot_lift_it(self):
+        # Banked days: 13 days back (the first bar), 4 back, yesterday hand-edited to 9999, and three that fall outside.
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "estimated": [], "badges": {}, "weeks": {}, "days": {
+            utc_day(13): 77, utc_day(4): 120, utc_day(1): 9999, utc_day(14): 300, utc_day(15): 300, utc_day(-2): 200}})
+        # Two days back is in the logs but not banked yet (no /pet since); today has a session too.
+        write(self.dir, "projects/proj/trend.jsonl",
+              log_line(day_stamp(2), "d2") + "\n" + log_line(day_stamp(0, hour=0), "t0", session="s9") + "\n")
+        ledger = os.path.join(self.dir, "cclevel", "ledger.json")
+        with open(ledger, "rb") as f:
+            before = f.read()
+        mtime = os.stat(ledger).st_mtime_ns
+        out = run("--claude-dir", self.dir, "--json", "--no-save")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        data = json.loads(out.stdout)
+        days = data["raw"]["xp_by_day"]
+        self.assertEqual(len(days), 14)
+        self.assertTrue(all(type(x) is int for x in days), days)
+        self.assertEqual(days[0], 77)                      # 13 days back
+        self.assertEqual(days[9], 120)                     # 4 days back
+        self.assertEqual(days[12], cclevel.DAY_CAP)        # yesterday: the hand-edited 9999, capped
+        self.assertGreater(days[11], 0)                    # the logged day the ledger has not banked yet
+        self.assertGreater(days[13], 0)
+        self.assertEqual(days[13], data["xp_today_pending"])
+        for i in set(range(14)) - {0, 9, 11, 12, 13}:
+            self.assertEqual(days[i], 0, (i, days))        # days with nothing, and nothing from outside the 14
+        # --no-save still writes nothing.
+        with open(ledger, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(os.stat(ledger).st_mtime_ns, mtime)
+
+    def test_the_panel_knows_the_day_cap_and_the_trend_length(self):
+        with open(PANEL_SOURCE, encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn("\nlet dayCap = %d\n" % cclevel.DAY_CAP, source)
+        self.assertIn("\nlet trendDays = 14\n", source)
+
+
 @unittest.skipUnless(sys.platform == "darwin", "the menu bar panel is for macOS")
 class Panel(unittest.TestCase):
     """The opt-in menu bar panel: asks first, builds from the plugin's own source, starts at login, and goes away whole.
@@ -2719,27 +2821,92 @@ class Panel(unittest.TestCase):
             f.write(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
         png = os.path.join(self.tmp.name, "panel.png")
 
-        def draw(card_path, *tab):
-            return subprocess.run([binary, "--snapshot", png, "--card", card_path, *tab], capture_output=True, text=True, timeout=60)
+        def draw(card_path, *extra):
+            return subprocess.run([binary, "--snapshot", png, "--card", card_path, *extra], capture_output=True, text=True, timeout=60)
 
-        for tab in ((), ("--tab", "creature"), ("--tab", "fix"), ("--tab", "learn")):
-            drawn = draw(card, *tab)
-            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        def size():
             with open(png, "rb") as f:
                 head = f.read(24)
             self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (720, 832))
-        self.assertEqual(draw(card, "--tab", "zzq").returncode, 1, "an unknown tab is refused")
-        # With the creature loops the Creature tab shows the stage's rendered first frame, not the text art. (Video needs
+            return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+        # The overview: by default exactly what the panel shows when it opens, at its fixed size. Five cards, then the two
+        # buttons that open Fix next and Learn.
+        drawn = draw(card)
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        self.assertEqual(size(), (720, 1296))
+        labels = drawn.stdout.splitlines()
+        self.assertEqual(len(labels), 7, labels)
+        for label, start in zip(labels, ("Creature: ", "Level ", "Today: ", "Stats: ", "Trend: ", "Fix next: ", "Learn: ")):
+            self.assertTrue(label.startswith(start), (label, start))
+        self.assertTrue(labels[5].endswith(". Opens the list") and labels[6].endswith(". Opens the lessons"), labels)
+        # It fits the panel: the whole page is the same picture, so nothing on the overview is a scroll away.
+        with open(png, "rb") as f:
+            overview = f.read()
+        drawn = draw(card, "--full")
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        self.assertEqual(size(), (720, 1296))
+        self.assertEqual(drawn.stdout.splitlines(), labels)
+        with open(png, "rb") as f:
+            self.assertEqual(f.read(), overview)
+        # Each button's list on its own page, with the way back first.
+        for page, start in (("fix", "Fix next: "), ("learn", "Learn: ")):
+            drawn = draw(card, "--page", page)
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            self.assertEqual(size(), (720, 1296))
+            shown = drawn.stdout.splitlines()
+            self.assertEqual(len(shown), 2, shown)
+            self.assertEqual(shown[0], "Back to the overview")
+            self.assertTrue(shown[1].startswith(start), shown)
+        self.assertEqual(draw(card, "--page", "home").stdout.splitlines(), labels)
+        self.assertEqual(draw(card, "--page", "zzq").returncode, 1, "an unknown page is refused")
+        self.assertEqual(draw(card, "--page").returncode, 1, "so is --page with no page")
+        self.assertEqual(draw(card, "--tab", "fix").returncode, 1, "the old --tab is refused, not ignored")
+        # On a screen with less room (a small display, or one set to larger text) the panel is shorter and the overview
+        # scrolls: nothing falls off the bottom of the screen.
+        drawn = draw(card, "--height", "500")
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        self.assertEqual(size(), (720, 1000))
+        self.assertEqual(drawn.stdout.splitlines(), labels)
+        drawn = draw(card, "--height", "500", "--full")
+        width, height = size()
+        self.assertTrue(680 <= width < 720, width)   # the page makes room for the scroller
+        self.assertGreater(height, 1000)
+        # The Trend card is read out as the card's 14 numbers, oldest first.
+        with open(card, encoding="utf-8") as f:
+            days = json.load(f)["raw"]["xp_by_day"]
+        self.assertIn(": " + ", ".join(map(str, days[:-1])) + ", ", labels[4])
+        self.assertTrue(labels[4].endswith(" %d" % days[-1]), labels[4])
+        self.assertIn(", Today: %d" % days[-1], labels[4])
+        # A card scored on an earlier day (a sleeping Mac, failed scans) never calls its last bar "Today".
+        with open(card, encoding="utf-8") as f:
+            stale = dict(json.load(f), generated="2020-01-15")
+        write(self.tmp.name, "stale.json", stale)
+        drawn = draw(os.path.join(self.tmp.name, "stale.json"))
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        trend = drawn.stdout.splitlines()[4]
+        self.assertIn(", Jan 15: %d" % days[-1], trend)
+        self.assertNotIn("Today", trend)
+        # Nor does the Today tile: its number is from that day, and it says so.
+        self.assertTrue(drawn.stdout.splitlines()[2].startswith("Jan 15: "), drawn.stdout)
+        self.assertNotIn("Today", drawn.stdout)
+        # The same with no Trend data at all (the card 0.13.0 left on disk) or Trend data that does not add up.
+        for raw in ({k: v for k, v in stale["raw"].items() if k != "xp_by_day"}, dict(stale["raw"], xp_by_day="zzq")):
+            write(self.tmp.name, "stale.json", dict(stale, raw=raw))
+            drawn = draw(os.path.join(self.tmp.name, "stale.json"))
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            self.assertTrue(drawn.stdout.splitlines()[2].startswith("Jan 15: "), drawn.stdout)
+            self.assertNotIn("Today", drawn.stdout)
+        # With the creature loops the Creature card shows the stage's rendered first frame, not the text art. (Video needs
         # macOS's media services: inside a sandboxed shell the frame does not load and both pictures come out the same.)
-        self.assertEqual(draw(card, "--tab", "creature").returncode, 0)
+        self.assertEqual(draw(card).returncode, 0)
         with open(png, "rb") as f:
             text_art = f.read()
-        drawn = draw(card, "--tab", "creature", "--clips", os.path.join(ROOT, "mac", "creatures"))
+        drawn = draw(card, "--clips", os.path.join(ROOT, "mac", "creatures"))
         self.assertEqual(drawn.returncode, 0, drawn.stderr)
         with open(png, "rb") as f:
             self.assertNotEqual(f.read(), text_art, "the rendered creature replaces the text art")
-        missing = draw(card, "--tab", "creature", "--clips", os.path.join(self.tmp.name, "no-clips-here"))
+        missing = draw(card, "--clips", os.path.join(self.tmp.name, "no-clips-here"))
         self.assertEqual(missing.returncode, 0, "a missing clips folder falls back to the text art")
         # A class look: the same Noob Gigachad card, drawn with all the loops, wears its beanie; drawn with only the
         # stage's own loop (no class look for it), it plays that. Only the loop differs between the two pictures.
@@ -2751,7 +2918,7 @@ class Panel(unittest.TestCase):
         shutil.copyfile(os.path.join(ROOT, "mac", "creatures", "gigachad.mp4"), os.path.join(only_stage, "gigachad.mp4"))
         looks = {}
         for name, clips in (("class look", os.path.join(ROOT, "mac", "creatures")), ("stage loop", only_stage)):
-            drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--tab", "creature", "--clips", clips)
+            drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--clips", clips)
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
             with open(png, "rb") as f:
                 looks[name] = f.read()
@@ -2759,16 +2926,63 @@ class Panel(unittest.TestCase):
         # A damaged class look falls back to the stage's own loop, not to the text art.
         with open(os.path.join(only_stage, "gigachad_noob.mp4"), "wb") as f:
             f.write(b"not a video" * 100)
-        drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--tab", "creature", "--clips", only_stage)
+        drawn = draw(os.path.join(self.tmp.name, "noob.json"), "--clips", only_stage)
         self.assertEqual(drawn.returncode, 0, drawn.stderr)
         with open(png, "rb") as f:
             self.assertEqual(f.read(), looks["stage loop"], "a damaged class look plays the stage's loop instead")
-        # A card saved by 0.9.0, before the tabs had data: every tab still draws (the new two say they fill in later).
+        # A card saved by 0.9.0, before Fix next and Learn had data: it still draws, and those two say they fill in later.
         with open(card, encoding="utf-8") as f:
             old = {k: v for k, v in json.load(f).items() if k not in ("fix", "learn", "tip")}
         write(self.tmp.name, "old.json", old)
-        for tab in ("creature", "fix", "learn"):
-            self.assertEqual(draw(os.path.join(self.tmp.name, "old.json"), "--tab", tab).returncode, 0)
+        for extra in ((), ("--full",), ("--page", "fix"), ("--page", "learn")):
+            drawn = draw(os.path.join(self.tmp.name, "old.json"), *extra)
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            self.assertIn("fills in at the next score", drawn.stdout)
+            page = extra[-1] if extra else "home"
+            if page != "learn":
+                self.assertIn("Fix next: fills in at the next score", drawn.stdout)
+            if page != "fix":
+                self.assertIn("Learn: fills in at the next score", drawn.stdout)
+        # A card saved by 0.13.0, before the Trend card: it draws, and the Trend card says it fills in later.
+        no_trend = dict(base, raw={k: v for k, v in base["raw"].items() if k != "xp_by_day"})
+        write(self.tmp.name, "no-trend.json", no_trend)
+        drawn = draw(os.path.join(self.tmp.name, "no-trend.json"), "--full")
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
+        self.assertIn("Trend: fills in at the next score", drawn.stdout)
+        with open(png, "rb") as f:
+            reference = (f.read(), drawn.stdout)
+        # Trend numbers that are not exactly 14 whole numbers from 0 to the day cap are not drawn at all: the picture
+        # comes out the same as with none.
+        for odd in (["1"] * 14, [-1] + [0] * 13, [10 ** 12] + [0] * 13, [cclevel.DAY_CAP + 1] + [0] * 13, [1.5] + [0] * 13,
+                    [True] * 14, [0] * 13, [0] * 500, {"a": 1}, None, "550"):
+            write(self.tmp.name, "odd.json", dict(base, raw=dict(base["raw"], xp_by_day=odd)))
+            drawn = draw(os.path.join(self.tmp.name, "odd.json"), "--full")
+            self.assertEqual(drawn.returncode, 0, (odd, drawn.stderr))
+            with open(png, "rb") as f:
+                self.assertEqual((f.read(), drawn.stdout), reference, odd)
+        # A long card: five long Needs and long lessons make each list taller than the panel. The list scrolls (its page
+        # leaves room for the scroller), and its last line still makes it onto the page.
+        long_text = "zzq " * 60
+        lessons = [{"stat": s, "done": 1, "total": 5,
+                    "next": {"title": long_text, "how": long_text, "docs": cclevel.DOCS + "skills"}} for s in cclevel.STAT_ORDER]
+        long_card = dict(base, fix=[{"text": long_text, "how": long_text, "docs": cclevel.DOCS + "mcp"}] * 5,
+                         learn=dict(base["learn"], stats=lessons), tip={"stat": "craft", "text": long_text, "docs": cclevel.DOCS + "hooks"})
+        write(self.tmp.name, "long.json", long_card)
+        for page in ("fix", "learn"):
+            drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page)
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            self.assertEqual(size(), (720, 1296), "the panel stays its own size")
+            drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page, "--full")
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            width, height = size()
+            self.assertTrue(680 <= width < 720, width)   # the page itself: the panel's width less its scroller
+            self.assertGreater(height, 1296, page)
+            bottom = png_rows(png)[-60:]
+            self.assertTrue(any(any(row[i] > 40 for i in range(0, len(row), 4)) for row in bottom),
+                            "the footer line at the bottom of the %s page is drawn" % page)
+        # The overview of the same long card still fits the panel: its lists are a click away, not a scroll.
+        drawn = draw(os.path.join(self.tmp.name, "long.json"), "--full")
+        self.assertEqual((drawn.returncode, size()), (0, (720, 1296)), drawn.stderr)
         write(self.tmp.name, "bad.json", {"stage": "Gigachad"})
         refused = subprocess.run([binary, "--snapshot", png, "--card", os.path.join(self.tmp.name, "bad.json")],
                                  capture_output=True, text=True, timeout=60)
