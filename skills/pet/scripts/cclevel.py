@@ -1190,7 +1190,8 @@ def tips_command(args, cdir):
 # ---------------------------------------------------------------- menu bar panel (macOS, opt-in)
 # --panel on builds a small menu bar program from the plugin's own Swift source (mac/CclevelPanel.swift) with Apple's
 # swiftc, keeps it beside a copy of this scanner in <claude dir>/cclevel/panel/, and starts it at login with a LaunchAgent.
-# The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour and sends nothing.
+# The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour, and once right
+# after --panel on replaces that copy, and sends nothing.
 PANEL_LABEL = "com.cclevel.panel"
 PANEL_START_TRIES = 3   # starting it again right after stopping the old copy can fail once or twice while macOS catches up
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
@@ -1257,8 +1258,8 @@ def panel_command(args, cdir):
         print("  2. copy this scanner and the creature's animations (about 1.7 MB) there, so the panel keeps")
         print("     working when the plugin updates")
         print("  3. start it now and at every login, with %s" % agent)
-        print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, keeps the last")
-        print("result in %s, and sends nothing. --panel off removes all of it." % card)
+        print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, and once right")
+        print("after an update, keeps the last result in %s, and sends nothing. --panel off removes all of it." % card)
         print("Its Friends page shows your private group as the last daily check-in or --group saved it (Default mode);")
         print("in Privacy mode cclevel sends nothing and the page says friends are off.")
         print("Run again with --yes to go ahead.")

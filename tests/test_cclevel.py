@@ -3173,6 +3173,13 @@ class Panel(unittest.TestCase):
         drawn = draw(group)
         self.assertEqual((drawn.returncode, size()), (0, (720, 1508)), drawn.stderr)
         self.assertEqual(drawn.stdout.splitlines()[5], "Friends: 2 creatures in your group. Opens the list")
+        # With a group link saved, Copy invite link sits on the overview beside Friends (same height, one more card),
+        # and the link itself is never printed.
+        home = drawn.stdout.splitlines()
+        self.assertEqual(len(home), 9, home)
+        self.assertEqual(home[6], "Copy invite link: Brave Otter Crew. Anyone with the link can join, up to 25")
+        self.assertTrue(home[7].startswith("Fix next: ") and home[8].startswith("Learn: "), home)
+        self.assertNotIn(link, drawn.stdout)
         drawn = draw(group, "--page", "friends")
         shown = drawn.stdout.splitlines()
         self.assertEqual(shown[:2], ["Back to the overview", "Invite friends: Brave Otter Crew. Anyone with the link can join, up to 25"])
@@ -3184,6 +3191,8 @@ class Panel(unittest.TestCase):
         write(noted, "cclevel/opted-out", "off\n")
         self.assertEqual(draw(group, "--page", "friends", "--claude-dir", noted).stdout.splitlines(),
                          ["Back to the overview", "Friends: off in Privacy mode"])
+        home = draw(group, "--claude-dir", noted).stdout.splitlines()
+        self.assertEqual((len(home), home[5]), (8, "Friends: off in Privacy mode. Opens the page"), "no Copy card in Privacy mode")
         self.assertEqual(draw(group, "--page", "friends", "--claude-dir", self.tmp.name).stdout.splitlines()[1][:16],
                          "Invite friends: ", "no note, friends still shown")
         monday = int(datetime(2026, 11, 9, 1, 0, tzinfo=timezone.utc).timestamp())   # a Monday, 01:00 UTC
@@ -3238,8 +3247,29 @@ class Panel(unittest.TestCase):
         with open(group, "w", encoding="utf-8") as f:
             json.dump(dict(base, friends={"state": "privacy"}, invite={"name": "X", "link": link, "max": 25}), f)
         self.assertEqual(draw(group, "--page", "friends").stdout.splitlines(), ["Back to the overview", "Friends: off in Privacy mode"])
+        self.assertEqual(len(draw(group).stdout.splitlines()), 8, "a Privacy mode card has no Copy card on the overview")
         self.assertEqual(subprocess.run([binary, "--copy-invite", "--card", group], capture_output=True).returncode, 1,
                          "Privacy mode has no invite to copy")
+        # The running panel scores again when its card is missing, over an hour old, or older than the scanner beside it
+        # (what --panel on leaves after a plugin update); otherwise it keeps the card.
+        saved, scanner = os.path.join(self.tmp.name, "saved.json"), os.path.join(self.tmp.name, "cclevel.py")
+        def stale():
+            return subprocess.run([binary, "--card-stale", "--cache", saved, "--scanner", scanner], capture_output=True).returncode
+        write(self.tmp.name, "cclevel.py", "# scanner\n")
+        self.assertEqual(stale(), 0, "no card yet")
+        write(self.tmp.name, "saved.json", "{}")
+        now = time.time()
+        os.utime(scanner, (now - 600, now - 600))
+        os.utime(saved, (now - 60, now - 60))
+        self.assertEqual(stale(), 1, "a card newer than the scanner, a minute old, is kept")
+        os.utime(scanner, (now - 30, now - 30))
+        self.assertEqual(stale(), 0, "a newer scanner (the panel rebuilt) scores again at once")
+        os.utime(scanner, (now + 3600, now + 3600))
+        self.assertEqual(stale(), 1, "a scanner time in the future (clock set back) does not make every card stale")
+        os.utime(scanner, (now - 7200, now - 7200))
+        os.utime(saved, (now - 3700, now - 3700))
+        self.assertEqual(stale(), 0, "a card over an hour old scores again")
+        self.assertEqual(subprocess.run([binary, "--card-stale", "--cache", saved], capture_output=True).returncode, 2)
         # On a screen with less room (a small display, or one set to larger text) the panel is shorter and the overview
         # scrolls: nothing falls off the bottom of the screen.
         drawn = draw(card, "--height", "500")
