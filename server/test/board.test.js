@@ -12,6 +12,7 @@ import howPage from "../public/how.html?raw";
 import joinPage from "../public/join.html?raw";
 import duelPage from "../public/duel.html?raw";
 import cardPage from "../public/card.html?raw";
+import wrappedPage from "../public/wrapped.html?raw";
 
 const TOKEN = "a".repeat(64);
 const token = (n) => n.toString(16).padStart(64, "0");
@@ -1484,7 +1485,7 @@ describe("the website's domain", () => {
 	});
 
 	it("keeps the contact address on every page out of Cloudflare's e-mail rewriting", () => {
-		for (const page of [indexPage, howPage, joinPage, duelPage, cardPage]) {
+		for (const page of [indexPage, howPage, joinPage, duelPage, cardPage, wrappedPage]) {
 			expect(page).toContain("<!--email_off-->cclevel.grimace562@passmail.net<!--/email_off-->");
 			expect(page.match(/grimace562@passmail\.net/g)).toHaveLength(1);
 		}

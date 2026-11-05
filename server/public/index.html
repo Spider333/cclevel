@@ -67,7 +67,7 @@
 <div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
 </div>
 <p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
-<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com), while the card and creature keep working.</p>
+<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing (opening a share-card, Wrapped or invite link in a browser still loads its page from cclevel.com), while the card and creature keep working.</p>
 <p class="note">Already have it? Update: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. Pick Enable auto-update there too, and new features arrive on their own.</p>
 </section>
 
@@ -212,7 +212,11 @@
 </details>
 <details>
 <summary>What is Privacy mode?</summary>
-<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all; a share-card or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after <code>#</code>, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
+<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all; a share-card, Wrapped or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after <code>#</code>, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
+</details>
+<details>
+<summary>What is Wrapped?</summary>
+<p>Your year with Claude Code, from your own ledger. Type <code>/pet wrapped</code>. It prints your year as text, then a link to five story images (1080×1920): your creature, your XP and streak, your best day and month, who you became, and your badges. Your browser draws them from the numbers after <code>#</code>; save, copy or share them from there. It sends nothing, in Default mode and in Privacy mode. Opening the link loads the page from cclevel.com, like the share card.</p>
 </details>
 <details>
 <summary>How do I opt out?</summary>

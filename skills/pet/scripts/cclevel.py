@@ -1049,36 +1049,94 @@ def short_day(day):
     return "%d %s" % (int(day[8:]), MONTHS[int(day[5:7]) - 1])
 
 
-def wrapped(cdir, year, today):
-    """A year in review from this machine's ledger: its banked days, badges and weekly snapshots. Offline."""
+def xp_until(banked, badges, day):
+    """XP banked up to and including a day: its banked days plus the XP of the badges earned by then."""
+    return sum(x for d, x in banked.items() if d <= day) + sum(BADGES[b] for b, when in badges.items() if when <= day)
+
+
+def milestones(banked, badges):
+    """The first banked day and the day each stage from Hatchling up was reached, from the same XP sum as xp_until()."""
+    marks = {"first": min(banked) if banked else None}
+    days = sorted(set(banked) | {w for w in badges.values() if is_day(w)})
+    for floor, name in sorted(STAGES[:-1]):   # Egg is where every creature starts
+        marks[name] = next((d for d in days if level_of(xp_until(banked, badges, d)) >= floor), None)
+    return marks
+
+
+WRAPPED_VERSION = 1          # must match the Wrapped page, server/public/wrapped.js
+WRAPPED_CLASSES = (*CLASSES.values(), BALANCED, NOOB, UNHATCHED)   # a class's number in the link; one past the end is none
+WRAPPED_STAGES = tuple(name for _, name in reversed(STAGES[:-1]))  # Hatchling to GOAT, the link's last five numbers
+
+
+def wrapped_numbers(cdir, year, today):
+    """A year in review from this machine's ledger: its banked days, badges and weekly snapshots. Offline.
+    None for a year with no banked days."""
     _, banked, badges, estimated, weeks = read_ledger(cdir, today)
     start, end = "%d-01-01" % year, "%d-12-31" % year
     days = {d: x for d, x in banked.items() if start <= d <= end}
-    out = ["", "  CC level Wrapped %d%s · this machine only, self-reported" % (year, " so far" if year == today.year else ""), ""]
     if not days:
-        return "\n".join(out + ["  No finished days banked in %d on this machine." % year, ""])
-
-    def xp_until(day):
-        return sum(x for d, x in banked.items() if d <= day) + sum(BADGES[b] for b, when in badges.items() if when <= day)
-    first, last = level_of(xp_until(str(year - 1) + "-12-31")), level_of(xp_until(end))
-    guessed = sum(1 for d in days if d in estimated)
-    out.append("  {:,} XP over {}{}".format(sum(days.values()), count(len(days), "active day"),
-                                           " (%d estimated from prompt counts)" % guessed if guessed else ""))
-    out.append("  Lv %d %s → Lv %d %s" % (first, stage_of(first), last, stage_of(last)))
+        return None
     months = [0] * 12
     for d, x in days.items():
         months[int(d[5:7]) - 1] += x
-    best_day = max(sorted(days), key=lambda d: days[d])   # the earliest of equal days
-    best_month = max(range(12), key=lambda m: months[m])
     longest = run = 0
     prev = None
     for d in sorted(days):
         dt = date.fromisoformat(d)
         run = run + 1 if prev and (dt - prev).days == 1 else 1
         longest, prev = max(longest, run), dt
+    weeks_in = [w for w in sorted(weeks) if w.startswith(str(year))]
+    snaps = [weeks[w]["stats"] for w in weeks_in]
+    averages = {name: sum(s[i] for s in snaps) / len(snaps) for i, name in enumerate(STAT_ORDER)} if snaps else {}
+    marks = milestones(banked, badges)
+    return {
+        "year": year, "so_far": year == today.year,
+        "until": (today - timedelta(days=1)) if year == today.year else date(year, 12, 31),
+        "xp": sum(days.values()), "active": len(days), "estimated": sum(1 for d in days if d in estimated),
+        "first": level_of(xp_until(banked, badges, str(year - 1) + "-12-31")), "last": level_of(xp_until(banked, badges, end)),
+        "best_day": max(sorted(days), key=lambda d: days[d]),   # the earliest of equal days
+        "best_month": max(range(12), key=lambda m: months[m]), "months": months, "longest": longest, "days": days,
+        "badges": [b for b in BADGES if start <= badges.get(b, "") <= end],
+        "weeks": weeks_in, "snaps": snaps,
+        "class": Counter(class_of(dict(zip(STAT_ORDER, s))) for s in snaps).most_common(1)[0][0] if snaps else None,
+        "strongest": max(STAT_ORDER, key=lambda n: averages[n]) if snaps else None, "averages": averages,
+        "moves": [snaps[-1][i] - snaps[0][i] for i in range(len(STAT_ORDER))] if len(snaps) > 1 else None,
+        "stages": {name: marks[name] for name in WRAPPED_STAGES if marks[name] and start <= marks[name] <= end},
+    }
+
+
+def day_of_year(day):
+    return date.fromisoformat(day).timetuple().tm_yday
+
+
+def wrapped_link(server, w):
+    """The Wrapped page's address. Its 41 numbers sit after "#", which browsers never send: the page draws the five
+    story images from them. Every number is a whole number of 0 or more."""
+    numbers = [WRAPPED_VERSION, w["year"], int(w["so_far"]), w["until"].timetuple().tm_yday, w["xp"], w["active"],
+               w["estimated"], w["first"], w["last"], day_of_year(w["best_day"]), w["days"][w["best_day"]],
+               w["best_month"], w["longest"], *w["months"], sum(1 << i for i, b in enumerate(BADGES) if b in w["badges"]),
+               len(w["snaps"]), WRAPPED_CLASSES.index(w["class"]) if w["class"] else len(WRAPPED_CLASSES),
+               STAT_ORDER.index(w["strongest"]) if w["strongest"] else len(STAT_ORDER),
+               round(w["averages"][w["strongest"]]) if w["strongest"] else 0,
+               *(100 + m for m in (w["moves"] or [0] * len(STAT_ORDER))),
+               *(day_of_year(w["stages"][s]) if s in w["stages"] else 0 for s in WRAPPED_STAGES)]
+    return "%s/wrapped#%s" % (site(server), "-".join(str(n) for n in numbers))
+
+
+def wrapped(cdir, year, today, server=None):
+    """The year in review as text. With a server, its last line is the link to the five story images."""
+    w = wrapped_numbers(cdir, year, today)
+    out = ["", "  CC level Wrapped %d%s · this machine only, self-reported" % (year, " so far" if year == today.year else ""), ""]
+    if not w:
+        return "\n".join(out + ["  No finished days banked in %d on this machine." % year, ""])
+    first, last, months = w["first"], w["last"], w["months"]
+    out.append("  {:,} XP over {}{}".format(w["xp"], count(w["active"], "active day"),
+                                           " (%d estimated from prompt counts)" % w["estimated"] if w["estimated"] else ""))
+    out.append("  Lv %d %s → Lv %d %s" % (first, stage_of(first), last, stage_of(last)))
     out.append("  Best day: {}, {:,} XP · Best month: {}, {:,} XP · Longest streak: {}".format(
-        short_day(best_day), days[best_day], MONTHS[best_month], months[best_month], count(longest, "day")))
-    earned = [BADGE_NAMES[b] for b in BADGES if start <= badges.get(b, "") <= end]
+        short_day(w["best_day"]), w["days"][w["best_day"]], MONTHS[w["best_month"]], months[w["best_month"]],
+        count(w["longest"], "day")))
+    earned = [BADGE_NAMES[b] for b in w["badges"]]
     out.append("  Badges earned: " + ", ".join(earned) if earned else "  No new badges this year.")
     out.append("")
     top = max(months)
@@ -1086,22 +1144,19 @@ def wrapped(cdir, year, today):
         filled = round(20 * months[m] / top)
         out.append("  %s  %s%s  %s" % (MONTHS[m], "#" * filled, "-" * (20 - filled), "{:,}".format(months[m]).rjust(6)))
     out.append("")
-    snaps = [weeks[w]["stats"] for w in sorted(weeks) if w.startswith(str(year))]
-    if not snaps:
+    if not w["snaps"]:
         out.append("  Weekly snapshots of your stats start with this version, so a later Wrapped shows how they moved.")
     else:
-        weeks_in = [w for w in sorted(weeks) if w.startswith(str(year))]
-        classes = Counter(class_of(dict(zip(STAT_ORDER, s))) for s in snaps)
-        averages = {name: sum(s[i] for s in snaps) / len(snaps) for i, name in enumerate(STAT_ORDER)}
-        strongest = max(STAT_ORDER, key=lambda n: averages[n])
         out.append("  %s, from %s · Most weeks as: %s · Strongest stat: %s, %d on average" % (
-            count(len(snaps), "weekly snapshot"), weeks_in[0], classes.most_common(1)[0][0], strongest.capitalize(),
-            round(averages[strongest])))
-        if len(snaps) > 1:
-            out.append("  Since then: " + " · ".join("%s %+d" % (name.capitalize(), snaps[-1][i] - snaps[0][i])
+            count(len(w["snaps"]), "weekly snapshot"), w["weeks"][0], w["class"], w["strongest"].capitalize(),
+            round(w["averages"][w["strongest"]])))
+        if w["moves"]:
+            out.append("  Since then: " + " · ".join("%s %+d" % (name.capitalize(), w["moves"][i])
                                                        for i, name in enumerate(STAT_ORDER)))
-    out += ["", "  Post your card: /pet card.", ""]
-    return "\n".join(out)
+    out += ["", "  Post your card: /pet card."]
+    if server:
+        out.append("  Story images to post: " + wrapped_link(server, w))
+    return "\n".join(out + [""])
 
 
 def training_path(cdir):
@@ -1559,7 +1614,7 @@ def opt_back_in(cdir):
 # join): nothing is sent then either, except the requests that remove data from the board.
 PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
 STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
-PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card or invite link you open in a browser"
+PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card, Wrapped or invite link you open in a browser"
                " still loads its page from the board's website, cclevel.com for the public board). /pet privacy off goes"
                " back to Default mode.")
 
@@ -3117,7 +3172,7 @@ def main():
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
         if not FIRST_YEAR <= year <= today.year:
             sys.exit("cclevel: --wrapped takes a year from %d to %d" % (FIRST_YEAR, today.year))
-        print(wrapped(cdir, year, today))
+        print(wrapped(cdir, year, today, resolve_server(args, load_identity(cdir))))
         return
     if args.learn:
         sys.exit(learn_command(cdir, result, save=not args.no_save))

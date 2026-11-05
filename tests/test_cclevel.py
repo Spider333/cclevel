@@ -429,6 +429,28 @@ class Scanner(unittest.TestCase):
             for call in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "import(", ".src ="):
                 self.assertNotIn(call, page)
 
+    def test_the_wrapped_page_reads_its_link_the_way_this_file_writes_it(self):
+        with open(os.path.join(ROOT, "server", "public", "wrapped.js"), encoding="utf-8") as f:
+            page = f.read()
+        for name in ("WRAPPED_VERSION", "FIRST_YEAR", "DAY_CAP"):
+            self.assertEqual(int(re.search(r"var %s = (\d+);" % name, page).group(1)), getattr(cclevel, name), name)
+        self.assertEqual(int(re.search(r"var COUNT = (\d+);", page).group(1)), 41)
+        for name, mine in (("STAT_ORDER", cclevel.STAT_ORDER), ("WRAPPED_CLASSES", cclevel.WRAPPED_CLASSES), ("MONTHS", cclevel.MONTHS)):
+            self.assertEqual(re.findall(r'"([^"]+)"', re.search(r"var %s = \[(.*?)\];" % name, page).group(1)), list(mine), name)
+        pairs = re.findall(r'\[(\d+), "([^"]+)"\]', re.search(r"var STAGES = \[(.*?)\];", page).group(1))
+        self.assertEqual([(int(floor), title) for floor, title in pairs], list(cclevel.STAGES))
+        block = re.search(r"var BADGE_NAMES = \{(.*?)\};", page, re.S).group(1)
+        self.assertEqual(re.findall(r'(\w+): "([^"]+)"', block), [(b, cclevel.BADGE_NAMES[b]) for b in cclevel.BADGES])
+        art = re.search(r"var ART = \{(.*?\n)\t\};", page, re.S).group(1)
+        for stage, lines in cclevel.ART.items():
+            drawn = re.search(r'(?:"%s"|\b%s): (\[.*?\]),\n' % (re.escape(stage), re.escape(stage)), art).group(1)
+            self.assertEqual(json.loads(drawn), lines, stage)
+        for call in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "import(", ".src ="):
+            self.assertNotIn(call, page)
+        # A Wrapped visit never wakes the Worker.
+        with open(os.path.join(ROOT, "server", "wrangler.jsonc"), encoding="utf-8") as f:
+            self.assertNotIn("wrapped", re.search(r'"run_worker_first": \[(.*?)\]', f.read()).group(1))
+
     def test_privacy_names_every_column_the_board_stores(self):
         with open(os.path.join(ROOT, "server", "schema.sql"), encoding="utf-8") as f:
             schema = re.sub(r"--.*", "", f.read())
@@ -808,6 +830,73 @@ class Framework(unittest.TestCase):
         self.assertIn("Wrapped 2026 so far", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
         self.assertIn("No finished days banked in 2026", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
         self.assertNotIn("Feb", cclevel.wrapped(self.dir, 2025, date(2025, 1, 20)))
+
+    def test_milestones_match_a_recount_of_the_xp(self):
+        banked = {"2025-01-%02d" % d: 550 for d in range(1, 32)}
+        banked.update({"2025-03-%02d" % d: 550 for d in range(1, 31)})
+        banked.update({"2025-06-%02d" % d: 300 for d in range(1, 31)})
+        badges = {"first_hook": "2025-01-01", "first_skill": "2025-03-15", "streak_7": "garbage"}
+        marks = cclevel.milestones(banked, badges)
+        self.assertEqual(marks["first"], "2025-01-01")
+        # The independent recount: walk each day in order and add its XP and the XP of badges dated up to it.
+        days = sorted(set(banked) | {w for w in badges.values() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", w)})
+        expect = {}
+        for floor, name in ((1000, "Hatchling"), (9000, "Lil Guy"), (36000, "Big Guy"), (81000, "Gigachad"), (144000, "GOAT")):
+            expect[name] = None
+            for d in days:
+                total = sum(x for k, x in banked.items() if k <= d) + sum(cclevel.BADGES[b] for b, w in badges.items() if w <= d)
+                if total >= floor:
+                    expect[name] = d
+                    break
+            self.assertEqual(marks[name], expect[name], name)
+        self.assertIsNotNone(marks["Hatchling"])
+        self.assertIsNotNone(marks["Lil Guy"])
+        self.assertIsNone(marks["GOAT"])
+        self.assertEqual(cclevel.milestones({}, {}), {"first": None, "Hatchling": None, "Lil Guy": None, "Big Guy": None,
+                                                      "Gigachad": None, "GOAT": None})
+
+    def test_the_wrapped_link_carries_the_year_in_41_numbers(self):
+        ledger = {
+            "version": 4,
+            "days": {"2024-12-31": 400, "2025-01-01": 100, "2025-01-02": 200, "2025-01-03": 300, "2025-03-10": 550,
+                     "2025-03-11": 550, "2025-12-31": 150},
+            "estimated": ["2025-01-01"],
+            "badges": {"first_hook": "2024-12-31", "first_skill": "2025-03-10"},
+            "weeks": {"2025-W02": {"xp": 1000, "stats": [10, 20, 30, 40, 50, 60], "health": 80},
+                      "2025-W40": {"xp": 2600, "stats": [20, 20, 35, 40, 45, 60], "health": 90}},
+        }
+        write(self.dir, "cclevel/ledger.json", ledger)
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        text = cclevel.wrapped(self.dir, 2025, date(2026, 10, 21), "https://go.cclevel.workers.dev")
+        self.assertEqual(events, [])
+        link = text.strip().splitlines()[-1].strip()
+        self.assertTrue(link.startswith("Story images to post: https://cclevel.com/wrapped#"), link)
+        n = [int(x) for x in link.split("#")[1].split("-")]
+        self.assertEqual(len(n), 41)
+        self.assertTrue(all(x >= 0 for x in n))
+        self.assertEqual(n[:13], [1, 2025, 0, 365, 1850, 6, 1, 4, 8, 69, 550, 2, 3])
+        self.assertEqual(n[13:25], [600, 0, 1100, 0, 0, 0, 0, 0, 0, 0, 0, 150])
+        self.assertEqual(n[25], 1 << list(cclevel.BADGES).index("first_skill"))
+        self.assertEqual(n[26:30], [2, cclevel.WRAPPED_CLASSES.index("Shipper"), cclevel.STAT_ORDER.index("craft"), 60])
+        self.assertEqual(n[30:36], [110, 100, 105, 100, 95, 100])
+        # Lv 5 (1,000 XP, badges counted) on 3 Jan, day 3; nothing higher this year.
+        self.assertEqual(n[36:], [3, 0, 0, 0, 0])
+        # This year so far: the flag, and the last day covered is yesterday.
+        so_far = cclevel.wrapped_link("https://example.com", cclevel.wrapped_numbers(self.dir, 2025, date(2025, 3, 12)))
+        self.assertTrue(so_far.startswith("https://example.com/wrapped#1-2025-1-70-"), so_far)
+        # One snapshot: class and strongest stat, no moves. None: neither.
+        ledger["weeks"].pop("2025-W40")
+        write(self.dir, "cclevel/ledger.json", ledger)
+        n = [int(x) for x in cclevel.wrapped_link("https://cclevel.com", cclevel.wrapped_numbers(self.dir, 2025, date(2026, 1, 5))).split("#")[1].split("-")]
+        self.assertEqual(n[26:36], [1, cclevel.WRAPPED_CLASSES.index("Shipper"), 5, 60] + [100] * 6)
+        ledger.pop("weeks")
+        write(self.dir, "cclevel/ledger.json", ledger)
+        n = [int(x) for x in cclevel.wrapped_link("https://cclevel.com", cclevel.wrapped_numbers(self.dir, 2025, date(2026, 1, 5))).split("#")[1].split("-")]
+        self.assertEqual(n[26:36], [0, len(cclevel.WRAPPED_CLASSES), len(cclevel.STAT_ORDER), 0] + [100] * 6)
+        # A year with no banked days has no link.
+        self.assertIsNone(cclevel.wrapped_numbers(self.dir, 2026, date(2026, 10, 21)))
+        self.assertNotIn("wrapped#", cclevel.wrapped(self.dir, 2026, date(2026, 10, 21), "https://cclevel.com"))
 
     def test_wrapped_takes_only_a_year_cclevel_can_have_seen(self):
         for year in ("2024", "0", str(datetime.now(timezone.utc).year + 1)):
@@ -3094,6 +3183,22 @@ class Leaderboard(unittest.TestCase):
             out = run("--claude-dir", self.dir, flag, "--yes")
             self.assertIn("Not joined", out.stdout, flag)
         self.assertEqual(FakeBoard.seen, [])
+
+    def test_wrapped_and_its_link_send_nothing_in_either_mode(self):
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "days": {utc_day(3): 550, utc_day(2): 300}})
+        board = {"CCLEVEL_SERVER": self.url}
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            out, sent = run_counted("--claude-dir", self.dir, "--wrapped", "--no-save", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertRegex(out.stdout, r"\n  Story images to post: %s/wrapped#(\d+-){40}\d+\n" % re.escape(self.url))
+        self.assertEqual(FakeBoard.seen, [])
+        # The same counter sees a board command reach the fake board.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
 
     def test_the_card_link_carries_only_the_card_numbers_and_points_at_the_board(self):
         out = run("--claude-dir", self.dir, "--card", "--server", self.url)
