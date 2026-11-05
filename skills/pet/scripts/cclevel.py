@@ -941,6 +941,8 @@ def score(cdir, machine_jobs, save):
         "interrupts_30d": w30["interrupts"], "brains_passed": sum(checks), "brains_total": len(checks),
         "xp_days": len(banked), "xp_days_estimated": len(estimated),
         "xp_7d": sum(x for d, x in banked.items() if d >= (today - timedelta(days=7)).isoformat()),   # the last 7 finished days
+        # The menu bar panel's Trend card: the last 14 UTC days, oldest first, each finished day as banked, today still pending.
+        "xp_by_day": [banked.get((today - timedelta(days=back)).isoformat(), 0) for back in range(13, 0, -1)] + [pending],
     })
     return {
         "version": 1, "generated": today_s, "scope": "one machine, self-reported",
@@ -1319,7 +1321,7 @@ def render_learn(result, done):
 
 
 def panel_extras(cdir, result):
-    """What the menu bar panel's Fix next and Learn tabs show: the top Needs with how to fix each, the training path with
+    """What the menu bar panel's Fix next and Learn cards show: the top Needs with how to fix each, the training path with
     each stat's next lesson, and the tip of the day. Worked out like the card, --learn and the tips; offline, saves nothing."""
     fix = []
     for n in result["needs"][:5]:   # every Need the card shows; the how-to and docs page where there is one

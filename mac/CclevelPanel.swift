@@ -5,15 +5,17 @@
 // old, keeps that result in card.json beside itself, and makes no network call. `cclevel.py --panel on --yes` builds it on
 // this Mac with Apple's swiftc and starts it at login; `cclevel.py --panel off` removes it.
 //
-// Three tabs: Creature (the art and the stats), Fix next (the card's top Needs, how to fix each, and its docs page) and Learn
-// (the training path, each stat's next lesson, and the tip of the day). Links open Claude Code's docs pages only.
+// An overview of rounded cards: the creature, Level and Today, the six stats and a 14-day Trend, then two buttons that
+// open Fix next (the card's top Needs, how to fix each, and its docs page) and Learn (the training path, each stat's next
+// lesson, and the tip of the day), each with a way back. Links open Claude Code's docs pages only.
 //
-// The Creature tab plays the creature's rendered loop while the panel is open (creatures/<stage>_<class>.mp4 beside the
-// panel for its class look, else creatures/<stage>.mp4), a
-// still of its first frame otherwise or with Reduce Motion on, and the card's own text art when there is no clip.
+// The Creature card plays the creature's rendered loop while the panel is open (creatures/<stage>_<class>.mp4 beside the
+// panel for its class look, else creatures/<stage>.mp4), a still of its first frame otherwise or with Reduce Motion on, and
+// the card's own text art when there is no clip.
 //
-// `--snapshot OUT.png --card CARD.json [--tab creature|fix|learn] [--clips DIR]` draws the panel into a picture and
-// exits (for tests and previews).
+// `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full]` draws what the panel
+// shows on that page (with --height, as on a screen with that much room; with --full, the whole page) into a picture,
+// prints the VoiceOver label of each thing on it, one per line, top to bottom, and exits (for tests and previews).
 import AppKit
 import AVFoundation
 
@@ -22,11 +24,23 @@ let staleAfter: TimeInterval = 60 * 60
 let scanTimeout: TimeInterval = 120
 let orange = NSColor(srgbRed: 0xd9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
 let dim = NSColor(white: 0.55, alpha: 1)
-let track = NSColor(white: 0.16, alpha: 1)
+let track = NSColor(white: 0.22, alpha: 1)
+let cardFill = NSColor(white: 0.1, alpha: 1)
 let panelWidth: CGFloat = 360
-let tabBarHeight: CGFloat = 44
-let contentHeight: CGFloat = 372
-let creatureBox = NSRect(x: 14, y: 4, width: 124, height: 124)
+let panelHeight: CGFloat = 648
+/// The scanner's DAY_CAP: the most XP one day can bank (a test keeps the two the same).
+let dayCap = 550
+let trendDays = 14
+let edge: CGFloat = 12      // page edge to a card
+let inset: CGFloat = 14     // card edge to what is in it
+let gap: CGFloat = 10       // between cards
+let corner: CGFloat = 16
+let headerHeight: CGFloat = 40
+let creatureHeight: CGFloat = 128
+let tileHeight: CGFloat = 104
+let buttonHeight: CGFloat = 48
+let creatureBox = NSRect(x: 12, y: 12, width: 104, height: 104)
+let creatureCorner: CGFloat = 12
 /// The rendered loop for each stage, beside the panel in creatures/<name>.mp4 (copied there by --panel on).
 let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "Big Guy": "big_guy",
                  "Gigachad": "gigachad", "GOAT": "goat"]
@@ -72,6 +86,33 @@ func small(_ value: Any?) -> Int? {
     return n.intValue
 }
 
+/// The Trend card's numbers: exactly 14 whole numbers from 0 to the day cap, or none at all.
+func trendNumbers(_ value: Any?) -> [Int]? {
+    guard let list = value as? [Any], list.count == trendDays else { return nil }
+    var out: [Int] = []
+    for item in list {
+        guard let n = item as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.rounded() == n.doubleValue,
+              n.doubleValue >= 0, n.doubleValue <= Double(dayCap) else { return nil }
+        out.append(n.intValue)
+    }
+    return out
+}
+
+/// The scanner's days are UTC days, written yyyy-mm-dd.
+func utcFormatter(_ format: String) -> DateFormatter {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone(identifier: "UTC")
+    f.dateFormat = format
+    return f
+}
+
+func utcDay(_ s: String) -> Date? {
+    let f = utcFormatter("yyyy-MM-dd")
+    guard let d = f.date(from: s), f.string(from: d) == s else { return nil }
+    return d
+}
+
 /// Something to do: what it is, how to do it, and the docs page that explains it.
 struct Advice {
     let title: String, how: String, docs: URL?
@@ -110,10 +151,14 @@ struct Card {
     let level: Int, xp: Int, xpStart: Int, xpNext: Int, today: Int, health: Int, power: Int
     let stats: [String: Int]
     let art: [String]
-    /// The Fix next and Learn tabs' data: nil on a card from before they existed (it fills in at the next score).
+    /// The Fix next and Learn cards' data: nil on a card from before they existed (it fills in at the next score).
     let fix: [Advice]?
     let training: Training?
     let tip: (stat: String, advice: Advice)?
+    /// The Trend card's data: nil on a card from before 0.14.0, or one that does not add up.
+    let xpByDay: [Int]?
+    /// The UTC day the card was scored, yyyy-mm-dd: where the Trend ends, and what the Today tile is about.
+    let generated: String?
 
     init?(json: Any) {
         guard let o = json as? [String: Any] else { return nil }
@@ -148,6 +193,11 @@ struct Card {
         } else {
             self.tip = nil
         }
+        let day = text("generated", 10).flatMap { utcDay($0) != nil ? $0 : nil }
+        let trend = trendNumbers((o["raw"] as? [String: Any])?["xp_by_day"])
+        // The day stands on its own (the Today tile needs it on any card); the Trend needs both.
+        self.generated = day
+        self.xpByDay = day == nil ? nil : trend
     }
 
     /// How far through its level the creature is, 0 to 1.
@@ -161,9 +211,15 @@ struct Card {
         stage == "Egg" ? "( . )" : (art[1].trimmingCharacters(in: .whitespaces))
     }
 
-    var summary: String {
-        "\(stage), level \(level), \(Int(progress * 100)) percent of the way to level \(level + 1), \(today) XP today, mood \(mood)"
+    /// The day this card was scored, when that is not today (UTC): a sleeping Mac or failed scans leave an older card.
+    var olderDay: String? {
+        guard let generated, let day = utcDay(generated),
+              generated != utcFormatter("yyyy-MM-dd").string(from: Date()) else { return nil }
+        return utcFormatter("MMM d").string(from: day)
     }
+
+    var who: String { cls == "Unhatched" ? stage : "\(stage) \(cls)" }
+    var todayShown: Int { min(today, dayCap) }
 }
 
 func readCard(_ data: Data) -> Card? {
@@ -181,11 +237,66 @@ func grouped(_ n: Int) -> String {
     return f.string(from: NSNumber(value: n)) ?? String(n)
 }
 
-/// The panel: pure black, the creature (its rendered loop, or the card's own art), and the stats the card shows.
+func capitalized(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
+
+// Drawing, inside a card's own (flipped) coordinates.
+
+let bigFont = NSFont.monospacedDigitSystemFont(ofSize: 26, weight: .bold)
+
+func textWidth(_ s: String, _ font: NSFont) -> CGFloat {
+    ceil((s as NSString).size(withAttributes: [.font: font]).width)
+}
+
+/// One line of text; with a width, a line too long for it ends in "…".
+func put(_ s: String, _ font: NSFont, _ color: NSColor, at p: NSPoint, width: CGFloat? = nil) {
+    guard let width else {
+        (s as NSString).draw(at: p, withAttributes: [.font: font, .foregroundColor: color])
+        return
+    }
+    let style = NSMutableParagraphStyle()
+    style.lineBreakMode = .byTruncatingTail
+    let rect = NSRect(x: p.x, y: p.y, width: width, height: ceil(font.ascender - font.descender + font.leading) + 2)
+    (s as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                         attributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
+}
+
+func bar(_ rect: NSRect, _ fraction: CGFloat) {
+    track.setFill()
+    NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+    guard fraction > 0 else { return }
+    orange.setFill()
+    var filled = rect
+    filled.size.width = max(rect.height, rect.width * min(1, fraction))
+    NSBezierPath(roundedRect: filled, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+}
+
+func fillCard(_ rect: NSRect) {
+    cardFill.setFill()
+    NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner).fill()
+}
+
+/// A card's title row: a small orange symbol, the title, and an optional note on the right.
+func heading(_ title: String, _ symbol: String, right: String? = nil, width: CGFloat, top: CGFloat = inset) {
+    var x = inset
+    let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        .applying(NSImage.SymbolConfiguration(paletteColors: [orange]))
+    if let icon = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+        let size = icon.size
+        icon.draw(in: NSRect(x: x, y: top + 8 - size.height / 2, width: size.width, height: size.height))
+        x += size.width + 6
+    }
+    let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    put(title, font, .white, at: NSPoint(x: x, y: top))
+    if let right {
+        let note = NSFont.systemFont(ofSize: 11.5)
+        let w = min(textWidth(right, note), width - x - textWidth(title, font) - 2 * inset)
+        put(right, note, dim, at: NSPoint(x: width - inset - w, y: top + 1.5), width: w)
+    }
+}
+
+/// The Creature card: the creature (its rendered loop, or the card's own art), who it is, and how it feels.
 final class PanelView: NSView {
     var card: Card? { didSet { updateAccessibility(); loadClip(); needsDisplay = true } }
-    var status = "" { didSet { needsDisplay = true } }
-    var updated: Date? { didSet { needsDisplay = true } }
     var isBlinking = false { didSet { needsDisplay = true } }
     /// Where the stage loops are; nil, or a stage without its file, draws the card's art instead.
     var clipsDir: URL? { didSet { clipStage = nil; loadClip() } }
@@ -201,18 +312,21 @@ final class PanelView: NSView {
     override var isFlipped: Bool { true }
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: contentHeight))
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: creatureHeight))
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         updateAccessibility()
+        // The loops are rendered on black: their square gets the same rounded corners as the still under it.
         video.wantsLayer = true
         video.layer?.backgroundColor = NSColor.black.cgColor
+        video.layer?.cornerRadius = creatureCorner
+        video.layer?.masksToBounds = true
         playerLayer.frame = video.bounds
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = NSColor.black.cgColor
         video.layer?.addSublayer(playerLayer)
         video.isHidden = true
-        video.setAccessibilityElement(false)   // decorative: the group's label says who the creature is
+        video.setAccessibilityElement(false)   // decorative: the card's label says who the creature is
         addSubview(video)
         // Reduce Motion switched on (or off) while the panel is open takes effect at once.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -257,7 +371,7 @@ final class PanelView: NSView {
         setPlaying(wantsPlay)
     }
 
-    /// Plays the loop while the panel is open on this tab, unless Reduce Motion is on: then the still stays.
+    /// Plays the loop while the panel is open, unless Reduce Motion is on: then the still stays.
     func setPlaying(_ on: Bool) {
         wantsPlay = on
         guard let player else { return }
@@ -275,80 +389,77 @@ final class PanelView: NSView {
     required init?(coder: NSCoder) { nil }
 
     func updateAccessibility() {
-        setAccessibilityLabel(card.map { "CC level: \($0.summary)" } ?? "CC level: no creature yet")
-    }
-
-    func put(_ s: String, _ font: NSFont, _ color: NSColor, at p: NSPoint) {
-        (s as NSString).draw(at: p, withAttributes: [.font: font, .foregroundColor: color])
-    }
-
-    func bar(_ rect: NSRect, _ fraction: CGFloat) {
-        track.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
-        guard fraction > 0 else { return }
-        orange.setFill()
-        var filled = rect
-        filled.size.width = max(rect.height, rect.width * fraction)
-        NSBezierPath(roundedRect: filled, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        guard let c = card else { return setAccessibilityLabel("Creature: no creature yet") }
+        let brains = c.brain.isEmpty ? "" : ", Brains: \(c.brain)"
+        setAccessibilityLabel("Creature: \(c.who), mood \(c.mood), Health \(c.health)\(brains)")
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.setFill()
-        bounds.fill()
-        let left: CGFloat = 20
+        fillCard(bounds)
+        let side = creatureBox.maxX + 14
+        let width = bounds.width - side - inset
         guard let c = card else {
-            put("( ? )", mono(18, .medium), orange, at: NSPoint(x: left, y: 24))
-            put(status.isEmpty ? "No creature yet." : status, mono(12), dim, at: NSPoint(x: left, y: 60))
-            put("Run /pet in Claude Code to hatch it.", mono(12), dim, at: NSPoint(x: left, y: 80))
+            put("( ? )", mono(20, .medium), orange, at: NSPoint(x: inset + 16, y: 48))
+            put("No creature yet.", .systemFont(ofSize: 15, weight: .semibold), .white, at: NSPoint(x: side, y: 40), width: width)
+            put("Run /pet in Claude Code to hatch it.", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 64), width: width)
             return
         }
         // The creature: its rendered loop's first frame (the loop plays over it while the panel is open), or
         // the card's own art, which blinks now and then.
-        var y: CGFloat = 40
         if let still {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: creatureBox, xRadius: creatureCorner, yRadius: creatureCorner).addClip()
             still.draw(in: creatureBox)
+            NSGraphicsContext.restoreGraphicsState()
         } else {
+            var y: CGFloat = 22
             for line in c.art {
                 let shown = isBlinking ? line.replacingOccurrences(of: "o", with: "-").replacingOccurrences(of: "@", with: "-") : line
-                put(shown, mono(16, .semibold), orange, at: NSPoint(x: left, y: y))
+                put(shown, mono(15, .semibold), orange, at: NSPoint(x: inset + 4, y: y))
                 y += 20
             }
         }
-        let side: CGFloat = creatureBox.maxX + 12
-        let who = c.cls == "Unhatched" ? c.stage : "\(c.stage) \(c.cls)"
-        put(who, NSFont.systemFont(ofSize: 15, weight: .semibold), .white, at: NSPoint(x: side, y: 28))
-        put("Lv \(c.level)", NSFont.systemFont(ofSize: 22, weight: .bold), .white, at: NSPoint(x: side, y: 48))
-        put("\(c.mood) · Health \(c.health)", NSFont.systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 80))
-
-        // The level bar: from where this level began to the next one.
-        y = 138
-        bar(NSRect(x: left, y: y, width: bounds.width - 2 * left, height: 8), c.progress)
-        let toNext = c.level >= 99 ? "Top level" : "\(grouped(max(0, c.xpNext - c.xp))) XP to Lv \(c.level + 1)"
-        put(toNext, mono(11), dim, at: NSPoint(x: left, y: y + 14))
-        let today = "+\(c.today) today"
-        let todayWidth = (today as NSString).size(withAttributes: [.font: mono(11, .medium)]).width
-        put(today, mono(11, .medium), orange, at: NSPoint(x: bounds.width - left - todayWidth, y: y + 14))
-
-        // The six stats, as the card shows them.
-        y = 184
-        for name in statOrder {
-            let v = c.stats[name] ?? 0
-            put(name.capitalized, mono(12), .white, at: NSPoint(x: left, y: y))
-            bar(NSRect(x: left + 84, y: y + 5, width: 170, height: 6), CGFloat(v) / 100)
-            put(String(format: "%3d", v), mono(12), .white, at: NSPoint(x: left + 262, y: y))
-            y += 22
+        put(c.stage, .systemFont(ofSize: 18, weight: .semibold), .white, at: NSPoint(x: side, y: 20), width: width)
+        if c.cls != "Unhatched" {
+            put(c.cls, .systemFont(ofSize: 13, weight: .medium), orange, at: NSPoint(x: side, y: 44), width: width)
         }
+        put("\(c.mood) · Health \(c.health)", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 70), width: width)
         if !c.brain.isEmpty {
-            put("Brains: \(c.brain)", mono(11), dim, at: NSPoint(x: left, y: y + 2))
+            put("Brains: \(c.brain)", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 88), width: width)
         }
-        let when = updated.map { "Updated " + DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) } ?? ""
-        let footer = status.isEmpty ? "\(when) · offline · Aura \(c.power)" : status
-        put(footer, mono(10), dim, at: NSPoint(x: left, y: bounds.height - 22))
     }
 }
 
-final class FlippedView: NSView {
+/// The page that scrolls: black behind the cards, so a --full picture has the panel's own background too.
+final class PageList: NSView {
     override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.setFill()
+        dirtyRect.fill()
+    }
+}
+
+/// One rounded card on the page: `paint` draws its numbers and bars, text views inside it hold its wrapped text.
+final class CardView: NSView {
+    let paint: ((CGFloat) -> Void)?
+
+    override var isFlipped: Bool { true }
+
+    init(_ label: String, paint: ((CGFloat) -> Void)? = nil) {
+        self.paint = paint
+        super.init(frame: .zero)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel(label)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillCard(bounds)
+        paint?(bounds.width)
+    }
 }
 
 /// A docs link: opens the page in the browser, and only Claude Code's docs (checked when the card was read).
@@ -356,84 +467,181 @@ final class DocsButton: NSButton {
     var url: URL?
 }
 
-/// The whole panel: a tab switch on top, then the Creature tab or one of the two text tabs.
-final class TabsView: NSView {
-    static let names = ["Creature", "Fix next", "Learn"]
-    let tabs = NSSegmentedControl(labels: TabsView.names, trackingMode: .selectOne, target: nil, action: nil)
-    let creature = PanelView()
+/// A half-width card at the bottom of the overview that opens one of the two lists, Fix next or Learn.
+final class TileButton: NSButton {
+    private let name: String, symbol: String, note: String
+    private var hovering = false { didSet { needsDisplay = true } }
+    private var hover: NSTrackingArea?
+
+    override var isFlipped: Bool { true }
+
+    init(_ name: String, _ symbol: String, note: String, label: String, target: AnyObject, action: Selector) {
+        self.name = name
+        self.symbol = symbol
+        self.note = note
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        isBordered = false
+        title = ""
+        setAccessibilityLabel(label)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hover { removeTrackingArea(hover) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hover = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // A little lighter while the pointer is on it, lighter still while it is pressed.
+        NSColor(white: isHighlighted ? 0.18 : hovering ? 0.14 : 0.1, alpha: 1).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: corner, yRadius: corner).fill()
+        heading(name, symbol, right: note.isEmpty ? "›" : "\(note)  ›", width: bounds.width, top: (bounds.height - 17) / 2)
+    }
+
+    // The keyboard focus ring follows the card's rounded corners.
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: corner, yRadius: corner).fill()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+}
+
+/// What the panel shows: the overview of cards, or one of the two lists it opens.
+enum Page: String {
+    case home, fix, learn
+}
+
+/// The whole panel, in a popover of a fixed size: the overview of cards, or the Fix next or Learn list with a way back.
+final class PageView: NSView {
     let scroll = NSScrollView()
-    let list = FlippedView()
+    let list = PageList()
+    let creature = PanelView()
     var onLink: ((URL) -> Void)?
     var card: Card? { didSet { creature.card = card; rebuild() } }
+    var status = "" { didSet { updateHeader() } }
+    var updated: Date? { didSet { updateHeader() } }
+    private(set) var page = Page.home
+    /// What VoiceOver finds on the page, top to bottom: --snapshot prints their labels.
+    private(set) var cards: [NSView] = []
+
+    private let title = NSTextField(labelWithString: "CC level")
+    private let back = NSButton(title: "", target: nil, action: nil)
+    private let note = NSTextField(wrappingLabelWithString: "")
+    private let footer = NSTextField(labelWithString: "")
+    private var kept: [NSView] { [title, back, note, footer, creature] }
+    private var isOpen = false
+    /// The page's width: the panel's, less the scroller when the page is taller than the panel.
+    private var pageWidth = panelWidth
+    private var cardWidth: CGFloat { pageWidth - 2 * edge }
+    private var innerWidth: CGFloat { cardWidth - 2 * inset }
 
     override var isFlipped: Bool { true }
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: tabBarHeight + contentHeight))
+        super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
         appearance = NSAppearance(named: .darkAqua)
-        tabs.selectedSegment = 0
-        tabs.target = self
-        tabs.action = #selector(switched)
-        tabs.sizeToFit()
-        tabs.frame.origin = NSPoint(x: (panelWidth - tabs.frame.width) / 2, y: 12)
-        tabs.setAccessibilityLabel("CC level panel tabs")
-        creature.frame.origin = NSPoint(x: 0, y: tabBarHeight)
-        scroll.frame = NSRect(x: 0, y: tabBarHeight, width: panelWidth, height: contentHeight)
+        scroll.frame = bounds
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
-        // A scroller that shows whenever a tab is taller than the panel, so it is clear there is more below.
+        // A scroller that shows whenever a list is taller than the panel, so it is clear there is more below.
         scroll.scrollerStyle = .legacy
         scroll.autohidesScrollers = true
         scroll.documentView = list
-        addSubview(tabs)
-        addSubview(creature)
         addSubview(scroll)
-        show(0)
+        // A mouse plugged in or out can switch scroll views to overlay scrollers, which hide: keep this one showing.
+        NotificationCenter.default.addObserver(self, selector: #selector(keepScroller),
+                                               name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.textColor = .white
+        title.sizeToFit()
+        title.frame.origin = NSPoint(x: edge + 2, y: (headerHeight - title.frame.height) / 2 + 2)
+        back.isBordered = false
+        back.attributedTitle = NSAttributedString(string: "‹ Back", attributes: [
+            .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: orange])
+        back.setAccessibilityLabel("Back to the overview")
+        back.target = self
+        back.action = #selector(goBack)
+        back.sizeToFit()
+        back.frame.origin = NSPoint(x: edge, y: (headerHeight - back.frame.height) / 2 + 2)
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = dim
+        note.alignment = .right
+        note.isSelectable = false
+        note.maximumNumberOfLines = 2
+        footer.font = .systemFont(ofSize: 10.5)
+        footer.textColor = dim
+        for view in kept { list.addSubview(view) }
+        rebuild()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    @objc private func keepScroller() {
+        DispatchQueue.main.async { [weak self] in self?.scroll.scrollerStyle = .legacy }   // after AppKit's own switch
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
         bounds.fill()
     }
 
-    @objc func switched() { show(tabs.selectedSegment) }
-
-    /// Whether the panel is on screen: the creature's loop plays only then, and only on its own tab.
-    private var isOpen = false
-
+    /// Whether the panel is on screen: it always opens at the overview, and the creature's loop plays only then.
     func setOpen(_ open: Bool) {
         isOpen = open
-        creature.setPlaying(isOpen && tabs.selectedSegment == 0)
+        if open {
+            show(.home)   // rebuilt, so "Today" is worked out again: UTC midnight may have passed since the last score
+        } else {
+            creature.setPlaying(false)
+        }
     }
 
-    func show(_ tab: Int) {
-        tabs.selectedSegment = tab
-        creature.isHidden = tab != 0
-        scroll.isHidden = tab == 0
-        creature.setPlaying(isOpen && tab == 0)
+    /// Shows the overview or one of its two lists, from the top.
+    func show(_ next: Page) {
+        page = next
         rebuild()
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        creature.setPlaying(isOpen && page == .home)
+        NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
-    // The text tabs, laid out top to bottom.
-    private var y: CGFloat = 0
-    private let left: CGFloat = 20
-    private var width: CGFloat { panelWidth - 2 * left }
+    @objc private func openFix() { show(.fix) }
+    @objc private func openLearn() { show(.learn) }
+    @objc private func goBack() { show(.home) }
 
-    private func label(_ text: String, _ font: NSFont, _ color: NSColor, gap: CGFloat = 4) {
+    private func updateHeader() {
+        let when = updated.map { "Updated " + DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) + " · offline" }
+        note.stringValue = status.isEmpty ? (when ?? "offline") : status
+        let noteX = (back.isHidden ? title.frame.maxX : back.frame.maxX) + 12
+        note.frame = NSRect(x: noteX, y: 0, width: pageWidth - edge - noteX, height: 30)
+        // One line sits level with the title; two start a little higher.
+        let lines = note.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: note.frame.width, height: 1_000)).height ?? 14
+        note.frame.origin.y = max(5, (headerHeight - min(30, lines)) / 2 + 2)
+    }
+
+    // Text inside a card, top to bottom from its running y.
+    private func label(_ text: String, _ font: NSFont, _ color: NSColor, in card: NSView, y: inout CGFloat, gap: CGFloat = 4) {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = font
         field.textColor = color
         field.isSelectable = false
-        field.preferredMaxLayoutWidth = width
-        let height = field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000)).height ?? 16
-        field.frame = NSRect(x: left, y: y, width: width, height: ceil(height))
-        list.addSubview(field)
+        field.preferredMaxLayoutWidth = innerWidth
+        let height = field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: innerWidth, height: 10_000)).height ?? 16
+        field.frame = NSRect(x: inset, y: y, width: innerWidth, height: ceil(height))
+        card.addSubview(field)
         y += ceil(height) + gap
     }
 
-    private func link(_ url: URL?, gap: CGFloat = 14) {
+    private func link(_ url: URL?, in card: NSView, y: inout CGFloat, gap: CGFloat = 12) {
         guard let url else { y += gap - 4; return }
         let page = url.path.split(separator: "/").last.map(String.init) ?? "docs"
         let button = DocsButton(title: "", target: self, action: #selector(open(_:)))
@@ -443,8 +651,8 @@ final class TabsView: NSView {
             .font: mono(11, .medium), .foregroundColor: orange, .underlineStyle: NSUnderlineStyle.single.rawValue])
         button.setAccessibilityLabel("Open the Claude Code docs page \(page)")
         button.sizeToFit()
-        button.frame.origin = NSPoint(x: left - 2, y: y)
-        list.addSubview(button)
+        button.frame.origin = NSPoint(x: inset - 2, y: y)
+        card.addSubview(button)
         y += button.frame.height + gap
     }
 
@@ -453,61 +661,227 @@ final class TabsView: NSView {
         onLink?(url)
     }
 
-    private func capitalized(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
+    private func place(_ view: NSView, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) {
+        view.frame = NSRect(x: x, y: y, width: width, height: height)
+        if view.superview == nil { list.addSubview(view) }
+        cards.append(view)
+    }
 
     func rebuild() {
-        list.subviews.forEach { $0.removeFromSuperview() }
-        y = 8
-        switch tabs.selectedSegment {
-        case 1: buildFix()
-        case 2: buildLearn()
-        default: return
+        pageWidth = panelWidth
+        arrange()
+        if list.frame.height > bounds.height + 0.5 {
+            // Taller than the panel: the scroller shows, so the page makes room for it.
+            pageWidth = panelWidth - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+            arrange()
         }
-        list.frame = NSRect(x: 0, y: 0, width: panelWidth, height: max(contentHeight, y + 8))
     }
 
-    private func waiting() {
-        label(card == nil ? "No creature yet." : "This tab fills in at the next score.", .systemFont(ofSize: 13), dim)
-        label("Right-click the creature in the menu bar and choose Refresh.", .systemFont(ofSize: 12), dim)
+    /// Lays out the page that is showing, top to bottom, at the page's current width.
+    private func arrange() {
+        list.subviews.filter { !kept.contains($0) }.forEach { $0.removeFromSuperview() }
+        cards = []
+        let home = page == .home || card == nil   // with no creature yet there are no lists to open
+        title.isHidden = !home
+        back.isHidden = home
+        creature.isHidden = !home
+        updateHeader()
+        var y = headerHeight
+        if home {
+            place(creature, x: edge, y: y, width: cardWidth, height: creatureHeight)
+            y += creatureHeight + gap
+            if let c = card {
+                let half = (cardWidth - gap) / 2
+                place(levelCard(c), x: edge, y: y, width: half, height: tileHeight)
+                place(todayCard(c), x: edge + half + gap, y: y, width: half, height: tileHeight)
+                y += tileHeight + gap
+                for (view, height) in [statsCard(c), trendCard(c)] {
+                    place(view, x: edge, y: y, width: cardWidth, height: height)
+                    y += height + gap
+                }
+                place(fixButton(c), x: edge, y: y, width: half, height: buttonHeight)
+                place(learnButton(c), x: edge + half + gap, y: y, width: half, height: buttonHeight)
+                y += buttonHeight + gap
+            }
+        } else if let c = card {
+            cards.append(back)
+            let (view, height) = page == .fix ? fixCard(c) : learnCard(c)
+            place(view, x: edge, y: y, width: cardWidth, height: height)
+            y += height + gap
+        }
+        footer.stringValue = card.map { "Aura \(grouped($0.power)) · right-click for Refresh or Quit" }
+            ?? "Right-click the creature in the menu bar for Refresh or Quit"
+        footer.sizeToFit()
+        footer.frame.origin = NSPoint(x: edge + 2, y: y)
+        y += footer.frame.height + 6   // a few points to spare, so a slightly larger system font still fits the overview
+        list.frame = NSRect(x: 0, y: 0, width: pageWidth, height: max(bounds.height, y))
     }
 
-    private func buildFix() {
-        guard let fix = card?.fix else { return waiting() }
-        label("Fix next", .systemFont(ofSize: 15, weight: .semibold), .white, gap: 2)
-        label("What would raise Health or Brains most, from your last score.", .systemFont(ofSize: 11.5), dim, gap: 14)
+    /// The panel's height: its full height, or less on a screen with less room (then the overview scrolls too).
+    func fit(height: CGFloat) {
+        let height = min(panelHeight, max(240, height))
+        guard height != bounds.height else { return }
+        setFrameSize(NSSize(width: panelWidth, height: height))
+        scroll.frame = bounds
+        rebuild()
+    }
+
+    private func levelCard(_ c: Card) -> CardView {
+        let top = c.level >= 99
+        let toNext = top ? "Top level" : "\(grouped(max(0, c.xpNext - c.xp))) XP to Lv \(c.level + 1)"
+        let label = top ? "Level \(c.level), top level"
+            : "Level \(c.level), \(Int(c.progress * 100)) percent of the way to level \(c.level + 1), \(toNext)"
+        return CardView(label) { w in
+            heading("Level", "chart.line.uptrend.xyaxis", width: w)
+            put("Lv \(c.level)", bigFont, .white, at: NSPoint(x: inset, y: 32), width: w - 2 * inset)
+            bar(NSRect(x: inset, y: 72, width: w - 2 * inset, height: 6), c.progress)
+            put(toNext, .systemFont(ofSize: 11), dim, at: NSPoint(x: inset, y: 84), width: w - 2 * inset)
+        }
+    }
+
+    private func todayCard(_ c: Card) -> CardView {
+        let today = c.todayShown
+        let day = c.olderDay   // a card scored on an earlier day says which day its number is from
+        return CardView("\(day ?? "Today"): \(today) XP of \(dayCap) a day") { w in
+            heading(day ?? "Today", "bolt.fill", width: w)
+            let big = "+\(grouped(today))"
+            put(big, bigFont, .white, at: NSPoint(x: inset, y: 32))
+            let x = inset + textWidth(big, bigFont) + 6
+            put(day == nil ? "XP today" : "XP", .systemFont(ofSize: 12), dim, at: NSPoint(x: x, y: 45),
+                width: max(0, w - inset - x))
+            bar(NSRect(x: inset, y: 72, width: w - 2 * inset, height: 6), CGFloat(today) / CGFloat(dayCap))
+            put("of \(dayCap) a day", .systemFont(ofSize: 11), dim, at: NSPoint(x: inset, y: 84), width: w - 2 * inset)
+        }
+    }
+
+    private func statsCard(_ c: Card) -> (NSView, CGFloat) {
+        let label = "Stats: " + statOrder.map { "\(capitalized($0)) \(c.stats[$0] ?? 0)" }.joined(separator: ", ")
+        let card = CardView(label) { w in
+            heading("Stats", "slider.horizontal.3", width: w)
+            let column = (w - 2 * inset - 20) / 2
+            for (i, name) in statOrder.enumerated() {
+                let x = inset + CGFloat(i / 3) * (column + 20)
+                let y = 40 + CGFloat(i % 3) * 28
+                let value = String(c.stats[name] ?? 0)
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+                put(capitalized(name), .systemFont(ofSize: 12), .white, at: NSPoint(x: x, y: y))
+                put(value, font, .white, at: NSPoint(x: x + column - textWidth(value, font), y: y))
+                bar(NSRect(x: x, y: y + 18, width: column, height: 4), CGFloat(c.stats[name] ?? 0) / 100)
+            }
+        }
+        return (card, 128)
+    }
+
+    private func trendCard(_ c: Card) -> (NSView, CGFloat) {
+        guard let days = c.xpByDay, let generated = c.generated, let end = utcDay(generated) else {
+            let card = CardView("Trend: fills in at the next score") { w in
+                heading("Trend", "chart.bar.fill", width: w)
+                put("Fills in at the next score.", .systemFont(ofSize: 12), dim, at: NSPoint(x: inset, y: 40), width: w - 2 * inset)
+            }
+            return (card, 68)
+        }
+        let first = utcFormatter("MMM d").string(from: end.addingTimeInterval(-Double(trendDays - 1) * 86_400))
+        let last = c.olderDay ?? "Today"
+        let total = days.reduce(0, +)
+        let spoken = days.dropLast().map(String.init).joined(separator: ", ") + ", \(last): \(days[days.count - 1])"
+        let card = CardView("Trend: XP per day, last \(trendDays) days: \(spoken)") { w in
+            heading("Trend", "chart.bar.fill", right: "\(trendDays) days · \(grouped(total)) XP", width: w)
+            let chart = NSRect(x: inset, y: 40, width: w - 2 * inset, height: 56)
+            let slot = chart.width / CGFloat(trendDays)
+            let barWidth = floor(slot * 0.62)
+            for (i, xp) in days.enumerated() {
+                let height = xp > 0 ? max(3, chart.height * CGFloat(xp) / CGFloat(dayCap)) : 2
+                let rect = NSRect(x: chart.minX + slot * CGFloat(i) + (slot - barWidth) / 2, y: chart.maxY - height,
+                                  width: barWidth, height: height)
+                (xp == 0 ? track : i == days.count - 1 ? orange : orange.withAlphaComponent(0.42)).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 2.5, yRadius: 2.5).fill()
+            }
+            let font = NSFont.systemFont(ofSize: 10.5)
+            put(first, font, dim, at: NSPoint(x: inset, y: chart.maxY + 6))
+            put(last, font, dim, at: NSPoint(x: w - inset - textWidth(last, font), y: chart.maxY + 6))
+        }
+        return (card, 122)
+    }
+
+    private func fixButton(_ c: Card) -> TileButton {
+        let note: String, label: String
+        if let fix = c.fix {
+            note = fix.isEmpty ? "none" : String(fix.count)
+            label = fix.isEmpty ? "Fix next: nothing to fix right now. Opens the list"
+                : "Fix next: \(fix.count) \(fix.count == 1 ? "thing" : "things") to fix. Opens the list"
+        } else {
+            note = ""
+            label = "Fix next: fills in at the next score. Opens the list"
+        }
+        return TileButton("Fix next", "wrench.and.screwdriver", note: note, label: label, target: self, action: #selector(openFix))
+    }
+
+    private func learnButton(_ c: Card) -> TileButton {
+        let note = c.training.map { "\($0.done)/\($0.total)" } ?? ""
+        let label = c.training.map { "Learn: \($0.done) of \($0.total) lessons done. Opens the lessons" }
+            ?? "Learn: fills in at the next score. Opens the lessons"
+        return TileButton("Learn", "book.fill", note: note, label: label, target: self, action: #selector(openLearn))
+    }
+
+    private func fixCard(_ c: Card) -> (NSView, CGFloat) {
+        guard let fix = c.fix else { return waiting("Fix next", "wrench.and.screwdriver") }
+        let card = CardView(fix.isEmpty ? "Fix next: nothing to fix right now"
+                            : fix.count == 1 ? "Fix next: the one thing that would raise Health or Brains most"
+                            : "Fix next: the top \(fix.count) of what would raise Health or Brains most") { w in
+            heading("Fix next", "wrench.and.screwdriver", width: w)
+        }
+        var y: CGFloat = 40
         if fix.isEmpty {
-            label("Nothing to fix right now. Touch grass.", .systemFont(ofSize: 13), .white)
-            return
+            label("Nothing to fix right now. Touch grass.", .systemFont(ofSize: 13), .white, in: card, y: &y)
+        } else {
+            label("What would raise Health or Brains most, from your last score.", .systemFont(ofSize: 11), dim, in: card, y: &y, gap: 10)
+            for (i, item) in fix.enumerated() {
+                label("\(i + 1). \(capitalized(item.title))", .systemFont(ofSize: 12.5, weight: .medium), .white, in: card, y: &y, gap: 3)
+                if !item.how.isEmpty { label("How: \(item.how)", .systemFont(ofSize: 11.5), dim, in: card, y: &y, gap: 3) }
+                link(item.docs, in: card, y: &y)
+            }
         }
-        for (i, item) in fix.enumerated() {
-            label("\(i + 1). \(capitalized(item.title))", .systemFont(ofSize: 12.5, weight: .medium), .white, gap: 3)
-            if !item.how.isEmpty { label("How: \(item.how)", .systemFont(ofSize: 11.5), dim, gap: 3) }
-            link(item.docs)
-        }
+        return (card, y + 8)
     }
 
-    private func buildLearn() {
-        guard let training = card?.training else { return waiting() }
-        label("Learn · \(training.done) of \(training.total) lessons done", .systemFont(ofSize: 15, weight: .semibold), .white, gap: 12)
-        if let tip = card?.tip {
-            label("Tip of the day (\(capitalized(tip.stat)))", mono(11, .medium), orange, gap: 3)
-            label(capitalized(tip.advice.title), .systemFont(ofSize: 12.5), .white, gap: 3)
-            link(tip.advice.docs, gap: 16)
+    private func learnCard(_ c: Card) -> (NSView, CGFloat) {
+        guard let training = c.training else { return waiting("Learn", "book.fill") }
+        let fraction = training.total > 0 ? CGFloat(training.done) / CGFloat(training.total) : 0
+        let card = CardView("Learn: \(training.done) of \(training.total) lessons done") { w in
+            heading("Learn", "book.fill", right: "\(training.done) of \(training.total) lessons", width: w)
+            bar(NSRect(x: inset, y: 40, width: w - 2 * inset, height: 6), fraction)
+        }
+        var y: CGFloat = 58
+        if let tip = c.tip {
+            label("Tip of the day (\(capitalized(tip.stat)))", mono(11, .medium), orange, in: card, y: &y, gap: 3)
+            label(capitalized(tip.advice.title), .systemFont(ofSize: 12.5), .white, in: card, y: &y, gap: 3)
+            link(tip.advice.docs, in: card, y: &y, gap: 16)
         }
         for stat in training.stats {
-            let state = stat.done >= stat.total ? " · trained" : ""
-            label("\(capitalized(stat.name))  \(stat.done)/\(stat.total)\(state)", mono(12, .medium), .white, gap: 3)
-            if let next = stat.next {
-                label("Next: \(next.title)", .systemFont(ofSize: 12), .white, gap: 2)
-                if !next.how.isEmpty { label("How: \(next.how)", .systemFont(ofSize: 11.5), dim, gap: 3) }
-                link(next.docs, gap: 12)
+            let trained = stat.done >= stat.total
+            label("\(capitalized(stat.name))  \(stat.done)/\(stat.total)\(trained ? " · trained" : "")", mono(12, .medium), .white,
+                  in: card, y: &y, gap: 3)
+            if !trained, let next = stat.next {
+                label("Next: \(next.title)", .systemFont(ofSize: 12), .white, in: card, y: &y, gap: 2)
+                if !next.how.isEmpty { label("How: \(next.how)", .systemFont(ofSize: 11.5), dim, in: card, y: &y, gap: 3) }
+                link(next.docs, in: card, y: &y)
             } else {
                 y += 8
             }
         }
         let checked = training.checked.isEmpty ? "" : " Checked against the docs on \(training.checked)."
         label("Lessons tick themselves when your Claude Code logs show them done. They never change your level.\(checked)",
-              .systemFont(ofSize: 10.5), dim)
+              .systemFont(ofSize: 10.5), dim, in: card, y: &y)
+        return (card, y + 8)
+    }
+
+    /// A card whose data comes with the next score (the card on disk is older than the panel).
+    private func waiting(_ name: String, _ symbol: String) -> (NSView, CGFloat) {
+        let card = CardView("\(name): fills in at the next score") { w in
+            heading(name, symbol, width: w)
+            put("Fills in at the next score.", .systemFont(ofSize: 12), dim, at: NSPoint(x: inset, y: 40), width: w - 2 * inset)
+        }
+        return (card, 68)
     }
 }
 
@@ -516,7 +890,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let python: String, scanner: String, claudeDir: String, cache: URL
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let popover = NSPopover()
-    let root = TabsView()
+    let root = PageView()
     var isScanning = false
     var blinkTimer: Timer?
 
@@ -566,7 +940,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func show(_ card: Card, at date: Date?) {
         root.card = card
-        root.creature.updated = date
+        root.updated = date
         showTitle(card)
     }
 
@@ -579,7 +953,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func refresh() {
         guard !isScanning else { return }
         isScanning = true
-        root.creature.status = "Scoring your setup, offline…"
+        root.status = "Scoring your setup, offline…"
         let (python, scanner, claudeDir) = (self.python, self.scanner, self.claudeDir)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
@@ -604,14 +978,14 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func finish(_ data: Data?) {
         isScanning = false
         guard let data, let card = readCard(data) else {
-            root.creature.status = "Could not score this time. Right-click to try again."
+            root.status = "Could not score this time. Right-click to try again."
             return
         }
         try? FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
         if (try? data.write(to: cache, options: .atomic)) != nil {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
         }
-        root.creature.status = ""
+        root.status = ""
         show(card, at: Date())
     }
 
@@ -629,6 +1003,10 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             refreshIfStale()
+            // No taller than the screen it opens on leaves room for (a small display, or one set to larger text).
+            let room = (sender.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? panelHeight
+            root.fit(height: room - 16)
+            popover.contentSize = root.frame.size
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
@@ -636,9 +1014,13 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc func quit() { NSApp.terminate(nil) }
 
+    // Back at the overview before the panel appears, so it never opens on a list left open last time.
+    func popoverWillShow(_ note: Notification) {
+        root.setOpen(true)
+    }
+
     // The loop plays, or the text creature blinks every few seconds, only while the panel is open.
     func popoverDidShow(_ note: Notification) {
-        root.setOpen(true)
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
             self?.root.creature.isBlinking = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { self?.root.creature.isBlinking = false }
@@ -665,29 +1047,39 @@ if let out = option("--snapshot") {
         FileHandle.standardError.write("cclevel-panel: --snapshot needs --card with a card from `cclevel.py --json`\n".data(using: .utf8)!)
         exit(1)
     }
-    let view = TabsView()
+    if CommandLine.arguments.contains("--tab") {
+        FileHandle.standardError.write("cclevel-panel: --tab is gone (the tabs became pages): use --page home, fix or learn\n".data(using: .utf8)!)
+        exit(1)
+    }
+    let view = PageView()
+    if let text = option("--height"), let height = Double(text) {
+        view.fit(height: CGFloat(height))   // as on a screen with less room
+    }
     if let clips = option("--clips") {
         view.creature.clipsDir = URL(fileURLWithPath: clips, isDirectory: true)
     }
     view.card = card
-    view.creature.updated = Date(timeIntervalSince1970: 0)
-    if let tab = option("--tab") {
-        guard let i = ["creature", "fix", "learn"].firstIndex(of: tab) else {
-            FileHandle.standardError.write("cclevel-panel: --tab is creature, fix or learn\n".data(using: .utf8)!)
+    view.updated = Date(timeIntervalSince1970: 0)
+    if CommandLine.arguments.contains("--page") {
+        guard let name = option("--page"), let page = Page(rawValue: name) else {
+            FileHandle.standardError.write("cclevel-panel: --page is home, fix or learn\n".data(using: .utf8)!)
             exit(1)
         }
-        view.show(i)
+        view.show(page)
     }
     view.layoutSubtreeIfNeeded()
-    let size = view.bounds.size
+    // What the panel shows when it opens, scroller and all; with --full, the whole page.
+    let drawn: NSView = CommandLine.arguments.contains("--full") ? view.list : view
+    let size = drawn.bounds.size
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { exit(1) }
     rep.size = size
-    view.cacheDisplay(in: view.bounds, to: rep)
+    drawn.cacheDisplay(in: drawn.bounds, to: rep)
     guard let png = rep.representation(using: .png, properties: [:]), (try? png.write(to: URL(fileURLWithPath: out))) != nil else {
         exit(1)
     }
+    for card in view.cards { print(card.accessibilityLabel() ?? "") }
     exit(0)
 }
 
