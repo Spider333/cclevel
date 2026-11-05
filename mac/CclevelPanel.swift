@@ -15,10 +15,20 @@
 // panel for its class look, else creatures/<stage>.mp4), a still of its first frame otherwise or with Reduce Motion on, and
 // the card's own text art when there is no clip.
 //
+// Poke the pet: over the creature the cursor becomes a pointing hand and the creature lifts a little; a click (or
+// VoiceOver's Poke action) makes it squash and hop and go boing like a cartoon spring, lower as it grows, a sound made here
+// in memory, quiet, and silent when macOS user interface sound effects are off. With Reduce Motion on it boings without
+// moving. It sends and saves nothing.
+//
 // `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full | --scrolled]` draws
 // what the panel shows on that page (with --height, as on a screen with that much room; with --full, the whole page; with
 // --scrolled, the page scrolled to its end, under the header that stays put) into a picture,
 // prints the VoiceOver label of each thing on it, one per line, top to bottom, and exits (for tests and previews).
+// With `--poke-at X,Y [--times N] [--gap MS]` it instead clicks the Creature card N times at that point (from the card's
+// top left; 88,88 is the creature's middle), --gap ms apart (300 if not given), through a window off screen, and prints
+// what each click did ("poke hop" = it was poked, whatever it did; "anim=blink" = the text creature's blink), read back
+// from the creature's layer and its sound player. `--reduce-motion` runs it as if Reduce Motion were on, and
+// `--ui-sounds on|off` as if user interface sound effects were on or off (without it, the Mac's own setting counts).
 import AppKit
 import AVFoundation
 
@@ -77,6 +87,71 @@ let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "
 /// The class look's file suffix: creatures/<stage>_<class>.mp4, when that stage has one for the class.
 let classNames = ["Shipper": "shipper", "AFK Farmer": "afk_farmer", "Loot Goblin": "loot_goblin",
                   "Tokenmaxxer": "tokenmaxxer", "Perfectly Balanced": "balanced", "Noob": "noob"]
+
+/// The poke's boing for each stage: its voice (Hz; the spring sounds at half of it), lower as the creature grows.
+let boingVoices: [String: Double] = ["Egg": 1500, "Hatchling": 1220, "Lil Guy": 980, "Big Guy": 790, "Gigachad": 640,
+                                     "GOAT": 520]
+let boingSeconds = 0.38
+let boingRate = 22050
+/// The loudest sample as a share of full scale: 0.1 is -20 dBFS, quiet even in headphones at full volume.
+let boingLevel = 0.1
+/// Pokes closer together than this still hop, but boing only once.
+let boingGap: TimeInterval = 0.15
+
+/// A boing as WAV bytes (16-bit mono PCM), made here rather than shipped as a file: a cartoon spring, a note at half the
+/// voice that wobbles fast (13 times a second) and settles as it fades, with a little of its octave and twelfth.
+func boingWAV(hz: Double) -> Data {
+    let count = Int(boingSeconds * Double(boingRate))
+    let fadeOut = 0.02 * Double(boingRate)   // the last 20 ms, so it ends without a click
+    var phase = 0.0
+    var wave = [Double](repeating: 0, count: count)
+    for i in 0..<count {
+        let t = Double(i) / Double(boingRate)
+        let wobble = 1 + 0.45 * exp(-t * 7) * sin(2 * Double.pi * 13 * t)
+        phase += 2 * Double.pi * hz * 0.5 * wobble * (1 + 0.15 * exp(-t * 20)) / Double(boingRate)
+        let level = min(1, t / 0.005) * exp(-t * 6) * min(1, Double(count - i) / fadeOut)
+        wave[i] = (sin(phase) + 0.45 * sin(2 * phase) + 0.2 * sin(3 * phase)) * level
+    }
+    let top = wave.map(abs).max() ?? 0
+    let scale = top > 0 ? boingLevel * 32767 / top : 0
+    var data = Data()
+    func add<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    let bytes = UInt32(count * 2)
+    data.append(contentsOf: Array("RIFF".utf8))
+    add(36 + bytes)
+    data.append(contentsOf: Array("WAVEfmt ".utf8))
+    add(UInt32(16)); add(UInt16(1)); add(UInt16(1)); add(UInt32(boingRate)); add(UInt32(boingRate * 2))
+    add(UInt16(2)); add(UInt16(16))
+    data.append(contentsOf: Array("data".utf8))
+    add(bytes)
+    for sample in wave { add(Int16((sample * scale).rounded())) }
+    return data
+}
+
+/// The loudest sample of boingWAV's bytes, in dBFS: read back from the very bytes the player gets (for --poke-at).
+func peakDBFS(_ wav: Data) -> Double {
+    let samples = [UInt8](wav.dropFirst(44))
+    var top = 0
+    for i in stride(from: 0, to: samples.count - 1, by: 2) {
+        top = max(top, abs(Int(Int16(bitPattern: UInt16(samples[i]) | UInt16(samples[i + 1]) << 8))))
+    }
+    return top == 0 ? -.infinity : 20 * log10(Double(top) / 32767)
+}
+
+/// Set by --reduce-motion and --ui-sounds on|off in a --snapshot run, as if this Mac were set so (for tests).
+var testReduceMotion = false
+var testUISounds: Bool?
+
+/// Whether Reduce Motion is on: the loop shows its still, and a poke boings without moving.
+func reduceMotion() -> Bool { testReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+/// Whether macOS plays user interface sound effects (System Settings → Sound): when not, a poke hops without a boing.
+/// Read only. A Mac where it was never switched off has no value saved, which means on.
+func uiSoundsOn() -> Bool {
+    if let testUISounds { return testUISounds }
+    let value = UserDefaults(suiteName: "com.apple.systemsound")?.object(forKey: "com.apple.sound.uiaudio.enabled")
+    return (value as? NSNumber)?.boolValue ?? true
+}
 
 /// Holds the first frame while it is decoded on another queue.
 final class FrameBox: @unchecked Sendable {
@@ -508,10 +583,25 @@ final class PanelView: NSView {
     private var clipStage: String?
     private var still: NSImage?
     private let video = NSView(frame: creatureBox)
+    /// The loop's layer sits in hopper, which only a poke moves, inside body, which only a hover lifts: two layers, so a
+    /// hover that starts or ends mid-hop never cuts the hop short. Both move inside the video's black, clipped square,
+    /// which keeps covering the still drawn under it, so a second creature never shows behind the moving one.
+    private let body = CALayer()
+    private let hopper = CALayer()
     private let playerLayer = AVPlayerLayer()
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var wantsPlay = false
+    private var hovering = false
+    private var pressed = false
+    private var lastBoing: TimeInterval = -.infinity
+    private var boing: (stage: String, player: AVAudioPlayer, wav: Data)?
+
+    /// What one poke did, read back from the layer and the player: --poke-at prints it.
+    struct Poke {
+        let anim: [String], sound: String, hz: Double, seconds: Double, peak: Double
+    }
+    private var lastPoke: Poke?
 
     override var isFlipped: Bool { true }
 
@@ -525,20 +615,33 @@ final class PanelView: NSView {
         video.layer?.backgroundColor = NSColor.black.cgColor
         video.layer?.cornerRadius = creatureCorner
         video.layer?.masksToBounds = true
-        playerLayer.frame = video.bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        body.frame = video.bounds
+        hopper.frame = body.bounds
+        playerLayer.frame = hopper.bounds
+        CATransaction.commit()
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = NSColor.black.cgColor
-        video.layer?.addSublayer(playerLayer)
+        hopper.addSublayer(playerLayer)
+        body.addSublayer(hopper)
+        video.layer?.addSublayer(body)
         video.isHidden = true
         video.setAccessibilityElement(false)   // decorative: the card's label says who the creature is
         addSubview(video)
+        // Hover and the pointing hand: the panel is an accessory app, so the cursor is set on enter and exit as well.
+        addTrackingArea(NSTrackingArea(rect: creatureBox, options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways],
+                                       owner: self))
         // Reduce Motion switched on (or off) while the panel is open takes effect at once.
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(motionSettingChanged),
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
 
-    @objc private func motionSettingChanged() { setPlaying(wantsPlay) }
+    @objc private func motionSettingChanged() {
+        setPlaying(wantsPlay)
+        lift()   // a hover lift goes (or comes back) with the setting
+    }
 
     /// Loads the loop for the card's stage and class, once per look: its first frame now, the player for later.
     /// The class look (<stage>_<class>.mp4) comes first; a stage without one plays the stage's own loop.
@@ -578,13 +681,23 @@ final class PanelView: NSView {
     /// Plays the loop while the panel is open, unless Reduce Motion is on: then the still stays.
     func setPlaying(_ on: Bool) {
         wantsPlay = on
+        if !on {   // closed, or another page: the next open starts with the creature at rest
+            hovering = false
+            pressed = false
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hopper.removeAllAnimations()
+            body.removeAllAnimations()
+            body.transform = CATransform3DIdentity
+            CATransaction.commit()
+        }
         guard let player else { return }
-        if on && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if on && !reduceMotion() {
             video.isHidden = false
             player.play()
         } else {
             player.pause()
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if reduceMotion() {
                 video.isHidden = true   // the first-frame still drawn underneath shows instead
             }
         }
@@ -593,9 +706,136 @@ final class PanelView: NSView {
     required init?(coder: NSCoder) { nil }
 
     func updateAccessibility() {
-        guard let c = card else { return setAccessibilityLabel("Creature: no creature yet") }
+        guard let c = card else {
+            setAccessibilityCustomActions([])
+            return setAccessibilityLabel("Creature: no creature yet")
+        }
         let brains = c.brain.isEmpty ? "" : ", Brains: \(c.brain)"
         setAccessibilityLabel("Creature: \(c.who), mood \(c.mood), Health \(c.health)\(brains)")
+        setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Poke") { [weak self] in
+            self?.poke(at: ProcessInfo.processInfo.systemUptime) != nil
+        }])
+    }
+
+    // Poke the pet. Only a click that starts and ends on the creature counts: dragging off it cancels.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // Clicks on the playing loop come here, not to the video view, which would drop a first click on a panel not in front.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === video ? self : hit
+    }
+
+    private func onCreature(_ event: NSEvent) -> Bool {
+        card != nil && creatureBox.contains(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard card != nil else { return }
+        hovering = true
+        NSCursor.pointingHand.set()
+        lift()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+        guard hovering else { return }
+        hovering = false
+        lift()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        (onCreature(event) ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
+
+    override func mouseDown(with event: NSEvent) { pressed = onCreature(event) }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { pressed = false }
+        if pressed && onCreature(event) { poke(at: event.timestamp) }
+    }
+
+    /// A hover lifts the creature a little; it settles when the mouse leaves. Not with Reduce Motion on.
+    private func lift() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        body.transform = hovering && !reduceMotion() ? CATransform3DMakeScale(1.04, 1.04, 1) : CATransform3DIdentity
+        CATransaction.commit()
+    }
+
+    /// The squash and the hop, about 0.4 s, on hopper alone (a hover lift on body stays as it is). A poke during one starts
+    /// it again.
+    private func hop() {
+        // Up on screen, whichever way the layers above count y.
+        let up: CGFloat = hopper.superlayer?.contentsAreFlipped() == true ? -8 : 8
+        func keyframes(_ path: String, _ values: [CGFloat]) -> CAKeyframeAnimation {
+            let animation = CAKeyframeAnimation(keyPath: path)
+            animation.values = values
+            animation.keyTimes = [0, 0.18, 0.5, 0.78, 1]
+            animation.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeOut),
+                                         CAMediaTimingFunction(name: .easeIn), CAMediaTimingFunction(name: .easeOut)]
+            return animation
+        }
+        let group = CAAnimationGroup()
+        group.animations = [keyframes("transform.scale.x", [1, 1.1, 0.95, 1.02, 1]),
+                            keyframes("transform.scale.y", [1, 0.86, 1.08, 0.97, 1]),
+                            keyframes("transform.translation.y", [0, 0, up, 0, 0])]
+        group.duration = 0.4
+        hopper.removeAnimation(forKey: "poke")
+        hopper.add(group, forKey: "poke")
+    }
+
+    /// A poke: the creature squashes and hops (the text creature blinks), not with Reduce Motion on, and boings in its
+    /// stage's voice, unless user interface sound effects are off or it boinged less than boingGap ago.
+    @discardableResult
+    func poke(at time: TimeInterval) -> Poke? {
+        guard let card else { return nil }
+        if !reduceMotion() {
+            if !video.isHidden {
+                hop()
+            } else if still == nil {
+                isBlinking = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in self?.isBlinking = false }
+            }
+        }
+        var sound = "none", hz = 0.0, seconds = 0.0, peak = -Double.infinity
+        if let voice = boingVoices[card.stage] {
+            if boing?.stage != card.stage {
+                let wav = boingWAV(hz: voice)
+                boing = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: card.stage, player: $0, wav: wav) }
+                boing?.player.prepareToPlay()
+            }
+            hz = voice
+            sound = "failed"   // unless the player below was made
+            if let boing {
+                seconds = boing.player.duration
+                peak = peakDBFS(boing.wav)
+                if !uiSoundsOn() {
+                    sound = "off"
+                } else if time - lastBoing < boingGap {
+                    sound = "throttled"
+                } else {
+                    lastBoing = time
+                    boing.player.currentTime = 0
+                    sound = boing.player.play() ? "played" : "failed"
+                }
+            }
+        }
+        let done = Poke(anim: (hopper.animationKeys() ?? []) + (isBlinking ? ["blink"] : []), sound: sound, hz: hz,
+                        seconds: seconds, peak: peak)
+        lastPoke = done
+        return done
+    }
+
+    /// One line for --poke-at: what the last click did ("poke none" when it was no poke), then forgotten.
+    func takePokeLine() -> String {
+        defer { lastPoke = nil }
+        guard let p = lastPoke else {
+            let keys = hopper.animationKeys() ?? []
+            return "poke none anim=\(keys.isEmpty ? "-" : keys.joined(separator: ",")) sound=none"
+        }
+        return String(format: "poke hop anim=%@ sound=%@ hz=%.0f dur=%.3f peak_dbfs=%.1f",
+                      p.anim.isEmpty ? "-" : p.anim.joined(separator: ","), p.sound, p.hz, p.seconds, p.peak)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1521,6 +1761,8 @@ if let out = option("--snapshot") {
         FileHandle.standardError.write("cclevel-panel: --tab is gone (the tabs became pages): use --page home, fix or learn\n".data(using: .utf8)!)
         exit(1)
     }
+    testReduceMotion = CommandLine.arguments.contains("--reduce-motion")
+    testUISounds = ["on": true, "off": false][option("--ui-sounds") ?? ""]
     let view = PageView()
     if let text = option("--height"), let height = Double(text) {
         view.fit(height: CGFloat(height))   // as on a screen with less room
@@ -1556,6 +1798,38 @@ if let out = option("--snapshot") {
     view.cacheDisplay(in: view.bounds, to: rep)
     guard let png = rep.representation(using: .png, properties: [:]), (try? png.write(to: URL(fileURLWithPath: out))) != nil else {
         exit(1)
+    }
+    // Clicks on the Creature card: the panel as when it opens, in a window off screen, gets each click through that
+    // window (so the real hit test and mouse handlers run), and prints what it did, read back from the layer and player.
+    if let at = option("--poke-at") {
+        let xy = at.split(separator: ",").compactMap { Double($0) }
+        guard xy.count == 2 else {
+            FileHandle.standardError.write("cclevel-panel: --poke-at takes X,Y in the Creature card, such as 88,88\n".data(using: .utf8)!)
+            exit(1)
+        }
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: size.width, height: size.height),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFrontRegardless()   // a window that is not ordered in drops mouse events; this one stays off screen
+        view.setOpen(true)
+        view.layoutSubtreeIfNeeded()
+        let point = view.creature.convert(NSPoint(x: xy[0], y: xy[1]), to: nil)
+        let times = max(Int(option("--times") ?? "") ?? 1, 1)
+        let gap = (Double(option("--gap") ?? "") ?? 300) / 1000
+        let start = ProcessInfo.processInfo.systemUptime
+        print("ui_sounds=\(uiSoundsOn() ? "on" : "off")")
+        for i in 0..<times {
+            let down = start + Double(i) * gap
+            for (type, when) in [(NSEvent.EventType.leftMouseDown, down), (.leftMouseUp, down + 0.02)] {
+                if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: when,
+                                                  windowNumber: window.windowNumber, context: nil, eventNumber: i,
+                                                  clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                    window.sendEvent(event)
+                }
+            }
+            print(view.creature.takePokeLine())
+        }
+        exit(0)
     }
     for card in view.cards { print(card.accessibilityLabel() ?? "") }
     exit(0)

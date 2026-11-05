@@ -3693,6 +3693,54 @@ class Panel(unittest.TestCase):
         refused = subprocess.run([binary, "--snapshot", png, "--card", os.path.join(self.tmp.name, "bad.json")],
                                  capture_output=True, text=True, timeout=60)
         self.assertEqual(refused.returncode, 1, "a card with missing fields is refused, not drawn")
+        # Poke the pet: clicks sent through the panel's window at a point in the Creature card, each one read back from
+        # the creature's layer and its sound player ("hop" = it was poked). Most runs are quiet (--ui-sounds off); two follow
+        # this Mac's own Sound setting, and the two that test the 150 ms limit force sound effects on.
+        clips = os.path.join(ROOT, "mac", "creatures")
+        ui = {}
+
+        def poke(stage, at, *extra, with_clips=True):
+            write(self.tmp.name, "poke.json", dict(base, stage=stage))
+            done = draw(os.path.join(self.tmp.name, "poke.json"), "--poke-at", at, *(["--clips", clips] if with_clips else []), *extra)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = done.stdout.splitlines()
+            self.assertIn(lines[0], ("ui_sounds=on", "ui_sounds=off"), lines)
+            ui["on"] = lines[0] == "ui_sounds=on"
+            return [dict(part.split("=", 1) for part in line.split()[2:]) | {"what": line.split()[1]} for line in lines[1:]]
+
+        pitches = []
+        for stage in ("Egg", "Hatchling", "Lil Guy", "Big Guy", "Gigachad", "GOAT"):
+            pokes = poke(stage, "88,88", "--times", "3", "--ui-sounds", "off")
+            self.assertEqual(len(pokes), 3, stage)
+            for p in pokes:
+                self.assertEqual((p["what"], p["anim"], p["sound"]), ("hop", "poke", "off"), (stage, p))
+                self.assertTrue(0.08 <= float(p["dur"]) <= 0.4, (stage, p))
+                self.assertLessEqual(float(p["peak_dbfs"]), -18, "quiet even in headphones: %s" % stage)
+            pitches.append(float(pokes[0]["hz"]))
+        self.assertEqual(pitches, sorted(pitches, reverse=True), "the voice drops as the creature grows")
+        self.assertEqual(len(set(pitches)), 6, "each stage has its own voice")
+        played = poke("Lil Guy", "88,88")
+        self.assertEqual((played[0]["what"], played[0]["anim"], played[0]["sound"]), ("hop", "poke", "played" if ui["on"] else "off"))
+        # The panel's own read of System Settings → Sound → Play user interface sound effects agrees with macOS's (read
+        # only; nothing saved means on).
+        setting = subprocess.run(["defaults", "read", "com.apple.systemsound", "com.apple.sound.uiaudio.enabled"],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(ui["on"], setting.returncode != 0 or setting.stdout.strip() not in ("0", "false", "NO"), setting)
+        moved = poke("Lil Guy", "88,88", "--reduce-motion")
+        self.assertEqual((moved[0]["anim"], moved[0]["sound"]), ("-", "played" if ui["on"] else "off"),
+                         "Reduce Motion: a boing without the hop")
+        self.assertEqual(poke("Lil Guy", "250,60", "--ui-sounds", "off"), [{"what": "none", "anim": "-", "sound": "none"}],
+                         "a click beside the creature is no poke")
+        # The 150 ms limit, with sound effects on whatever this Mac is set to, so it is always tested.
+        fast = poke("Lil Guy", "88,88", "--times", "2", "--gap", "50", "--ui-sounds", "on")
+        self.assertEqual([(p["anim"], p["sound"]) for p in fast], [("poke", "played"), ("poke", "throttled")],
+                         "a second poke 50 ms later hops again but boings once")
+        apart = poke("Lil Guy", "88,88", "--times", "2", "--ui-sounds", "on")   # 300 ms apart: past the limit
+        self.assertEqual([(p["anim"], p["sound"]) for p in apart], [("poke", "played")] * 2, "pokes 300 ms apart both boing")
+        still = poke("Lil Guy", "88,88", "--reduce-motion", "--ui-sounds", "off")
+        self.assertEqual((still[0]["what"], still[0]["anim"]), ("hop", "-"), "Reduce Motion: no hop")
+        text_art = poke("Lil Guy", "88,88", "--ui-sounds", "off", with_clips=False)
+        self.assertEqual(text_art[0]["anim"], "blink", "without clips the text creature blinks")
 
 
 if __name__ == "__main__":
