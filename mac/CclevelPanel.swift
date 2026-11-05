@@ -13,8 +13,9 @@
 // panel for its class look, else creatures/<stage>.mp4), a still of its first frame otherwise or with Reduce Motion on, and
 // the card's own text art when there is no clip.
 //
-// `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full]` draws what the panel
-// shows on that page (with --height, as on a screen with that much room; with --full, the whole page) into a picture,
+// `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full | --scrolled]` draws
+// what the panel shows on that page (with --height, as on a screen with that much room; with --full, the whole page; with
+// --scrolled, the page scrolled to its end, under the header that stays put) into a picture,
 // prints the VoiceOver label of each thing on it, one per line, top to bottom, and exits (for tests and previews).
 import AppKit
 import AVFoundation
@@ -440,7 +441,7 @@ final class PanelView: NSView {
     }
 }
 
-/// The page that scrolls: black behind the cards, so a --full picture has the panel's own background too.
+/// The page that scrolls: black behind the cards, like the panel around it.
 final class PageList: NSView {
     override var isFlipped: Bool { true }
 
@@ -547,8 +548,13 @@ final class PageView: NSView {
     private let back = NSButton(title: "", target: nil, action: nil)
     private let note = NSTextField(wrappingLabelWithString: "")
     private let footer = NSTextField(labelWithString: "")
-    private var kept: [NSView] { [title, back, note, footer, creature] }
+    /// What stays in the scrolling page between rebuilds (the header sits above it, pinned).
+    private var kept: [NSView] { [footer, creature] }
     private var isOpen = false
+    /// How tall the page's content came out at the last layout.
+    private var contentHeight: CGFloat = 0
+    /// The scrolling part: everything below the header.
+    private var scrollHeight: CGFloat { bounds.height - headerHeight }
     /// The page's width: the panel's, less the scroller when the page is taller than the panel.
     private var pageWidth = panelWidth
     private var cardWidth: CGFloat { pageWidth - 2 * edge }
@@ -559,7 +565,7 @@ final class PageView: NSView {
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
         appearance = NSAppearance(named: .darkAqua)
-        scroll.frame = bounds
+        placeScroll()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         // A scroller that shows whenever a list is taller than the panel, so it is clear there is more below.
@@ -589,8 +595,15 @@ final class PageView: NSView {
         note.maximumNumberOfLines = 2
         footer.font = .systemFont(ofSize: 10.5)
         footer.textColor = dim
+        // The header (the title, or Back on a list, and when it was updated) stays put above the page as it scrolls.
+        let header: [NSView] = [title, back, note]
+        for view in header { addSubview(view, positioned: .below, relativeTo: scroll) }   // first, so VoiceOver reads Back first
         for view in kept { list.addSubview(view) }
         rebuild()
+    }
+
+    private func placeScroll() {
+        scroll.frame = NSRect(x: 0, y: headerHeight, width: panelWidth, height: scrollHeight)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -632,7 +645,7 @@ final class PageView: NSView {
         let when = updated.map { "Updated " + DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) + " · offline" }
         note.stringValue = status.isEmpty ? (when ?? "offline") : status
         let noteX = (back.isHidden ? title.frame.maxX : back.frame.maxX) + 12
-        note.frame = NSRect(x: noteX, y: 0, width: pageWidth - edge - noteX, height: 30)
+        note.frame = NSRect(x: noteX, y: 0, width: panelWidth - edge - noteX, height: 30)
         // One line sits level with the title; two start a little higher.
         let lines = note.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: note.frame.width, height: 1_000)).height ?? 14
         note.frame.origin.y = max(5, (headerHeight - min(30, lines)) / 2 + 2)
@@ -680,7 +693,7 @@ final class PageView: NSView {
     func rebuild() {
         pageWidth = panelWidth
         arrange()
-        if list.frame.height > bounds.height + 0.5 {
+        if list.frame.height > scrollHeight + 0.5 {
             // Taller than the panel: the scroller shows, so the page makes room for it.
             pageWidth = panelWidth - NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
             arrange()
@@ -696,7 +709,7 @@ final class PageView: NSView {
         back.isHidden = home
         creature.isHidden = !home
         updateHeader()
-        var y = headerHeight
+        var y: CGFloat = 0
         if home {
             place(creature, x: edge, y: y, width: cardWidth, height: creatureHeight)
             y += creatureHeight + gap
@@ -724,7 +737,8 @@ final class PageView: NSView {
         footer.sizeToFit()
         footer.frame.origin = NSPoint(x: edge + 2, y: y)
         y += footer.frame.height + 6   // a few points to spare, so a slightly larger system font still fits the overview
-        list.frame = NSRect(x: 0, y: 0, width: pageWidth, height: max(bounds.height, y))
+        contentHeight = y
+        list.frame = NSRect(x: 0, y: 0, width: pageWidth, height: max(scrollHeight, y))
     }
 
     /// The panel's height: its full height, or less on a screen with less room (then the overview scrolls too).
@@ -732,8 +746,26 @@ final class PageView: NSView {
         let height = min(panelHeight, max(240, height))
         guard height != bounds.height else { return }
         setFrameSize(NSSize(width: panelWidth, height: height))
-        scroll.frame = bounds
+        placeScroll()
         rebuild()
+    }
+
+    /// For --full pictures: the panel as tall as its whole page, header and all, so nothing is a scroll away.
+    func growToWholePage() {
+        let start = bounds.height
+        guard headerHeight + contentHeight > start else { return }
+        // Twice: grown, the page needs no scroller, so it is laid out wider and its text may take fewer lines.
+        for _ in 0..<2 {
+            setFrameSize(NSSize(width: panelWidth, height: max(start, headerHeight + contentHeight)))
+            placeScroll()
+            rebuild()
+        }
+    }
+
+    /// For pictures: the page scrolled to its end, as after scrolling down a long list.
+    func scrollToEnd() {
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, list.frame.height - scroll.contentSize.height)))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     private func levelCard(_ c: Card) -> CardView {
@@ -1077,15 +1109,17 @@ if let out = option("--snapshot") {
         }
         view.show(page)
     }
+    // What the panel shows when it opens, scroller and all; with --full, the whole page under its header; with
+    // --scrolled, the page scrolled to its end.
+    if CommandLine.arguments.contains("--full") { view.growToWholePage() }
     view.layoutSubtreeIfNeeded()
-    // What the panel shows when it opens, scroller and all; with --full, the whole page.
-    let drawn: NSView = CommandLine.arguments.contains("--full") ? view.list : view
-    let size = drawn.bounds.size
+    if CommandLine.arguments.contains("--scrolled") { view.scrollToEnd() }
+    let size = view.bounds.size
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { exit(1) }
     rep.size = size
-    drawn.cacheDisplay(in: drawn.bounds, to: rep)
+    view.cacheDisplay(in: view.bounds, to: rep)
     guard let png = rep.representation(using: .png, properties: [:]), (try? png.write(to: URL(fileURLWithPath: out))) != nil else {
         exit(1)
     }
