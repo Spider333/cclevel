@@ -33,12 +33,12 @@ Optional, for the GitHub badge: a GitHub token with **no** permissions, stored a
 npx wrangler secret put GITHUB_TOKEN
 ```
 
-Then point the scanner at your board: `--server https://<your-worker>.<your-subdomain>.workers.dev`, or set `CCLEVEL_SERVER`. If you run a public board for others, edit the operator and contact in your copy of `PRIVACY.md` and on the page footer, and edit or remove what only fits the public board: the FAQ entry "Why does the plugin talk to go.cclevel.workers.dev?" (`server/public/index.html`), the cclevel.com paragraph in the fine print of `server/public/how.html`, and the `og:url` / `og:image` tags in the five pages.
+Then point the scanner at your board: `--server https://<your-worker>.<your-subdomain>.workers.dev`, or set `CCLEVEL_SERVER`. If you run a public board for others, edit the operator and contact in your copy of `PRIVACY.md` and on the page footer, and edit or remove what only fits the public board: every mention of cclevel.com in your copy of `PRIVACY.md` (the Privacy-mode lines, the invite and card rows of the table, the invite-link paragraph, "The website keeps sampled visit logs" and the operator paragraph); the FAQ entry "Why does the plugin talk to go.cclevel.workers.dev?" in `server/public/index.html`; the cclevel.com paragraph in the fine print of `server/public/how.html`; the Privacy-mode notes that a link "still loads its page from cclevel.com" in `server/public/index.html`, `server/public/how.html`, `server/public/join.html` and `server/public/duel.html`; the "cclevel.com" drawn on the share-card image and ending both captions (`server/public/card.js`, `server/public/card.html`); and the `og:url` / `og:image` tags in the five pages with the image they point to (`server/public/og.png` shows cclevel.com).
 
-Keep these settings as they are in `wrangler.jsonc`:
+In `wrangler.jsonc`, keep these settings and delete the `routes` block:
 
 - `observability.enabled: false`. The Worker keeps no request logs.
-- `workers_dev: true`, and delete the `routes` block (the public board's website). A custom domain adds Cloudflare's sampled request logs with IP addresses. If you add one, say so in your privacy notice. (The public board serves its website on cclevel.com through the `routes` block you delete; its check-ins stay on `workers.dev`, and the Worker refuses `/api/*` on that one domain. If you forget to delete the block, the deploy fails, because Cloudflare refuses a custom domain on a zone you do not own.)
+- `workers_dev: true`. A custom domain adds Cloudflare's sampled request logs with IP addresses. If you add one, say so in your privacy notice. (The public board serves its website on cclevel.com through the `routes` block; its check-ins stay on `workers.dev`, and the Worker refuses `/api/*` on that one domain. A deploy that keeps the block fails, because Cloudflare refuses a custom domain on a zone you do not own.)
 - The three rate limiters (`NEW_ROWS`, `PER_CREATURE`, `GITHUB_CALLS`). The Worker refuses those requests if a binding is missing.
 
 ## Run it locally

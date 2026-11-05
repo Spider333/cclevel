@@ -1192,6 +1192,7 @@ def tips_command(args, cdir):
 # swiftc, keeps it beside a copy of this scanner in <claude dir>/cclevel/panel/, and starts it at login with a LaunchAgent.
 # The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour and sends nothing.
 PANEL_LABEL = "com.cclevel.panel"
+PANEL_START_TRIES = 3   # starting it again right after stopping the old copy can fail once or twice while macOS catches up
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
 PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
 # The creature's rendered loops, one per stage; --panel on copies them into the panel's creatures/ folder.
@@ -1292,7 +1293,14 @@ def panel_command(args, cdir):
     write_private(agent, plistlib.dumps({"Label": PANEL_LABEL, "ProgramArguments": program, "RunAtLoad": True,
                                          "ProcessType": "Interactive", "LimitLoadToSessionType": "Aqua"}).decode("utf-8"))
     panel_stop(launchctl)   # a copy from an earlier --panel on
-    start = subprocess.run([launchctl, "bootstrap", "gui/%d" % os.getuid(), agent], capture_output=True, text=True, timeout=30)
+    # macOS finishes stopping that copy in the background, and starting the new one before it has fails ("5:
+    # Input/output error"). So a start that fails is tried again, up to three times, a second apart.
+    for attempt in range(PANEL_START_TRIES):
+        start = subprocess.run([launchctl, "bootstrap", "gui/%d" % os.getuid(), agent], capture_output=True, text=True,
+                               timeout=30)
+        if start.returncode == 0 or attempt == PANEL_START_TRIES - 1:
+            break
+        time.sleep(1)
     if start.returncode != 0:
         print("cclevel: the panel was built but did not start (%s). Try --panel on --yes again, or --panel off."
               % (start.stderr.strip() or "launchctl exit %d" % start.returncode))
@@ -1486,7 +1494,7 @@ def creature_name(token):
 
 
 def payload(result):
-    """Everything that ever leaves this machine. Keep in step with PRIVACY.md."""
+    """Everything a check-in sends, as --preview shows it. Keep in step with PRIVACY.md."""
     return {"v": RULES_VERSION, "xp": result["xp"], "xp_days": result["raw"]["xp_days"],
             "stats": result["stats"], "badges": result["badges"]}
 
@@ -1532,7 +1540,8 @@ def opt_back_in(cdir):
 PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
 STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
 PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card or invite link you open in a browser"
-               " still loads its page from cclevel.com). /pet privacy off goes back to Default mode.")
+               " still loads its page from the board's website, cclevel.com for the public board). /pet privacy off goes"
+               " back to Default mode.")
 
 
 def only_removes(args):
@@ -2236,7 +2245,8 @@ def badge_line(verified, commits):
 
 
 def github_command(args, cdir, server, ident):
-    """The opt-in GitHub badge: prove control of an account with a public gist. Nothing GitHub-side leaves this machine."""
+    """The opt-in GitHub badge: prove control of an account with a public gist. No GitHub password, key or GitHub token is used: the board
+    gets this creature's token, the login and the code's hash."""
     if not ident:
         print("Not joined. Run with --join first.")
         return 1

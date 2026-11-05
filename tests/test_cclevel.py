@@ -3019,6 +3019,25 @@ class Panel(unittest.TestCase):
         self.assertIn("was not on", again.stdout)
         self.assertFalse(os.path.exists(self.folder))
 
+    def test_a_start_refused_while_the_old_copy_stops_is_tried_again(self):
+        # launchctl refuses the first start, as macOS does while the copy it was just told to stop is still stopping.
+        starts = os.path.join(self.tmp.name, "starts")
+        self.fake("launchctl", 'if [ "$1" = bootstrap ]; then n=$(cat "%s" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "%s"; '
+                               '[ $n -ge 2 ] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }; fi; exit 0'
+                  % (starts, starts))
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("The creature is in your menu bar", out.stdout)
+        self.assertEqual(sum(c.startswith("launchctl bootstrap") for c in self.calls()), 2)
+
+    def test_a_start_that_keeps_failing_says_so_after_three_tries(self):
+        self.fake("launchctl", '[ "$1" = bootstrap ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }; exit 0')
+        out = self.panel("on", "--yes")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("did not start (Bootstrap failed: 5: Input/output error)", out.stdout)
+        self.assertEqual(sum(c.startswith("launchctl bootstrap") for c in self.calls()), cclevel.PANEL_START_TRIES)
+        self.assertEqual(cclevel.PANEL_START_TRIES, 3)
+
     def test_without_apples_tools_it_says_how_to_get_them(self):
         os.remove(os.path.join(self.bin, "swiftc"))
         self.env["PATH"] = self.bin   # only the stand-in launchctl: no swiftc anywhere on the way
@@ -3179,7 +3198,7 @@ class Panel(unittest.TestCase):
             json.dump(dict(base, friends={"state": "ok", "auto": False, "fetched": int(time.time()), "members": many}), f)
         drawn = draw(big, "--page", "friends", "--height", "500", "--full")
         width, height = size()
-        self.assertTrue(680 <= width < 720 and height > 1000, (width, height))   # it scrolls, with room for the scroller
+        self.assertTrue(width == 720 and height > 1000, (width, height))   # the whole page, taller than the short screen
         self.assertIn("25 in your group", drawn.stdout)
         self.assertTrue(drawn.stdout.rstrip().endswith("Run /pet group to update."), drawn.stdout[-200:])
         for fetched, said in ((int(time.time()) + 400 * 86400, "Friends: no group yet"),
@@ -3211,8 +3230,9 @@ class Panel(unittest.TestCase):
         self.assertEqual(size(), (720, 1000))
         self.assertEqual(drawn.stdout.splitlines(), labels)
         drawn = draw(card, "--height", "500", "--full")
+        self.assertEqual(drawn.returncode, 0, drawn.stderr)
         width, height = size()
-        self.assertTrue(680 <= width < 720, width)   # the page makes room for the scroller
+        self.assertEqual(width, 720)       # the whole page, header and all, with nothing to scroll
         self.assertGreater(height, 1000)
         # The Trend card is read out as the card's 14 numbers, oldest first.
         with open(card, encoding="utf-8") as f:
@@ -3314,14 +3334,23 @@ class Panel(unittest.TestCase):
             drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page)
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
             self.assertEqual(size(), (720, 1508), "the panel stays its own size")
+            opened = png_rows(png)
             drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page, "--full")
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
             width, height = size()
-            self.assertTrue(680 <= width < 720, width)   # the page itself: the panel's width less its scroller
+            self.assertEqual(width, 720)   # the whole page under its header, with nothing to scroll
             self.assertGreater(height, 1508, page)
             bottom = png_rows(png)[-60:]
             self.assertTrue(any(any(row[i] > 40 for i in range(0, len(row), 4)) for row in bottom),
                             "the footer line at the bottom of the %s page is drawn" % page)
+            # Scrolled to the end of the long list, the header with Back stays where it was: the top 40 pt are the
+            # same pixels as when the page opened, while the list below them has moved.
+            drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page, "--scrolled")
+            self.assertEqual(drawn.returncode, 0, drawn.stderr)
+            self.assertEqual(size(), (720, 1508))
+            scrolled = png_rows(png)
+            self.assertEqual(scrolled[:80], opened[:80], "Back stays put at the top of the %s page" % page)
+            self.assertNotEqual(scrolled[80:], opened[80:], "the %s list scrolled" % page)
         # The overview of the same long card still fits the panel: its lists are a click away, not a scroll.
         drawn = draw(os.path.join(self.tmp.name, "long.json"), "--full")
         self.assertEqual((drawn.returncode, size()), (0, (720, 1508)), drawn.stderr)
