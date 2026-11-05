@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import stat
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -1191,7 +1192,7 @@ def tips_command(args, cdir):
 # --panel on builds a small menu bar program from the plugin's own Swift source (mac/CclevelPanel.swift) with Apple's
 # swiftc, keeps it beside a copy of this scanner in <claude dir>/cclevel/panel/, and starts it at login with a LaunchAgent.
 # The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour, and once right
-# after --panel on replaces that copy, and sends nothing.
+# after --panel on replaces that copy or a check-in or group read saves something new in identity.json, and sends nothing.
 PANEL_LABEL = "com.cclevel.panel"
 PANEL_START_TRIES = 3   # starting it again right after stopping the old copy can fail once or twice while macOS catches up
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
@@ -1234,6 +1235,12 @@ def panel_command(args, cdir):
         for path in (clips, folder):   # only if empty: anything else in there is not the panel's
             with contextlib.suppress(OSError):
                 os.rmdir(path)
+        # The session-start hook's last group read for the panel, removed once the panel's program is gone and under the
+        # board lock, so a hook that saw the panel a moment ago cannot write it again afterwards. A folder there stays.
+        if os.path.isdir(os.path.dirname(group_read_path(cdir))):   # no lock file made on a machine without cclevel's folder
+            with contextlib.suppress(Busy, OSError), board_lock(cdir, 30):
+                if os.path.lexists(group_read_path(cdir)):
+                    os.remove(group_read_path(cdir))
         print("Panel off: the creature has left the menu bar and no longer starts at login." if found
               else "The panel was not on. Nothing to remove.")
         return 0
@@ -1258,9 +1265,11 @@ def panel_command(args, cdir):
         print("  2. copy this scanner and the creature's animations (about 1.7 MB) there, so the panel keeps")
         print("     working when the plugin updates")
         print("  3. start it now and at every login, with %s" % agent)
-        print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, and once right")
-        print("after an update, keeps the last result in %s, and sends nothing. --panel off removes all of it." % card)
-        print("Its Friends page shows your private group as the last daily check-in or --group saved it (Default mode);")
+        print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, and again right")
+        print("after an update or when a check-in or group read saves something new, keeps the last result in")
+        print("%s, and sends nothing. --panel off removes all of it." % card)
+        print("Its Friends page shows your private group as the last check-in, Claude Code start (at most every 15")
+        print("minutes) or --group saved it (Default mode);")
         print("in Privacy mode cclevel sends nothing and the page says friends are off.")
         print("Run again with --yes to go ahead.")
         return 0
@@ -1856,14 +1865,21 @@ def group_name(code):
     return "%s %s Crew" % (ADJECTIVES[first % len(ADJECTIVES)], ANIMALS[second % len(ANIMALS)])
 
 
-# The menu bar panel's Friends page. The panel itself never calls the board: the daily check-in (and /pet group) save the
-# group's reply in identity.json, and --json shows it from there. A friend who left stays in an older copy only until the
+# The menu bar panel's Friends page. The panel itself never calls the board: the daily check-in, later session starts
+# (see FRIENDS_REREAD) and /pet group save the group's reply in identity.json, and --json shows it from there. A friend who left stays in an older copy only until the
 # next read, and no copy older than FRIENDS_FRESH is shown at all.
 FRIENDS_FRESH = 36 * 3600   # seconds
 # The hook's group read: skipped when the score and check-in already took this long, with a short socket timeout and a
 # short wait to save it, so the hook lets go of the board lock soon after its check-in (--leave and --privacy on wait 30 s).
 GROUP_READ_AFTER, GROUP_READ_TIMEOUT, GROUP_SAVE_WAIT = 15, 5, 2
-# The footer promises an update with the daily check-in only while the saved copy is about a day old or newer; a copy
+# Later session starts the same day read the group again, so a friend who joins shows the same day: only with the panel
+# installed (the only thing that shows the saved copy) and a group saved, at most once every FRIENDS_REREAD seconds counted
+# from the last attempt (kept in the group-read file, so a board that is down is not asked at every start). Its request
+# gets REREAD_LIMIT seconds in all, name lookup included, and its save GROUP_SAVE_WAIT more, so the board lock is held for
+# well under the 30 s --leave and --privacy on wait for it. An unchanged group is saved again only once its copy is
+# FRIENDS_RESAVE old, so the copy never ages out (FRIENDS_DAILY, FRIENDS_FRESH) while the reads keep finding it.
+FRIENDS_REREAD, REREAD_LIMIT, FRIENDS_RESAVE = 15 * 60, 6, 13 * 3600
+# The footer promises an update when Claude Code starts only while the saved copy is about a day old or newer; a copy
 # older than this (a slow setup whose read was skipped, a few days without Claude Code) says to run /pet group instead.
 FRIENDS_DAILY = 26 * 3600
 FRIEND_FIELDS = ("name", "level", "witnessed_xp", "week_xp", "stats", "sus", "you")   # what a saved copy keeps
@@ -1884,17 +1900,26 @@ def friends_snapshot(reply):
     return {"fetched": int(time.time()), "members": [{k: m[k] for k in keep} for m in checked]}
 
 
-def save_friends(cdir, token, status, reply, wait=10.0):
+def save_friends(cdir, token, status, reply, wait=10.0, only_if_changed=False):
     """Keeps the group's numbers for the panel, or drops them when the board says there is no group (an empty list) or no
     such creature (a 404 with that reason). Any other answer, a bare 404 from a misrouted address included, leaves the saved
     copy and the group code alone (the code is the only copy of the invite), and FRIENDS_FRESH hides the copy in time.
-    Never fails."""
+    With `only_if_changed` (a later session start's read) identity.json is left as it is when nothing in the group changed,
+    so the panel does not score again for nothing; the daily read always saves, which keeps the copy fresh. Never fails."""
     no_creature = status == 404 and reply.get("reason") == "no_creature"
     if status != 200 and not no_creature:
         return
     snap = friends_snapshot(reply) if status == 200 else {"members": []}
     if snap is None:
         return
+
+    def differs(now):
+        saved = as_dict(now.get("friends"))
+        if snap["members"]:
+            fetched = saved.get("fetched")
+            aged = type(fetched) is not int or not 0 <= time.time() - fetched < FRIENDS_RESAVE
+            return aged or snap["members"] != saved.get("members")
+        return "friends" in now or "group" in now
 
     def change(now):
         if snap["members"]:
@@ -1905,9 +1930,67 @@ def save_friends(cdir, token, status, reply, wait=10.0):
             now.pop("friends", None)
             now.pop("group", None)
     try:
-        update_identity(cdir, token, change, require=lambda now: not opted_out(cdir), wait=wait)
+        update_identity(cdir, token, change, wait=wait,
+                        require=lambda now: not opted_out(cdir) and (not only_if_changed or differs(now)))
     except (Busy, OSError):
         pass
+
+
+def group_read_path(cdir):
+    return os.path.join(os.path.dirname(identity_path(cdir)), "group-read")
+
+
+def reread_due(cdir, now=None):
+    """True when the last group re-read was tried FRIENDS_REREAD seconds ago or more. No stamp, one that cannot be read,
+    or a time in the future counts as due. None when something other than a plain file is at its path: the hook stops."""
+    path = group_read_path(cdir)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, encoding="utf-8") as f:
+            last = float(f.read(40).strip())
+    except (OSError, ValueError):
+        return True
+    now = time.time() if now is None else now
+    return not 0 <= now - last < FRIENDS_REREAD
+
+
+def panel_installed(cdir):
+    return os.path.isfile(os.path.join(panel_paths(cdir)[0], "cclevel-panel"))
+
+
+def stamp_group_read(cdir):
+    """Notes the time of a group read the hook is about to send, on a machine with the panel. True once noted. Never
+    written over something planted at its path (reread_due says None), and never fails."""
+    if not panel_installed(cdir) or reread_due(cdir) is None:
+        return False
+    try:
+        write_private(group_read_path(cdir), "%d\n" % int(time.time()))
+        return True
+    except OSError:
+        return False
+
+
+def reread_wanted(cdir, ident):
+    """A later session start the same day may read the group again: Default mode, auto check-in on and already checked in
+    today, a group saved, the panel installed, and the last try FRIENDS_REREAD or more ago. Reads files only."""
+    if opted_out(cdir) or ident.get("auto") is not True or ident.get("auto_day") != today_utc():
+        return False
+    code, members = ident.get("group"), as_dict(ident.get("friends")).get("members")
+    if not ((isinstance(code, str) and GROUP_RE.fullmatch(code)) or (isinstance(members, list) and members)):
+        return False
+    if not panel_installed(cdir):
+        return False
+    fetched = as_dict(ident.get("friends")).get("fetched")
+    if type(fetched) is int and 0 <= time.time() - fetched < FRIENDS_REREAD:
+        return False   # read a moment ago: by the daily check-in, /pet group or a re-read that found a change
+    return reread_due(cdir) is True
 
 
 def friends_view(cdir, result, now=None):
@@ -2011,7 +2094,8 @@ def join_terms(data, server, privacy=False):
     print("or --leave, which turns Privacy mode on: your row is deleted and cclevel sends nothing after. Every creature with")
     print("check-ins on two different days is counted in the board's public totals (how many creatures per level, stat range,")
     print("class, stage and badge), listed or not. After each daily check-in it also reads your private group once (the")
-    print("token only), for the Mac menu bar panel's Friends page.")
+    print("token only), for the Mac menu bar panel's Friends page; with the panel installed and a group, again at later")
+    print("Claude Code starts, at most every 15 minutes.")
     if privacy:
         print("This turns Privacy mode off: back in Default mode, this machine checks in by itself. --privacy on goes back.")
 
@@ -2441,7 +2525,8 @@ def auto_command(args, cdir, ident):
     if not args.yes:
         print("Auto check-in runs --sync for you once a day, in the background, when a Claude Code session starts.")
         print("It sends the same nine numbers and badge codes as --sync, to the same board, and prints nothing.")
-        print("Then it reads your private group once (the same token, nothing else) for the Mac panel's Friends page.")
+        print("Then it reads your private group once (the same token, nothing else) for the Mac panel's Friends page,")
+        print("and with the panel installed and a group, again at later session starts, at most every 15 minutes.")
         print("It is kept on this machine only; --auto off stops it.")
         try:
             answer = input("Turn it on? [y/N] ") if sys.stdin.isatty() else ""
@@ -2586,8 +2671,12 @@ def auto_run(cdir, args, default_dir):
         return 0
     ident = load_identity(cdir)
     token = ident.get("token")
+    reread = False
     if token and (ident.get("auto") is not True or ident.get("auto_day") == today_utc()):
-        return 0
+        # Checked in today already: at most a read of the group for the panel (see reread_wanted), or nothing.
+        if not reread_wanted(cdir, ident):
+            return 0
+        reread = True
     # Nothing reaches the screen or Claude's context: the hook runs in the background and its output is discarded here too.
     sys.stdout = sys.stderr = open(os.devnull, "w")
     server = resolve_server(args, ident)
@@ -2596,6 +2685,8 @@ def auto_run(cdir, args, default_dir):
     # One board write at a time: when a check-in or a leave from this machine is under way, this session stops at once.
     try:
         with board_lock(cdir, 0):
+            if reread:
+                return auto_reread(cdir, token, server)
             return auto_once(cdir, token, server, default_dir) if token else auto_join(cdir, server, default_dir)
     except Busy:
         return 0
@@ -2643,11 +2734,45 @@ def auto_once(cdir, token, server, default_dir):
         # on a slow day, so the hook always lets go of the board lock well within the time --leave waits for it.
         if not auto_wanted(cdir, token) or opted_out(cdir) or time.monotonic() - started > GROUP_READ_AFTER:
             return 0
+        stamp_group_read(cdir)   # with the panel, this read counts toward FRIENDS_REREAD too, answered or not
         try:
             status, reply = call(server, "GET", "/api/group", token, timeout=GROUP_READ_TIMEOUT)
         except SystemExit:
             return 0
         save_friends(cdir, token, status, reply, wait=GROUP_SAVE_WAIT)
+    return 0
+
+
+def auto_reread(cdir, token, server):
+    """A later session start the same day: one read of the group for the panel's Friends page, run while holding the board
+    lock. It sends the same token and nothing else, as the daily read does."""
+    # Read everything again now that this hook holds the lock: Privacy mode (written under this lock), a leave, --auto off
+    # or another session's read may all have happened since the first look.
+    fresh = auto_wanted(cdir, token)
+    if fresh is None or not reread_wanted(cdir, fresh):
+        return 0
+    if not stamp_group_read(cdir):   # the try counts, whatever the board answers; no stamp, no read
+        return 0
+    # The request runs on its own thread so that nothing (a slow board, a name lookup that hangs) holds the lock for more
+    # than REREAD_LIMIT seconds: past it this run stops waiting and lets go. The thread only reads; it never writes a file.
+    answer = []
+
+    def read():
+        try:
+            answer.append(call(server, "GET", "/api/group", token, timeout=GROUP_READ_TIMEOUT))
+        except BaseException:
+            pass
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(REREAD_LIMIT)
+    if reader.is_alive():
+        # Still waiting: end the whole run here, inside the lock, so no new request of this run starts after the lock is
+        # freed (one already sent may still arrive, and it only reads). Nothing is being written at this point.
+        os._exit(0)
+    if not answer or opted_out(cdir):
+        return 0
+    status, reply = answer[0]
+    save_friends(cdir, token, status, reply, wait=GROUP_SAVE_WAIT, only_if_changed=True)
     return 0
 
 
@@ -2659,14 +2784,16 @@ def privacy_off(args, cdir, ident, data, state):
     if state == "leaving":
         print(json.dumps(data, indent=1))
         print("\nThis machine is still on the board as %s. In Default mode it checks in by itself again, sending exactly"
-              " this once a day when auto check-in is on, then reading its private group once." % creature_name(ident["token"]))
+              " this once a day when auto check-in is on, then reading its private group (again at later starts, at most every"
+              " 15 minutes, with the panel installed)." % creature_name(ident["token"]))
     else:
         # The board the session-start hook will use: it runs without --server, so a --server given here is not it.
         hook_board = resolve_server(argparse.Namespace(server=None), ident)
         print(json.dumps(data, indent=1))
         print("\nIn Default mode the session-start hook joins the board at the next Claude Code start and sends exactly this")
         print("to %s with a random token made on this machine. It also turns on the world ranking and a quiet" % send_to(hook_board))
-        print("check-in once a day, followed by one read of your private group. --privacy on goes back at any time.")
+        print("check-in once a day, followed by one read of your private group (again at later starts, at most every 15")
+        print("minutes, with the menu bar panel installed). --privacy on goes back at any time.")
     if not confirmed(args, "Turn Privacy mode off? [y/N] ", "Privacy mode stays on. Re-run with --yes to turn it off."):
         return 1
     with board_lock(cdir, 30):
@@ -2754,6 +2881,8 @@ def board_command(args, cdir, result):
         with board_lock(cdir, 30):
             # The opt-out comes first, so the session-start hook never joins this machine again, whatever happens next.
             opt_out(cdir)
+            with contextlib.suppress(OSError):
+                os.remove(group_read_path(cdir))   # the hook's last group read time: no use once Privacy mode is on
             ident = load_identity(cdir)
             if not ident:
                 print("Opted out. This machine is not on the board and will not join it by itself; --join joins by hand.")
@@ -2946,7 +3075,8 @@ def main():
     board.add_argument("--leave", action="store_true", help="the same as --privacy on")
     board.add_argument("--rank", action="store_true", help="compare with the public board; uploads nothing")
     board.add_argument("--auto", choices=("on", "off"),
-                       help="check in once a day by itself when a Claude Code session starts (on asks first); sends nothing now")
+                       help="check in once a day by itself when a Claude Code session starts, then read your group (again at"
+                            " later starts, at most every 15 minutes, with the panel installed); on asks first; sends nothing now")
     board.add_argument("--auto-run", action="store_true", help=argparse.SUPPRESS)   # the plugin's session-start hook
     args = ap.parse_args()
     cdir = os.path.abspath(os.path.expanduser(args.claude_dir))

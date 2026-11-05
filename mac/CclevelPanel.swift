@@ -27,17 +27,26 @@ let staleAfter: TimeInterval = 60 * 60
 let scanTimeout: TimeInterval = 120
 
 /// Whether the saved card needs a new score: none saved, saved over an hour ago, or saved before the scanner beside the
-/// panel (--panel on just put in a newer one, after a plugin update, so the card may lack what the new panel shows). A
-/// scanner time in the future (the clock set back) is not counted, or every new card would look stale until it caught up.
-func cardStale(saved: Date?, scanner: Date?, now: Date = Date()) -> Bool {
+/// panel (--panel on just put in a newer one, after a plugin update, so the card may lack what the new panel shows) or
+/// before identity.json last changed (a check-in, or a session start that read the group and found a friend new or gone).
+/// A card is dated from the start of its scan, so a change made while it was scored counts too. A time in the future (the
+/// clock set back) is not counted, or every new card would look stale until it caught up.
+func cardStale(saved: Date?, scanner: Date?, identity: Date? = nil, now: Date = Date()) -> Bool {
     guard let saved else { return true }
-    if let scanner, scanner > saved, scanner <= now { return true }
+    for newer in [scanner, identity] {
+        if let newer, newer > saved, newer <= now { return true }
+    }
     return now.timeIntervalSince(saved) > staleAfter
 }
 
 /// When a file was last written, or nil when it is not there.
 func modified(_ url: URL) -> Date? {
     (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+}
+
+/// The scanner's identity.json in a Claude Code folder: where check-ins and group reads save what the board said.
+func identityFile(_ claudeDir: String) -> URL {
+    URL(fileURLWithPath: claudeDir).appendingPathComponent("cclevel").appendingPathComponent("identity.json")
 }
 let orange = NSColor(srgbRed: 0xd9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
 let dim = NSColor(white: 0.55, alpha: 1)
@@ -232,8 +241,9 @@ struct Friend {
     }
 }
 
-/// The Friends page's data. The panel never asks the board for it: the daily check-in (or /pet group) saves the group,
-/// and the scanner hides a copy older than a day and a half, and everything in Privacy mode.
+/// The Friends page's data. The panel never asks the board for it: the daily check-in, a later Claude Code start (at most
+/// every 15 minutes, while in a group) or /pet group saves the group, and the scanner hides a copy older than a day and a
+/// half, and everything in Privacy mode.
 struct Friends {
     enum State: String { case ok, none, stale, privacy }
     let state: State, auto: Bool, fetched: Date?, members: [Friend]
@@ -1220,8 +1230,8 @@ final class PageView: NSView {
                 parts.append(message("Friends: no group yet",
                                      "No group yet. In Claude Code, /pet group create starts one, or open a friend's invite link to join."))
             } else if now.friends.auto {
-                parts.append(message("Friends: they show here after the next check-in",
-                                     "Your friends show here after the next daily check-in, or run /pet group."))
+                parts.append(message("Friends: they show here after the next Claude Code start",
+                                     "Your friends show here after the next Claude Code start, or run /pet group."))
             } else {
                 parts.append(message("Friends: run /pet group to see them", "Run /pet group in Claude Code to see them."))
             }
@@ -1261,7 +1271,8 @@ final class PageView: NSView {
             when = DateFormatter.localizedString(from: fetched, dateStyle: Calendar.current.isDateInToday(fetched) ? .none : .short,
                                                  timeStyle: .short)
         }
-        let foot = "As of \(when). " + (f.auto ? "Updates with the daily check-in." : "Run /pet group to update.")
+        // The time the list was last saved: a later read that finds the same group checks it without saving it again.
+        let foot = "Saved \(when). " + (f.auto ? "Checked when Claude Code starts." : "Run /pet group to update.")
         let card = CardView("Friends: \(members.count) in your group. " + spoken.joined(separator: "; ") + ". " + foot) { w in
             heading("Friends", "person.2.fill", right: "\(members.count) in your group", width: w)
             for (i, m) in members.enumerated() {
@@ -1361,13 +1372,15 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshIfStale() {
-        if root.card == nil || cardStale(saved: modified(cache), scanner: modified(URL(fileURLWithPath: scanner))) { refresh() }
+        if root.card == nil || cardStale(saved: modified(cache), scanner: modified(URL(fileURLWithPath: scanner)),
+                                         identity: modified(identityFile(claudeDir))) { refresh() }
     }
 
     @objc func refresh() {
         guard !isScanning else { return }
         isScanning = true
         root.status = "Scoring your setup, offline…"
+        let started = Date()
         let (python, scanner, claudeDir) = (self.python, self.scanner, self.claudeDir)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let p = Process()
@@ -1385,11 +1398,11 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 p.waitUntilExit()
                 ok = p.terminationStatus == 0
             } catch {}
-            DispatchQueue.main.async { self?.finish(ok ? data : nil) }
+            DispatchQueue.main.async { self?.finish(ok ? data : nil, started: started) }
         }
     }
 
-    func finish(_ data: Data?) {
+    func finish(_ data: Data?, started: Date) {
         isScanning = false
         guard let data, let card = readCard(data) else {
             root.status = "Could not score this time. Right-click to try again."
@@ -1397,7 +1410,8 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         try? FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
         if (try? data.write(to: cache, options: .atomic)) != nil {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
+            // Dated from when the scan started: a change to identity.json while it ran is newer, so it scores again.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600, .modificationDate: started], ofItemAtPath: cache.path)
         }
         root.status = ""
         show(card, at: Date())
@@ -1471,13 +1485,16 @@ if CommandLine.arguments.contains("--copy-invite") {
 }
 
 // Whether the running panel would score again now, from the same files and the same rule: exit 0 when the card is stale
-// (none, over an hour old, or older than the scanner beside it), 1 when it is current. For tests; prints nothing.
+// (none, over an hour old, or older than the scanner beside it or than --identity), 1 when it is current. For tests;
+// prints nothing.
 if CommandLine.arguments.contains("--card-stale") {
     guard let cache = option("--cache"), let scanner = option("--scanner") else {
         FileHandle.standardError.write("cclevel-panel: --card-stale needs --cache CARD.json and --scanner cclevel.py\n".data(using: .utf8)!)
         exit(2)
     }
-    exit(cardStale(saved: modified(URL(fileURLWithPath: cache)), scanner: modified(URL(fileURLWithPath: scanner))) ? 0 : 1)
+    let identity = option("--identity").flatMap { modified(URL(fileURLWithPath: $0)) }
+    exit(cardStale(saved: modified(URL(fileURLWithPath: cache)), scanner: modified(URL(fileURLWithPath: scanner)),
+                   identity: identity) ? 0 : 1)
 }
 
 if let out = option("--snapshot") {
