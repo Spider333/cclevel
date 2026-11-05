@@ -46,6 +46,40 @@ def run(*args, env=None):
                           stdin=subprocess.DEVNULL, timeout=120, env=dict(os.environ, **(env or {})))
 
 
+# Runs the scanner with an audit hook that counts every name lookup, connection and HTTP request it makes, to any host.
+COUNT_NETWORK = (
+    "import atexit, os, runpy, sys\n"
+    "seen = []\n"
+    "def hook(event, args):\n"
+    "    if event in ('socket.getaddrinfo', 'socket.gethostbyname', 'socket.connect', 'http.client.connect', 'urllib.Request'):\n"
+    "        seen.append(event)\n"
+    "sys.addaudithook(hook)\n"
+    "def report():\n"
+    "    with open(os.environ['CCLEVEL_NETWORK_LOG'], 'w') as f:\n"
+    "        f.write(str(len(seen)))\n"
+    "atexit.register(report)\n"
+    "sys.argv = sys.argv[1:]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+)
+
+
+def run_counted(*args, env=None):
+    """run(), and how many network events the scanner raised (name lookups, connections, HTTP requests)."""
+    fd, path = tempfile.mkstemp(suffix=".count")
+    os.close(fd)
+    try:
+        out = subprocess.run([sys.executable, "-c", COUNT_NETWORK, SCRIPT, *args], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=120,
+                             env=dict(os.environ, CCLEVEL_NETWORK_LOG=path, **(env or {})))
+        with open(path, encoding="utf-8") as f:
+            count = f.read()
+    finally:
+        os.remove(path)
+    if not count:
+        raise AssertionError("the counting hook did not report: %s" % out.stderr[-500:])
+    return out, int(count)
+
+
 def write(root, path, content):
     full = os.path.join(root, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -464,9 +498,20 @@ class Framework(unittest.TestCase):
             card = cclevel.render(result, board=board, creature="Gentle Gecko 0001")
             self.assertNotIn("Not on the board", card)
             self.assertIn("Challenge a friend: /pet duel.", card)
-            self.assertIn("Opt out any time: /pet leave.", card)
-        self.assertIn("  On the board as Gentle Gecko 0001. Opt out any time: /pet leave.\n", cclevel.render(result, creature="Gentle Gecko 0001"))
-        self.assertIn("  Joins the board at the next Claude Code start", cclevel.render(result, board="soon"))
+            self.assertIn("Privacy mode: /pet privacy on", card)   # the other mode is always one command away
+        self.assertIn("  On the board as Gentle Gecko 0001. Privacy mode: /pet privacy on deletes your row and sends nothing after.\n",
+                      cclevel.render(result, creature="Gentle Gecko 0001"))
+        self.assertIn("  Default mode: joins the board at the next Claude Code start (nine numbers, no names).\n"
+                      "  Privacy mode: /pet privacy on, and cclevel sends nothing.\n", cclevel.render(result, board="soon"))
+        # Privacy mode never gets the nudge, nor a pointer to a feature that needs the board.
+        for board, said in (("privacy", "  Privacy mode: cclevel sends nothing. /pet privacy off for the board, groups and duels.\n"),
+                            ("leaving", "  Privacy mode is on, but your row is still on the board: /pet privacy on deletes it.\n")):
+            card = cclevel.render(result, board=board)
+            self.assertIn(said, card)
+            self.assertIn("  Post it as an image: /pet card.\n", card)
+            self.assertNotIn("Not on the board", card)
+            self.assertNotIn("/pet duel", card)
+            self.assertNotIn("/pet join", card)
         write(self.dir, "cclevel/ledger.json", {"version": 4, "days": {utc_day(8): 550}})
         card = cclevel.render(self.score(), board="off")
         self.assertNotIn("Not on the board", card)
@@ -1104,6 +1149,8 @@ class Leaderboard(unittest.TestCase):
         for identity in odd:
             write(self.dir, "cclevel/identity.json", identity)
             for flag in ("--sync", "--leave"):
+                if os.path.exists(self.off):   # Default mode, so --sync reads the token file (--leave writes the note again)
+                    os.remove(self.off)
                 out = run("--claude-dir", self.dir, flag, "--server", self.url)
                 self.assertNotIn("Traceback", out.stderr, identity)
                 self.assertIn("Not joined" if flag == "--sync" else "is not on the board", out.stdout, identity)
@@ -1121,14 +1168,16 @@ class Leaderboard(unittest.TestCase):
         out = run("--claude-dir", self.dir, "--leave")
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout, "The board had no row for this token. The local token is removed.\n"
-                                     "This machine will not join again by itself; --join joins by hand.\n")
+                                     "This machine will not join again by itself; --join joins by hand.\n"
+                                     + cclevel.PRIVACY_NOW + "\n")
         self.assertFalse(os.path.exists(self.identity))
         # And a normal leave, word for word.
         FakeBoard.replies = {}
         self.assertEqual(run("--claude-dir", self.dir, "--join", "--yes", "--server", self.url).returncode, 0)
         out = run("--claude-dir", self.dir, "--leave")
         self.assertEqual(out.stdout, "Left the board. Your row is deleted and the local token is removed.\n"
-                                     "This machine will not join again by itself; --join joins by hand.\n")
+                                     "This machine will not join again by itself; --join joins by hand.\n"
+                                     + cclevel.PRIVACY_NOW + "\n")
 
     def test_an_old_token_file_with_loose_permissions_is_narrowed(self):
         write(self.dir, "cclevel/identity.json", {})
@@ -1185,9 +1234,11 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(left.returncode, 0, left.stderr)
         self.assertEqual(FakeBoard.seen[-1]["method"], "DELETE")
         self.assertFalse(os.path.exists(self.identity))
+        sent = len(FakeBoard.seen)
         again = run("--claude-dir", self.dir, "--sync", "--server", self.url)
         self.assertEqual(again.returncode, 1)
-        self.assertIn("Not joined", again.stdout)
+        self.assertEqual(again.stdout, cclevel.PRIVACY_ON + "\n")   # leaving started Privacy mode
+        self.assertEqual(len(FakeBoard.seen), sent)
 
     def joined(self, **numbers):
         self.assertEqual(run("--claude-dir", self.dir, "--join", "--yes", "--server", self.url).returncode, 0)
@@ -1203,14 +1254,15 @@ class Leaderboard(unittest.TestCase):
         self.assertIn("It also turns on the world ranking", out.stdout)
         self.assertIn("a quiet check-in once a day", out.stdout)
         self.assertIn("Opt out any time: --world off, --auto off,\nor --leave", out.stdout)
-        self.assertIn("counted in the board's public\ntotals", out.stdout)
+        self.assertIn("counted in the board's public totals", out.stdout)
+        self.assertIn("or --leave, which turns Privacy mode on", out.stdout)
         self.assertEqual(FakeBoard.seen, [])
 
     def test_a_check_in_says_where_the_creature_stands(self):
         # Joining turns the world ranking and auto check-in on, and says so.
         out = run("--claude-dir", self.dir, "--join", "--yes", "--server", self.url)
         self.assertIn("World ranking: on. You show once you have check-ins on two different days.", out.stdout)
-        self.assertIn("Auto check-in: on, once a day when a Claude Code session starts. Opt out any time: --leave.", out.stdout)
+        self.assertIn("Auto check-in: on, once a day when a Claude Code session starts. Opt out any time: --leave (Privacy mode).", out.stdout)
         with open(self.identity, encoding="utf-8") as f:
             self.assertEqual((json.load(f)["world"]), True)
         self.assertEqual(run("--claude-dir", self.dir, "--leave").returncode, 0)
@@ -1257,6 +1309,7 @@ class Leaderboard(unittest.TestCase):
         self.assertIs(ident["world"], False)
 
     def test_world_needs_a_creature_and_a_clear_answer(self):
+        os.remove(self.off)   # Default mode, not joined yet
         out = run("--claude-dir", self.dir, "--world", "off", "--server", self.url)
         self.assertIn("Not joined", out.stdout)
         self.assertEqual(FakeBoard.seen, [])
@@ -1352,8 +1405,8 @@ class Leaderboard(unittest.TestCase):
             with open(self.identity, encoding="utf-8") as f:
                 return json.load(f)
 
-        # Not joined, and opted out: nothing to turn on, and the hook stays silent.
-        self.assertIn("Not joined", run("--claude-dir", self.dir, "--auto", "on", "--yes").stdout)
+        # Not joined, and opted out (Privacy mode): nothing to turn on, and the hook stays silent.
+        self.assertIn(cclevel.PRIVACY_ON, run("--claude-dir", self.dir, "--auto", "on", "--yes").stdout)
         quiet = run("--claude-dir", self.dir, "--auto-run")
         self.assertEqual((quiet.returncode, quiet.stdout, quiet.stderr), (0, "", ""))
         self.assertEqual(FakeBoard.seen, [])
@@ -1643,12 +1696,13 @@ class Leaderboard(unittest.TestCase):
             self.assertEqual(gone.returncode, 0, gone.stdout + gone.stderr)
             self.assertEqual(gone.stdout, "Left the board. Your row is deleted and this machine no longer uses the token; its file"
                                           " is removed by the next cclevel command that talks to the board.\n"
-                                          "This machine will not join again by itself; --join joins by hand.\n")
+                                          "This machine will not join again by itself; --join joins by hand.\n"
+                                          + cclevel.PRIVACY_NOW + "\n")
             self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("DELETE", "/api/entry")])
             FakeBoard.seen.clear()
             hook = run("--claude-dir", self.dir, "--auto-run")
             self.assertEqual((hook.returncode, hook.stdout, hook.stderr), (0, "", ""))
-            self.assertIn("Not joined", run("--claude-dir", self.dir, "--sync").stdout)
+            self.assertIn(cclevel.PRIVACY_ON, run("--claude-dir", self.dir, "--sync").stdout)   # the leave started Privacy mode
             self.assertEqual(FakeBoard.seen, [])
         # Once the settings are free, joining again works and leaves no trace of the old token.
         self.assertEqual(run("--claude-dir", self.dir, "--join", "--yes", "--server", self.url).returncode, 0)
@@ -1716,7 +1770,9 @@ class Leaderboard(unittest.TestCase):
             other = run("--claude-dir", self.dir, *then)   # waits for the leave, then finds the machine off the board
             leaving.communicate(timeout=30)
             FakeBoard.slow_delete = 0
-            self.assertIn("Not joined", other.stdout, then)
+            # A removal waits for the leave and finds the machine off the board. Anything else is refused at once by
+            # Privacy mode (the note is written first), without waiting. Either way only the leave's DELETE is sent.
+            self.assertTrue("Not joined" in other.stdout or cclevel.PRIVACY_ON in other.stdout, (then, other.stdout))
             self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("DELETE", "/api/entry")], then)
 
     def test_a_failed_leave_keeps_nothing_half_done(self):
@@ -1813,7 +1869,8 @@ class Leaderboard(unittest.TestCase):
         # The card says so, offline, with the way out.
         FakeBoard.seen.clear()
         card = run("--claude-dir", self.dir)
-        self.assertIn("On the board as %s. Opt out any time: /pet leave." % cclevel.creature_name(mine["token"]), card.stdout)
+        self.assertIn("On the board as %s. Privacy mode: /pet privacy on deletes your row and sends nothing after."
+                      % cclevel.creature_name(mine["token"]), card.stdout)
         self.assertEqual(FakeBoard.seen, [])
         # One command opts out: the row and the token go, and no session start joins this machine again.
         out = run("--claude-dir", self.dir, "--leave")
@@ -1825,7 +1882,7 @@ class Leaderboard(unittest.TestCase):
             quiet = run("--claude-dir", self.dir, "--auto-run", env=board)
             self.assertEqual((quiet.returncode, quiet.stdout, quiet.stderr, ident()), (0, "", "", None))
         self.assertEqual(FakeBoard.seen, [])
-        self.assertNotIn("Opt out any time", run("--claude-dir", self.dir).stdout)
+        self.assertIn("Privacy mode: cclevel sends nothing.", run("--claude-dir", self.dir).stdout)
         # Joining by hand brings it back, with the same defaults.
         self.assertEqual(run("--claude-dir", self.dir, "--join", "--yes", "--server", self.url).returncode, 0)
         self.assertFalse(os.path.exists(self.off))
@@ -1886,11 +1943,206 @@ class Leaderboard(unittest.TestCase):
             self.assertEqual(FakeBoard.seen, [], then)
 
     def test_rank_before_joining_explains_what_ranks(self):
+        os.remove(self.off)   # Default mode, not joined yet (Privacy mode refuses --rank)
         out = run("--claude-dir", self.dir, "--rank", "--server", self.url)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("4 creatures ranked", out.stdout)
         self.assertIn("XP the board saw you earn after joining", out.stdout)
         self.assertNotIn("Authorization", FakeBoard.seen[0]["headers"])
+
+    # ---------------------------------------------------------------- the two modes
+    def a_new_day(self):
+        """The identity on disk, with today's hook check-in forgotten, so the next --auto-run would check in."""
+        with open(self.identity, encoding="utf-8") as f:
+            mine = json.load(f)
+        mine.pop("auto_day", None)
+        write(self.dir, "cclevel/identity.json", mine)
+        return mine
+
+    def test_privacy_mode_sends_nothing_and_default_mode_does(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        quiet = [("--auto-run",)] * 3 + [
+            ("--rank",), ("--preview",), ("--card",), (), ("--json",), ("--learn",), ("--wrapped",), ("--tips", "on"),
+            ("--auto", "on", "--yes"), ("--world", "off"), ("--world", "on", "--yes"), ("--sync",), ("--group",),
+            ("--group-create", "--yes"), ("--group-leave",), ("--duel",), ("--duel-create", "--yes"), ("--duel-leave",),
+            ("--verify-github", "octocat", "--yes"), ("--unverify-github",), ("--privacy", "off"), ("--join",)]
+        for args in quiet:   # Privacy mode: the opted-out note (setUp) and no token
+            out, sent = run_counted("--claude-dir", self.dir, *args, env=board)
+            self.assertNotIn("Traceback", out.stderr, args)
+            self.assertEqual(sent, 0, (args, out.stdout))
+        self.assertEqual(FakeBoard.seen, [])
+        self.assertTrue(os.path.exists(self.off))
+        # Positive control: the same machine in Default mode, on the board, does reach the board.
+        self.joined()
+        for args in (("--auto-run",), ("--rank",), ("--sync",)):
+            self.a_new_day()
+            FakeBoard.seen.clear()
+            out, sent = run_counted("--claude-dir", self.dir, *args, env=board)
+            self.assertGreater(sent, 0, (args, out.stdout, out.stderr))
+            self.assertTrue(FakeBoard.seen, args)
+
+    def test_leaving_sends_nothing_by_itself_until_the_delete_goes_through(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        self.joined()
+        write(self.dir, "cclevel/opted-out", "off\n")   # a leave whose delete did not go through: the note and the token
+        FakeBoard.seen.clear()
+        for args in [("--auto-run",)] * 3 + [("--rank",), ("--sync",), ("--world", "on", "--yes"), ("--group",),
+                                             ("--group-create", "--yes"), ("--join", "--yes")]:
+            self.assertTrue(self.a_new_day()["auto"])
+            out, sent = run_counted("--claude-dir", self.dir, *args, env=board)
+            self.assertEqual(sent, 0, (args, out.stdout))
+        self.assertEqual(FakeBoard.seen, [])
+        self.assertIn("Privacy mode is on, but your row is still on the board: /pet privacy on deletes it.",
+                      run("--claude-dir", self.dir).stdout)
+        # What only removes data from the board still goes through.
+        out = run("--claude-dir", self.dir, "--world", "off")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual([(r["method"], r["path"], r["body"]) for r in FakeBoard.seen], [("PUT", "/api/world", '{"on": false}')])
+        FakeBoard.seen.clear()
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("DELETE", "/api/entry")])
+        self.assertFalse(os.path.exists(self.identity))
+        self.assertIn("Privacy mode: cclevel sends nothing.", run("--claude-dir", self.dir).stdout)
+
+    def test_privacy_on_deletes_the_row_and_a_failed_delete_still_stops_the_hook(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        self.joined()
+        FakeBoard.replies = {"DELETE": (500, {})}
+        FakeBoard.seen.clear()
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("The token is kept so you can retry", out.stdout)
+        self.assertIn(cclevel.STILL_LISTED, out.stdout)
+        self.assertTrue(os.path.exists(self.identity))
+        self.assertTrue(os.path.exists(self.off))
+        self.assertIn("Privacy mode is on, but your row is still on the board", run("--claude-dir", self.dir).stdout)
+        FakeBoard.seen.clear()
+        for _ in range(2):   # two new days: the hook sends nothing
+            mine = self.a_new_day()
+            quiet = run("--claude-dir", self.dir, "--auto-run", env=board)
+            self.assertEqual((quiet.returncode, quiet.stdout, quiet.stderr), (0, "", ""))
+        # A hook already past its first look when the note appeared stops under the lock too.
+        self.assertEqual(cclevel.auto_once(self.dir, mine["token"], self.url, self.dir), 0)
+        self.assertEqual(FakeBoard.seen, [])
+        FakeBoard.replies = {}
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("Left the board", out.stdout)
+        self.assertIn(cclevel.PRIVACY_NOW, out.stdout)
+        self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("DELETE", "/api/entry")])
+        self.assertFalse(os.path.exists(self.identity))
+
+    def test_a_command_waiting_on_the_lock_sends_nothing_once_privacy_mode_begins(self):
+        self.joined()
+        FakeBoard.seen.clear()
+        for args in (("--sync",), ("--world", "on", "--yes"), ("--group",)):
+            with cclevel.board_lock(self.dir, 0):   # a --privacy on holding the lock, whose delete is about to fail
+                waiting = subprocess.Popen([sys.executable, SCRIPT, "--claude-dir", self.dir, *args], stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True)
+                time.sleep(3)   # the command has scored, read its settings in Default mode and now waits for the lock
+                write(self.dir, "cclevel/opted-out", "off\n")   # the note is written; the token stays
+            out, _ = waiting.communicate(timeout=60)
+            self.assertEqual(waiting.returncode, 1, (args, out))
+            self.assertIn(cclevel.PRIVACY_ON, out, args)
+            self.assertIn(cclevel.STILL_LISTED, out, args)
+            os.remove(self.off)
+        self.assertEqual(FakeBoard.seen, [])
+
+    def test_privacy_on_with_the_board_unreachable_says_privacy_mode_is_on(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        self.joined()
+        mine = self.a_new_day()
+        mine["server"] = "http://127.0.0.1:9"   # nothing listens there
+        write(self.dir, "cclevel/identity.json", mine)
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("Privacy mode is on all the same", out.stdout)
+        self.assertTrue(os.path.exists(self.identity))
+        self.assertTrue(os.path.exists(self.off))
+        self.assertIn("Privacy mode is on, but your row is still on the board", run("--claude-dir", self.dir).stdout)
+        FakeBoard.seen.clear()
+        quiet = run("--claude-dir", self.dir, "--auto-run", env=board)
+        self.assertEqual((quiet.returncode, quiet.stdout, quiet.stderr), (0, "", ""))
+        auto = run("--claude-dir", self.dir, "--auto", "on", "--yes")
+        self.assertEqual(auto.returncode, 1)
+        self.assertEqual(auto.stdout, cclevel.PRIVACY_ON + "\n" + cclevel.STILL_LISTED + "\n")
+        self.assertEqual(FakeBoard.seen, [])
+
+    def test_the_modes_never_say_something_untrue(self):
+        # --privacy off names the board the session-start hook will really use, not a one-off --server.
+        out = run("--claude-dir", self.dir, "--privacy", "off", "--server", "http://127.0.0.1:1234",
+                  env={"CCLEVEL_SERVER": self.url})
+        self.assertIn("to %s, with a random token" % self.url, out.stdout)
+        self.assertNotIn("127.0.0.1:1234", out.stdout)
+        self.assertTrue(os.path.exists(self.off))
+        # --auto off while leaving says where the machine stands, not "run --sync", which Leaving refuses.
+        self.joined()
+        write(self.dir, "cclevel/opted-out", "off\n")
+        FakeBoard.seen.clear()
+        out = run("--claude-dir", self.dir, "--auto", "off")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("Privacy mode is on, but your row is still on the board", out.stdout)
+        self.assertNotIn("--sync", out.stdout)
+        # Showing a saved invite link sends nothing, so Leaving allows it.
+        self.assertNotIn(cclevel.PRIVACY_ON, run("--claude-dir", self.dir, "--group-code").stdout)
+        self.assertEqual(FakeBoard.seen, [])
+
+    def test_privacy_off_asks_first_and_default_mode_joins_at_the_next_start(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        out = run("--claude-dir", self.dir, "--privacy", "off", env=board)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("Nothing sent. Privacy mode stays on.", out.stdout)
+        self.assertTrue(os.path.exists(self.off))
+        out = run("--claude-dir", self.dir, "--privacy", "off", "--yes", env=board)
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("Default mode: joins the board at the next Claude Code start. Join now: /pet join.", out.stdout)
+        self.assertFalse(os.path.exists(self.off))
+        self.assertIn("Privacy mode is not on", run("--claude-dir", self.dir, "--privacy", "off", "--yes").stdout)
+        self.assertNotIn("This turns Privacy mode off", run("--claude-dir", self.dir, "--join", env=board).stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        quiet = run("--claude-dir", self.dir, "--auto-run", env=board)
+        self.assertEqual((quiet.returncode, quiet.stdout, quiet.stderr), (0, "", ""))
+        self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("POST", "/api/checkin"), ("PUT", "/api/world")])
+        self.assertEqual(run("--claude-dir", self.dir, "--rank").returncode, 0)
+
+    def test_a_confirmed_join_ends_privacy_mode_and_says_so_first(self):
+        out = run("--claude-dir", self.dir, "--join", "--server", self.url)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("This turns Privacy mode off", out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        self.assertTrue(os.path.exists(self.off))
+        self.joined()
+        self.assertFalse(os.path.exists(self.off))
+        self.assertIn("On the board as", run("--claude-dir", self.dir).stdout)
+
+    def test_the_card_names_the_mode_in_every_state(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        real = {"CLAUDE_CONFIG_DIR": self.dir, "HOME": home.name, "CCLEVEL_SERVER": self.url}   # this folder is Claude Code's own
+        card = run("--claude-dir", self.dir, env=real).stdout
+        self.assertIn("  Privacy mode: cclevel sends nothing. /pet privacy off for the board, groups and duels.\n", card)
+        os.remove(self.off)
+        card = run("--claude-dir", self.dir, env=real).stdout
+        self.assertIn("  Default mode: joins the board at the next Claude Code start (nine numbers, no names).\n"
+                      "  Privacy mode: /pet privacy on, and cclevel sends nothing.\n", card)
+        self.joined()
+        FakeBoard.seen.clear()
+        with open(self.identity, encoding="utf-8") as f:
+            name = cclevel.creature_name(json.load(f)["token"])
+        self.assertIn("  On the board as %s. Privacy mode: /pet privacy on deletes your row and sends nothing after.\n" % name,
+                      run("--claude-dir", self.dir, env=real).stdout)
+        write(self.dir, "cclevel/opted-out", "off\n")
+        self.assertIn("  Privacy mode is on, but your row is still on the board: /pet privacy on deletes it.\n",
+                      run("--claude-dir", self.dir, env=real).stdout)
+        self.assertEqual(FakeBoard.seen, [])   # the cards themselves send nothing
+
+    def test_the_numbers_behind_the_band_and_panel_are_the_same_in_both_modes(self):
+        private = run("--claude-dir", self.dir, "--json", "--no-save")
+        os.remove(self.off)
+        default = run("--claude-dir", self.dir, "--json", "--no-save")
+        self.assertEqual(private.returncode, 0, private.stderr)
+        self.assertEqual(private.stdout, default.stdout)
 
     def test_starting_a_group_asks_first_and_the_code_travels_only_in_that_body(self):
         self.joined()
@@ -2131,6 +2383,11 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(FakeBoard.seen[-1]["method"] + " " + FakeBoard.seen[-1]["path"], "DELETE /api/github")
 
     def test_the_card_nudges_only_until_this_machine_joins_and_sends_nothing(self):
+        out = run("--claude-dir", self.dir, "--server", self.url)   # Privacy mode: no nudge
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("Not on the board", out.stdout)
+        self.assertIn("Privacy mode: cclevel sends nothing.", out.stdout)
+        os.remove(self.off)   # a folder the hook never joins, in Default mode: the nudge
         out = run("--claude-dir", self.dir, "--server", self.url)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertRegex(out.stdout, r"Not on the board yet: your last 7 days earned [\d,]+ XP that will never rank\.")

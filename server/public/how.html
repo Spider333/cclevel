@@ -86,7 +86,7 @@
 <span class="step-num" aria-hidden="true">03</span>
 <h2 id="join-title">You're on the board</h2>
 <p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. You show on the lists after check-ins on two different days.</p>
-<p><b>Opting out is one command:</b> <code>/pet leave</code>. It works before or after your creature joins, deletes your row at once, and the plugin never joins again by itself. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet join the leaderboard</code>.</p>
+<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
 <p>The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
 </section>
 
@@ -105,7 +105,7 @@
 <section class="step" id="talk" aria-labelledby="talk-title">
 <span class="step-num" aria-hidden="true">05</span>
 <h2 id="talk-title">Talk to /pet</h2>
-<p>Just say what you want. Anything you ask for that sends something asks first; <code>/pet leave</code> opts out at once.</p>
+<p>Just say what you want. Anything you ask for that sends something asks first; <code>/pet privacy on</code> turns Privacy mode on at once.</p>
 <div class="scroll">
 <table class="cheat">
 <thead><tr><th>Say</th><th>What happens</th></tr></thead>
@@ -122,7 +122,8 @@
 <tr><td><code>/pet duel</code></td><td>Challenge one friend: seven days, most XP wins the ♛. <code>/pet duel &lt;link&gt;</code> accepts one</td></tr>
 <tr><td><code>/pet card</code></td><td>Your card as a picture to save and post; drawn in your browser, sends nothing</td></tr>
 <tr><td><code>/pet wrapped</code></td><td>Your year in review from your own ledger: XP, best day, longest streak, level gained, how your stats moved; sends nothing</td></tr>
-<tr><td><code>/pet leave</code></td><td>Opt out: delete your row at once and never join again by itself</td></tr>
+<tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after (<code>/pet leave</code> is the same)</td></tr>
+<tr><td><code>/pet privacy off</code></td><td>Back to Default mode: shows what it sends and asks first; the board joins at your next Claude Code start</td></tr>
 </tbody>
 </table>
 </div>
@@ -211,7 +212,7 @@
 </details>
 <details>
 <summary>Privacy</summary>
-<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> and <code>--leave</code> take it off at once, and <code>--leave</code> also keeps the plugin from joining again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
+<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> takes it off the lists at once, and Privacy mode (<code>--privacy on</code>, or <code>--leave</code>) deletes the row and stops the plugin from joining or checking in again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
 </details>
 </section>
 

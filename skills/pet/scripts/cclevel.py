@@ -980,9 +980,11 @@ def need_text(n):
 
 
 def render(r, board="on", how=False, tip=None, creature=None):
-    """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (the session-start hook joins it next
-    time) or "off" (opted out). Off, with XP banked in the last 7 days, the last lines say how much of it will never rank:
-    the board counts only XP it sees after joining. Worked out here; nothing is sent.
+    """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (Default mode: the session-start
+    hook joins it next time), "privacy" (Privacy mode: the opted-out note and no token, so cclevel sends nothing), "leaving"
+    (the note, but the row is still on the board: a delete that did not go through) or "off" (a folder the hook never
+    joins). Off, with XP banked in the last 7 days, the last lines say how much of it will never rank: the board counts only
+    XP it sees after joining. Privacy mode never gets that nudge. Worked out here; nothing is sent.
     With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
@@ -1021,12 +1023,19 @@ def render(r, board="on", how=False, tip=None, creature=None):
         out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
     if board == "on" and creature:
-        out.append("  On the board as %s. Opt out any time: /pet leave." % creature)
+        out.append("  On the board as %s. Privacy mode: /pet privacy on deletes your row and sends nothing after." % creature)
     elif board == "soon":
-        out.append("  Joins the board at the next Claude Code start: nine numbers, no names. Opt out any time: /pet leave.")
+        out += ["  Default mode: joins the board at the next Claude Code start (nine numbers, no names).",
+                "  Privacy mode: /pet privacy on, and cclevel sends nothing."]
+    elif board == "privacy":
+        out.append("  Privacy mode: cclevel sends nothing. /pet privacy off for the board, groups and duels.")
+    elif board == "leaving":
+        out.append("  Privacy mode is on, but your row is still on the board: /pet privacy on deletes it.")
     if board == "off" and raw["xp_7d"] > 0:
         out += ["  Not on the board yet: your last 7 days earned {:,} XP that will never rank.".format(raw["xp_7d"]),
                 "  Start counting: /pet join the leaderboard. Post it as an image: /pet card."]
+    elif board in ("privacy", "leaving"):
+        out += ["  Post it as an image: /pet card."]
     else:
         out += ["  Post it as an image: /pet card. Challenge a friend: /pet duel."]
     out += ["  Learn Claude Code step by step: /pet learn%s." % ("" if how else ". A how-to under each Need: /pet tips on"), ""]
@@ -1499,13 +1508,38 @@ def opt_out(cdir):
 
 
 def opt_back_in(cdir):
-    """A join by hand: the hook may check in again. A note that cannot be removed only stops the hook joining afresh."""
+    """A join by hand, or --privacy off: the hook may check in again. A note that cannot be removed keeps Privacy mode on
+    (the hook stays quiet, token or not), so this fails closed."""
     try:
         os.remove(off_path(cdir))
     except FileNotFoundError:
         pass
     except OSError:
         clear_odd(off_path(cdir))
+
+
+# The two modes. Default mode: the board is on (the hook joins, then checks in once a day). Privacy mode: the opted-out
+# note is on this machine and there is no token, so cclevel sends nothing until the user confirms a join or --privacy off.
+# "Leaving" is the note with a token still here (a delete that did not go through, or an opt-out that crossed the first
+# join): nothing is sent then either, except the requests that remove data from the board.
+PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
+STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
+PRIVACY_NOW = "Privacy mode is on: cclevel sends nothing from now on. /pet privacy off goes back to Default mode."
+
+
+def only_removes(args):
+    """What a machine that is leaving may still run: requests that only take data off the board, and the two commands
+    that only show a saved invite link again and send nothing."""
+    return bool(args.world == "off" or args.group_leave or args.duel_leave or args.unverify_github
+                or args.group_code or args.duel_code)
+
+
+def privacy_state(cdir, ident=None):
+    """"privacy", "leaving" or None (Default mode). Read from this machine's own files; nothing is sent."""
+    if not opted_out(cdir):
+        return None
+    ident = load_identity(cdir) if ident is None else ident
+    return "leaving" if ident.get("token") else "privacy"
 
 
 def write_private(path, text):
@@ -1825,14 +1859,17 @@ def confirmed(args, prompt, retry):
     return False
 
 
-def join_terms(data, server):
-    """What joining the board sends and means, shown before the first check-in."""
+def join_terms(data, server, privacy=False):
+    """What joining the board sends and means, shown before the first check-in. From Privacy mode, it says the yes ends it."""
     print(json.dumps(data, indent=1))
     print("\nJoining sends exactly this to %s, with a random token made on this machine." % server)
     print("It also turns on the world ranking (your generated name, stage, class, level, Aura and witnessed XP on the public")
     print("lists) and a quiet check-in once a day when a Claude Code session starts. Opt out any time: --world off, --auto off,")
-    print("or --leave to delete your row. Every creature with check-ins on two different days is counted in the board's public")
-    print("totals (how many creatures per level, stat range, class, stage and badge), listed or not.")
+    print("or --leave, which turns Privacy mode on: your row is deleted and cclevel sends nothing after. Every creature with")
+    print("check-ins on two different days is counted in the board's public totals (how many creatures per level, stat range,")
+    print("class, stage and badge), listed or not.")
+    if privacy:
+        print("This turns Privacy mode off: back in Default mode, this machine checks in by itself. --privacy on goes back.")
 
 
 def group_terms(create):
@@ -1880,7 +1917,7 @@ def invite_seat(args, cdir, server, ident, data, result, create, text, flag, ter
         print("Note: this invite names another address. cclevel uses only its code, on %s." % server)
     if not ident:
         # One yes covers both: joining the board and taking the seat.
-        join_terms(data, server)
+        join_terms(data, server, privacy=opted_out(cdir))
         print()
         terms(create)
         if not confirmed(args, "Join the board and the %s? [y/N] " % both, "Re-run with --yes to join the board and the %s." % both):
@@ -2237,6 +2274,7 @@ def auto_command(args, cdir, ident):
             ident = load_identity(cdir)
         if not ident:
             print("Auto check-in off. This machine will not join the board by itself; --join joins by hand.")
+            print(PRIVACY_NOW)
             return 0
     if not ident:
         print("Not joined. Run with --join first.")
@@ -2248,6 +2286,9 @@ def auto_command(args, cdir, ident):
         if update_identity(cdir, ident["token"], off) is None:
             print("Not joined. Nothing to turn off.")
             return 1
+        if opted_out(cdir):   # the note is here with a token: an opt-out that crossed the first join, or a failed delete
+            print("Auto check-in off. Privacy mode is on, but your row is still on the board: /pet privacy on deletes it.")
+            return 0
         print("Auto check-in off. No check-in is sent unless you run --sync.")
         return 0
     if not args.yes:
@@ -2392,11 +2433,12 @@ def auto_run(cdir, args, default_dir):
     """The plugin's session-start hook. On a machine that has not joined and has not opted out, it joins the board with
     the defaults (world ranking and auto check-in on); with auto check-in on, one quiet check-in a UTC day. Otherwise it
     reads a file or two and stops."""
+    # Privacy mode, or a leave that has not gone through yet: the opted-out note stops this hook, token or not.
+    if opted_out(cdir):
+        return 0
     ident = load_identity(cdir)
     token = ident.get("token")
     if token and (ident.get("auto") is not True or ident.get("auto_day") == today_utc()):
-        return 0
-    if not token and opted_out(cdir):
         return 0
     # Nothing reaches the screen or Claude's context: the hook runs in the background and its output is discarded here too.
     sys.stdout = sys.stderr = open(os.devnull, "w")
@@ -2432,11 +2474,11 @@ def auto_once(cdir, token, server, default_dir):
     """One background check-in, run while holding the board lock."""
     # Read again now that this hook holds the lock: another session may have checked in, or the owner left, meanwhile.
     fresh = auto_wanted(cdir, token)
-    if fresh is None or fresh.get("auto_day") == today_utc():
+    if fresh is None or opted_out(cdir) or fresh.get("auto_day") == today_utc():
         return 0
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=True)
-    if not auto_wanted(cdir, token):
+    if not auto_wanted(cdir, token) or opted_out(cdir):
         return 0
     try:
         status, reply = call(server, "POST", "/api/checkin", token, payload(result))
@@ -2447,6 +2489,36 @@ def auto_once(cdir, token, server, default_dir):
         # Kept only while auto check-in is still on: --auto off in the meantime stays off.
         numbers = dict(board_numbers(reply), auto_day=today_utc())
         update_identity(cdir, token, lambda now: now.update(numbers), require=lambda now: now.get("auto") is True)
+    return 0
+
+
+def privacy_off(args, cdir, ident, data, state):
+    """Back to Default mode, after a yes. Sends nothing itself: the session-start hook joins at the next Claude Code start."""
+    if not state:
+        print("Privacy mode is not on: this machine is in Default mode. Nothing changed.")
+        return 0
+    if state == "leaving":
+        print(json.dumps(data, indent=1))
+        print("\nThis machine is still on the board as %s. In Default mode it checks in by itself again, sending exactly"
+              " this once a day when auto check-in is on." % creature_name(ident["token"]))
+    else:
+        # The board the session-start hook will use: it runs without --server, so a --server given here is not it.
+        hook_board = resolve_server(argparse.Namespace(server=None), ident)
+        print(json.dumps(data, indent=1))
+        print("\nIn Default mode the session-start hook joins the board at the next Claude Code start and sends exactly this")
+        print("to %s, with a random token made on this machine. It also turns on the world ranking and a quiet" % hook_board)
+        print("check-in once a day. --privacy on goes back at any time.")
+    if not confirmed(args, "Turn Privacy mode off? [y/N] ", "Privacy mode stays on. Re-run with --yes to turn it off."):
+        return 1
+    with board_lock(cdir, 30):
+        opt_back_in(cdir)
+    if opted_out(cdir):
+        print("cclevel: %s could not be removed, so Privacy mode stays on. Remove it yourself to turn it off." % off_path(cdir))
+        return 1
+    if state == "leaving":
+        print("Default mode: this machine checks in by itself again.")
+    else:
+        print("Default mode: joins the board at the next Claude Code start. Join now: /pet join.")
     return 0
 
 
@@ -2467,8 +2539,26 @@ def board_command(args, cdir, result):
     except (Busy, OSError):
         pass
     ident = load_identity(cdir)
+    state = privacy_state(cdir, ident)
+    if args.privacy == "off":
+        return privacy_off(args, cdir, ident, data, state)
+    if args.auto == "on" and state:
+        print(PRIVACY_ON)   # the hook stays quiet while the note is here, so turning it on would promise nothing
+        if state == "leaving":
+            print(STILL_LISTED)
+        return 1
     if args.auto:
         return auto_command(args, cdir, ident)
+    # Privacy mode sends nothing. Only a confirmed join ends it (the terms say so first). Leaving sends only what removes
+    # data from the board; the delete itself is --privacy on (or --leave), below.
+    leaving = args.leave or args.privacy == "on"
+    if state == "privacy" and not (leaving or args.join or args.group_join is not None or args.duel_join is not None):
+        print(PRIVACY_ON)
+        return 1
+    if state == "leaving" and not (leaving or only_removes(args)):
+        print(PRIVACY_ON)
+        print(STILL_LISTED)
+        return 1
     server = resolve_server(args, ident)
     if not server:
         print("cclevel: no public board is configured yet. Pass --server to use your own.")
@@ -2482,6 +2572,10 @@ def board_command(args, cdir, result):
             if ident and load_identity(cdir).get("token") != ident["token"]:
                 print("Not joined. Run with --join first.")   # left the board while this command waited
                 return 1
+            if ident and opted_out(cdir) and not only_removes(args):
+                print(PRIVACY_ON)   # Privacy mode began while this command waited, and the row is still there
+                print(STILL_LISTED)
+                return 1
             if args.world:
                 return world_command(args, cdir, server, ident)
             if args.verify_github or args.unverify_github:
@@ -2489,7 +2583,8 @@ def board_command(args, cdir, result):
             if duel:
                 return duel_command(args, cdir, server, ident, data, result)
             return group_command(args, cdir, server, ident, data, result)
-    if args.leave:
+    if leaving:
+        # --privacy on and --leave are the same: Privacy mode starts here.
         # Under the board lock: a check-in from this machine already on its way (the session-start hook's first join too)
         # finishes first, and none starts until the row and the token are gone. If this run is stopped half way, nothing
         # is left half done.
@@ -2499,12 +2594,18 @@ def board_command(args, cdir, result):
             ident = load_identity(cdir)
             if not ident:
                 print("Opted out. This machine is not on the board and will not join it by itself; --join joins by hand.")
+                print(PRIVACY_NOW)
                 return 0
             token = ident["token"]
             server = resolve_server(args, ident)
-            status, reply = call(server, "DELETE", "/api/entry", token)
+            try:
+                status, reply = call(server, "DELETE", "/api/entry", token)
+            except SystemExit:   # the board could not be reached at all: say where this leaves the machine, then stop
+                print("Privacy mode is on all the same: this machine sends nothing by itself. " + STILL_LISTED)
+                raise
             if status != 200 or type(reply.get("deleted")) is not bool:
                 print("cclevel: the board did not confirm the deletion (HTTP %d). The token is kept so you can retry." % status)
+                print("Privacy mode is on all the same: this machine sends nothing by itself. " + STILL_LISTED)
                 return 1
             # The row is gone. Said on disk at once, without waiting for any lock, so nothing uses this token again;
             # the token itself goes as soon as the settings are free (now, or at the next command that changes them).
@@ -2536,6 +2637,7 @@ def board_command(args, cdir, result):
         else:
             print("The board had no row for this token. %s%s." % (token_line[0].upper(), token_line[1:]))
         print("This machine will not join again by itself; --join joins by hand.")
+        print(PRIVACY_NOW)
         return 0
     if ident and args.join:
         print("Already on the board as %s. Use --sync to check in. Nothing sent." % creature_name(ident["token"]))
@@ -2546,7 +2648,7 @@ def board_command(args, cdir, result):
             print("Not joined. Run with --join first.")
             return 1
         # First join: show the payload and get a yes before anything is sent.
-        join_terms(data, server)
+        join_terms(data, server, privacy=opted_out(cdir))
         if not confirmed(args, "Send it? [y/N] ", "Re-run with --yes to join."):
             return 1
         token = secrets.token_hex(32)
@@ -2560,6 +2662,10 @@ def check_in(cdir, server, ident, token, data, result):
         if ident and load_identity(cdir).get("token") != token:
             print("Not joined. Run with --join first.")
             return 1, {}
+        if ident and opted_out(cdir):   # Privacy mode began while this waited; a first join (no ident) is what ends it
+            print(PRIVACY_ON)
+            print(STILL_LISTED)
+            return 1, ident
         return checked_in(cdir, server, ident, token, data, result)
 
 
@@ -2619,7 +2725,7 @@ def checked_in(cdir, server, ident, token, data, result):
     else:
         print("World ranking: on. You show once you have check-ins on two different days.")
     if not joined:
-        print("Auto check-in: on, once a day when a Claude Code session starts. Opt out any time: --leave.")
+        print("Auto check-in: on, once a day when a Claude Code session starts. Opt out any time: --leave (Privacy mode).")
     line = badge_line(reply.get("verified"), reply.get("commits"))
     if line:
         print(line)
@@ -2637,7 +2743,7 @@ def main():
     ap.add_argument("--no-save", action="store_true", help="do not write the ledger")
     ap.add_argument("--server", help="leaderboard address (default: the public board, or $CCLEVEL_SERVER)")
     ap.add_argument("--yes", action="store_true",
-                    help="with --join, --world on, --auto on, --panel on, a group or duel start or join, or --verify-github: "
+                    help="with --join, --world on, --auto on, --panel on, --privacy off, a group or duel start or join, or --verify-github: "
                          "do not ask again")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
@@ -2671,7 +2777,10 @@ def main():
                             "starts it at login); sends nothing")
     board.add_argument("--verify-github", metavar="LOGIN", help="opt-in GitHub badge: start (asks first), then run again to finish")
     board.add_argument("--unverify-github", action="store_true", help="remove the GitHub badge and every GitHub detail at once")
-    board.add_argument("--leave", action="store_true", help="opt out: delete your row and the local token, and never join by itself again")
+    board.add_argument("--privacy", choices=("on", "off"),
+                       help="Privacy mode: on deletes your row and the local token, and cclevel sends nothing after;"
+                            " off (asks first) goes back to Default mode, where the board is on")
+    board.add_argument("--leave", action="store_true", help="the same as --privacy on")
     board.add_argument("--rank", action="store_true", help="compare with the public board; uploads nothing")
     board.add_argument("--auto", choices=("on", "off"),
                        help="check in once a day by itself when a Claude Code session starts (on asks first); sends nothing now")
@@ -2716,7 +2825,7 @@ def main():
     if (args.preview or args.join or args.sync or args.world or args.leave or args.rank or args.group or args.group_create
             or args.group_join is not None or args.group_leave or args.group_code or args.verify_github or args.unverify_github
             or args.auto or args.duel or args.duel_create or args.duel_join is not None or args.duel_leave or args.duel_code
-            or args.card):
+            or args.card or args.privacy):
         try:
             sys.exit(board_command(args, cdir, result))
         except Busy as e:
@@ -2735,7 +2844,7 @@ def main():
         # Whether this machine is on the board is read from its own files; nothing is sent. Only the folder Claude Code
         # itself uses gets the session-start hook, so only that one joins by itself.
         token = load_identity(cdir).get("token")
-        board = "on" if token else "soon" if real and not opted_out(cdir) else "off"
+        board = privacy_state(cdir) or ("on" if token else "soon" if real else "off")
         print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token)))
 
 
