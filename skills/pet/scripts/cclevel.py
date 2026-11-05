@@ -1194,6 +1194,7 @@ def tips_command(args, cdir):
 # The panel runs that copy's offline card (--json --no-save, which writes nothing) at most once an hour, and once right
 # after --panel on replaces that copy or a check-in or group read saves something new in identity.json, and sends nothing.
 PANEL_LABEL = "com.cclevel.panel"
+PANEL_PREFS = "cclevel-panel"   # the panel program's macOS preferences: only where its menu bar item sits
 PANEL_START_TRIES = 3   # starting it again right after stopping the old copy can fail once or twice while macOS catches up
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
 PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
@@ -1223,6 +1224,10 @@ def panel_command(args, cdir):
     launchctl = shutil.which("launchctl")
     if args.panel == "off":
         panel_stop(launchctl)
+        defaults = shutil.which("defaults") if sys.platform == "darwin" else None
+        if defaults:   # where macOS kept the menu bar item's position: the panel program's own preferences
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run([defaults, "delete", PANEL_PREFS], capture_output=True, timeout=30)
         found = False
         clips = os.path.join(folder, "creatures")
         for path in (agent, *(os.path.join(folder, name) for name in PANEL_FILES),
@@ -1267,7 +1272,8 @@ def panel_command(args, cdir):
         print("  3. start it now and at every login, with %s" % agent)
         print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, and again right")
         print("after an update or when a check-in or group read saves something new, keeps the last result in")
-        print("%s, and sends nothing. --panel off removes all of it." % card)
+        print("%s, and sends nothing. It starts at the right end of your menu bar items; macOS keeps where it sits" % card)
+        print("(and where you ⌘-drag it) in the program's own preferences, cclevel-panel. --panel off removes all of it.")
         print("Its Friends page shows your private group as the last check-in, Claude Code start (at most every 15")
         print("minutes) or --group saved it (Default mode);")
         print("in Privacy mode cclevel sends nothing and the page says friends are off.")

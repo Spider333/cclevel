@@ -3187,6 +3187,7 @@ class Panel(unittest.TestCase):
         self.log = os.path.join(self.tmp.name, "calls.log")
         self.fake("swiftc", 'out=""; while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done; printf bin > "$out"')
         self.fake("launchctl", "exit 0")
+        self.fake("defaults", "exit 0")   # never the real one: it would change this Mac's own panel preferences
         self.env = {"HOME": self.home, "PATH": self.bin + os.pathsep + "/usr/bin:/bin"}
         self.folder = os.path.join(self.dir, "cclevel", "panel")
         self.agent = os.path.join(self.home, "Library", "LaunchAgents", "com.cclevel.panel.plist")
@@ -3280,6 +3281,7 @@ class Panel(unittest.TestCase):
         write(self.dir, "cclevel/panel/notes.txt", "mine")   # not the panel's: it stays, and so does its folder
         write(self.dir, "cclevel/panel/creatures/mine.mp4", "mine")   # the same inside the creatures folder
         write(self.dir, "cclevel/group-read", "1793900000\n")   # the session-start hook's last group read for the panel
+        before_off = len(self.calls())
         out = self.panel("off")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("Panel off", out.stdout)
@@ -3288,7 +3290,9 @@ class Panel(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.folder)), ["creatures", "notes.txt"])
         self.assertEqual(os.listdir(os.path.join(self.folder, "creatures")), ["mine.mp4"])
         self.assertTrue(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
-        self.assertIn("launchctl bootout gui/%d/com.cclevel.panel" % os.getuid(), self.calls()[-1])
+        # Only what off ran: the panel stopped first (so it cannot save its position again), then its saved position deleted.
+        self.assertEqual(self.calls()[before_off:], ["launchctl bootout gui/%d/com.cclevel.panel" % os.getuid(),
+                                                     "defaults delete cclevel-panel"])
         os.remove(os.path.join(self.folder, "notes.txt"))
         os.remove(os.path.join(self.folder, "creatures", "mine.mp4"))
         again = self.panel("off")
