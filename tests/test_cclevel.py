@@ -3724,17 +3724,17 @@ class Panel(unittest.TestCase):
         self.assertEqual(ui["on"], setting.returncode != 0 or setting.stdout.strip() not in ("0", "false", "NO"), setting)
         moved = poke("Lil Guy", "88,88", "--reduce-motion")
         self.assertEqual((moved[0]["anim"], moved[0]["sound"]), ("-", "played" if ui["on"] else "off"),
-                         "Reduce Motion: a squeak without the hop")
+                         "Reduce Motion: a boing without the hop")
         self.assertEqual(poke("Lil Guy", "250,60", "--ui-sounds", "off"), [{"what": "none", "anim": "-", "sound": "none"}],
                          "a click beside the creature is no poke")
         fast = poke("Lil Guy", "88,88", "--times", "2", "--gap", "50")
         self.assertEqual([(p["anim"], p["sound"]) for p in fast],
                          [("poke", "played"), ("poke", "throttled")] if ui["on"] else [("poke", "off"), ("poke", "off")],
-                         "a second poke 50 ms later hops again but squeaks once")
-        apart = poke("Lil Guy", "88,88", "--times", "2")   # 300 ms apart: past the 150 ms limit, so both squeak
+                         "a second poke 50 ms later hops again but boings once")
+        apart = poke("Lil Guy", "88,88", "--times", "2")   # 300 ms apart: past the 150 ms limit, so both boing
         self.assertEqual([(p["anim"], p["sound"]) for p in apart],
                          [("poke", "played")] * 2 if ui["on"] else [("poke", "off")] * 2,
-                         "pokes 300 ms apart both squeak")
+                         "pokes 300 ms apart both boing")
         still = poke("Lil Guy", "88,88", "--reduce-motion", "--ui-sounds", "off")
         self.assertEqual((still[0]["what"], still[0]["anim"]), ("hop", "-"), "Reduce Motion: no hop")
         text_art = poke("Lil Guy", "88,88", "--ui-sounds", "off", with_clips=False)

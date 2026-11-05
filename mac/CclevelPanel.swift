@@ -16,9 +16,9 @@
 // the card's own text art when there is no clip.
 //
 // Poke the pet: over the creature the cursor becomes a pointing hand and the creature lifts a little; a click (or
-// VoiceOver's Poke action) makes it squash and hop and squeak in its stage's voice, a sound made here in memory, quiet, and
-// silent when macOS user interface sound effects are off. With Reduce Motion on it squeaks without moving. It sends and
-// saves nothing.
+// VoiceOver's Poke action) makes it squash and hop and go boing like a cartoon spring, lower as it grows, a sound made here
+// in memory, quiet, and silent when macOS user interface sound effects are off. With Reduce Motion on it boings without
+// moving. It sends and saves nothing.
 //
 // `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full | --scrolled]` draws
 // what the panel shows on that page (with --height, as on a screen with that much room; with --full, the whole page; with
@@ -86,36 +86,39 @@ let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "
 let classNames = ["Shipper": "shipper", "AFK Farmer": "afk_farmer", "Loot Goblin": "loot_goblin",
                   "Tokenmaxxer": "tokenmaxxer", "Perfectly Balanced": "balanced", "Noob": "noob"]
 
-/// The poke's squeak for each stage: its pitch (Hz) and length (s), lower and a little longer as the creature grows.
-let squeakVoices: [String: (hz: Double, seconds: Double)] = [
-    "Egg": (1500, 0.12), "Hatchling": (1220, 0.14), "Lil Guy": (980, 0.16),
-    "Big Guy": (790, 0.18), "Gigachad": (640, 0.20), "GOAT": (520, 0.22)]
-let squeakRate = 22050
+/// The poke's boing for each stage: its voice (Hz; the spring sounds at half of it), lower as the creature grows.
+let boingVoices: [String: Double] = ["Egg": 1500, "Hatchling": 1220, "Lil Guy": 980, "Big Guy": 790, "Gigachad": 640,
+                                     "GOAT": 520]
+let boingSeconds = 0.38
+let boingRate = 22050
 /// The loudest sample as a share of full scale: 0.1 is -20 dBFS, quiet even in headphones at full volume.
-let squeakLevel = 0.1
-/// Pokes closer together than this still hop, but squeak only once.
-let squeakGap: TimeInterval = 0.15
+let boingLevel = 0.1
+/// Pokes closer together than this still hop, but boing only once.
+let boingGap: TimeInterval = 0.15
 
-/// A squeak as WAV bytes (16-bit mono PCM), made here rather than shipped as a file: a tone that glides up and back down,
-/// with a soft start, a fading end and a little of its octave, so it sounds like a small animal rather than a beep.
-func squeakWAV(hz: Double, seconds: Double) -> Data {
-    let count = Int(seconds * Double(squeakRate))
+/// A boing as WAV bytes (16-bit mono PCM), made here rather than shipped as a file: a cartoon spring, a note at half the
+/// voice that wobbles fast (13 times a second) and settles as it fades, with a little of its octave and twelfth.
+func boingWAV(hz: Double) -> Data {
+    let count = Int(boingSeconds * Double(boingRate))
+    let fadeOut = 0.02 * Double(boingRate)   // the last 20 ms, so it ends without a click
     var phase = 0.0
     var wave = [Double](repeating: 0, count: count)
     for i in 0..<count {
-        let t = Double(i) / Double(count)
-        phase += 2 * Double.pi * hz * (0.9 + 0.45 * sin(Double.pi * t)) / Double(squeakRate)
-        wave[i] = (sin(phase) + 0.3 * sin(2 * phase)) * min(1, t / 0.08) * pow(1 - t, 1.5)
+        let t = Double(i) / Double(boingRate)
+        let wobble = 1 + 0.45 * exp(-t * 7) * sin(2 * Double.pi * 13 * t)
+        phase += 2 * Double.pi * hz * 0.5 * wobble * (1 + 0.15 * exp(-t * 20)) / Double(boingRate)
+        let level = min(1, t / 0.005) * exp(-t * 6) * min(1, Double(count - i) / fadeOut)
+        wave[i] = (sin(phase) + 0.45 * sin(2 * phase) + 0.2 * sin(3 * phase)) * level
     }
     let top = wave.map(abs).max() ?? 0
-    let scale = top > 0 ? squeakLevel * 32767 / top : 0
+    let scale = top > 0 ? boingLevel * 32767 / top : 0
     var data = Data()
     func add<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
     let bytes = UInt32(count * 2)
     data.append(contentsOf: Array("RIFF".utf8))
     add(36 + bytes)
     data.append(contentsOf: Array("WAVEfmt ".utf8))
-    add(UInt32(16)); add(UInt16(1)); add(UInt16(1)); add(UInt32(squeakRate)); add(UInt32(squeakRate * 2))
+    add(UInt32(16)); add(UInt16(1)); add(UInt16(1)); add(UInt32(boingRate)); add(UInt32(boingRate * 2))
     add(UInt16(2)); add(UInt16(16))
     data.append(contentsOf: Array("data".utf8))
     add(bytes)
@@ -123,7 +126,7 @@ func squeakWAV(hz: Double, seconds: Double) -> Data {
     return data
 }
 
-/// The loudest sample of squeakWAV's bytes, in dBFS: read back from the very bytes the player gets (for --poke-at).
+/// The loudest sample of boingWAV's bytes, in dBFS: read back from the very bytes the player gets (for --poke-at).
 func peakDBFS(_ wav: Data) -> Double {
     let samples = [UInt8](wav.dropFirst(44))
     var top = 0
@@ -137,10 +140,10 @@ func peakDBFS(_ wav: Data) -> Double {
 var testReduceMotion = false
 var testUISoundsOff = false
 
-/// Whether Reduce Motion is on: the loop shows its still, and a poke squeaks without moving.
+/// Whether Reduce Motion is on: the loop shows its still, and a poke boings without moving.
 func reduceMotion() -> Bool { testReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
-/// Whether macOS plays user interface sound effects (System Settings → Sound): when not, a poke hops without a squeak.
+/// Whether macOS plays user interface sound effects (System Settings → Sound): when not, a poke hops without a boing.
 /// Read only. A Mac where it was never switched off has no value saved, which means on.
 func uiSoundsOn() -> Bool {
     if testUISoundsOff { return false }
@@ -589,8 +592,8 @@ final class PanelView: NSView {
     private var wantsPlay = false
     private var hovering = false
     private var pressed = false
-    private var lastSqueak: TimeInterval = -.infinity
-    private var squeak: (stage: String, player: AVAudioPlayer, wav: Data)?
+    private var lastBoing: TimeInterval = -.infinity
+    private var boing: (stage: String, player: AVAudioPlayer, wav: Data)?
 
     /// What one poke did, read back from the layer and the player: --poke-at prints it.
     struct Poke {
@@ -780,8 +783,8 @@ final class PanelView: NSView {
         hopper.add(group, forKey: "poke")
     }
 
-    /// A poke: the creature squashes and hops (the text creature blinks), not with Reduce Motion on, and squeaks in its
-    /// stage's voice, unless user interface sound effects are off or it squeaked less than squeakGap ago.
+    /// A poke: the creature squashes and hops (the text creature blinks), not with Reduce Motion on, and boings in its
+    /// stage's voice, unless user interface sound effects are off or it boinged less than boingGap ago.
     @discardableResult
     func poke(at time: TimeInterval) -> Poke? {
         guard let card else { return nil }
@@ -794,24 +797,24 @@ final class PanelView: NSView {
             }
         }
         var sound = "none", hz = 0.0, seconds = 0.0, peak = -Double.infinity
-        if let voice = squeakVoices[card.stage] {
-            if squeak?.stage != card.stage {
-                let wav = squeakWAV(hz: voice.hz, seconds: voice.seconds)
-                squeak = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: card.stage, player: $0, wav: wav) }
-                squeak?.player.prepareToPlay()
+        if let voice = boingVoices[card.stage] {
+            if boing?.stage != card.stage {
+                let wav = boingWAV(hz: voice)
+                boing = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: card.stage, player: $0, wav: wav) }
+                boing?.player.prepareToPlay()
             }
-            if let squeak {
-                hz = voice.hz
-                seconds = squeak.player.duration
-                peak = peakDBFS(squeak.wav)
+            if let boing {
+                hz = voice
+                seconds = boing.player.duration
+                peak = peakDBFS(boing.wav)
                 if !uiSoundsOn() {
                     sound = "off"
-                } else if time - lastSqueak < squeakGap {
+                } else if time - lastBoing < boingGap {
                     sound = "throttled"
                 } else {
-                    lastSqueak = time
-                    squeak.player.currentTime = 0
-                    sound = squeak.player.play() ? "played" : "failed"
+                    lastBoing = time
+                    boing.player.currentTime = 0
+                    sound = boing.player.play() ? "played" : "failed"
                 }
             }
         }
