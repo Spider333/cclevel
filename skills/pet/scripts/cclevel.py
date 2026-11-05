@@ -1484,7 +1484,7 @@ def creature_name(token):
 
 
 def payload(result):
-    """Everything that ever leaves this machine. Keep in step with PRIVACY.md."""
+    """Everything a check-in sends, as --preview shows it. Keep in step with PRIVACY.md."""
     return {"v": RULES_VERSION, "xp": result["xp"], "xp_days": result["raw"]["xp_days"],
             "stats": result["stats"], "badges": result["badges"]}
 
@@ -1530,7 +1530,8 @@ def opt_back_in(cdir):
 PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
 STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
 PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card or invite link you open in a browser"
-               " still loads its page from cclevel.com). /pet privacy off goes back to Default mode.")
+               " still loads its page from the board's website, cclevel.com for the public board). /pet privacy off goes"
+               " back to Default mode.")
 
 
 def only_removes(args):
@@ -2133,7 +2134,8 @@ def badge_line(verified, commits):
 
 
 def github_command(args, cdir, server, ident):
-    """The opt-in GitHub badge: prove control of an account with a public gist. Nothing GitHub-side leaves this machine."""
+    """The opt-in GitHub badge: prove control of an account with a public gist. No GitHub password, key or GitHub token is used: the board
+    gets this creature's token, the login and the code's hash."""
     if not ident:
         print("Not joined. Run with --join first.")
         return 1
