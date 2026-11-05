@@ -7,7 +7,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d97757)](#install)
 [![Privacy](https://img.shields.io/badge/sends-9_numbers-d97757)](PRIVACY.md)
 
-CC level (`cclevel` for short: the plugin, the script and this repository) turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. From the next Claude Code start, the creature is on a public board under a generated name, and you can compare it with friends in a private group. No account, no name, nine numbers. That is Default mode; Privacy mode is one command, `/pet privacy on`, and then cclevel sends nothing.
+CC level (`cclevel` for short: the plugin, the script and this repository) turns your Claude Code setup into a creature that grows. It reads your local Claude Code folder, scores how well-used and well-wired the setup is, and prints a card: a level, six stats, a mood and a short list of what to fix next. From the next Claude Code start, the creature is on a public board under a generated name, and you can compare it with friends in a private group. No account, no name, nine numbers. That is Default mode; Privacy mode is one command, `/pet privacy on`, and then cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com).
 
 ```
     .-^-.     Lil Guy Shipper · Lv 23
@@ -64,7 +64,7 @@ claude plugin install cclevel --marketplace Spider333/cclevel
 
 Then run `/pet`. If you already have a command called `pet`, use `/cclevel:pet`.
 
-**Two modes.** **Default mode** is what you get: from the next Claude Code start, the plugin puts your creature on the public board under a generated name, lists it from its second day, and checks in once a day in the background: nine numbers and badge codes, no account, nothing you wrote. Groups, duels, `/pet rank` and the GitHub badge come with it. **Privacy mode is one command: `/pet privacy on`**, before or after it joins. It deletes your row, if there is one, and from then on cclevel sends nothing. The card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped all keep working; the board features wait until `/pet privacy off`. To stay on the board for groups and duels but off the public lists, use `/pet world off`.
+**Two modes.** **Default mode** is what you get: from the next Claude Code start, the plugin puts your creature on the public board under a generated name, lists it from its second day, and checks in once a day in the background: nine numbers and badge codes, no account, nothing you wrote. Groups, duels, `/pet rank` and the GitHub badge come with it. **Privacy mode is one command: `/pet privacy on`**, before or after it joins. It deletes your row, if there is one, and from then on cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com). The card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped all keep working; the board features wait until `/pet privacy off`. To stay on the board for groups and duels but off the public lists, use `/pet world off`.
 
 **Updating.** Claude Code does not update plugins from this marketplace by itself until you say so. Once, in Claude Code: `/plugin` → Marketplaces → cclevel → **Enable auto-update**, and new versions arrive on their own. To update now: `/plugin` → Marketplaces → cclevel → Update marketplace, then `/reload-plugins`; or from a shell, `claude plugin marketplace update cclevel` and `claude plugin update cclevel@cclevel`. Duels and the share card need 0.4.0 or newer. From 0.7.0 the board is on by default; if you left the board under an earlier version, run `/pet privacy on` once after updating, or the next session start joins you again. From 0.13.0, a machine that left the board (`/pet leave`, or `/pet auto off` before joining) is in Privacy mode, so `/pet rank` waits until `/pet privacy off`.
 
@@ -95,14 +95,14 @@ In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank
 
 ## Play with friends
 
-1. **Start a group:** `/pet start a group`. You get an invite link like `https://go.cclevel.workers.dev/join#3f9a…` and a generated group name, for example *Stormy Lemur Crew*.
+1. **Start a group:** `/pet start a group`. You get an invite link like `https://cclevel.com/join#3f9a…` and a generated group name, for example *Stormy Lemur Crew*.
 2. **Send the link** to friends. Opening it shows the group's name and how to join. The code after `#` stays in the browser and is never sent to the board.
 3. **Friends paste it** into Claude Code: `/pet join <link>`. One yes joins the board and the group together.
 4. **Compare:** `/pet show my group`. Each member sees the others' generated names, levels, XP and stats. Nobody outside the group does.
 
 Anyone with the link can join until the group is full, so share it with friends only. If it leaks, start a new group.
 
-**Duel one friend:** `/pet duel` gives you a link like `https://go.cclevel.workers.dev/duel#7c1e…`. The first friend to accept it with `/pet duel <link>` takes the seat. The duel starts at 00:00 UTC the next day and runs seven days. XP counts at each check-in after your first one on or after the day it was accepted, so XP saved up from before never counts; whoever the board credits with more wins the ♛. A duel sits beside your group and is never published.
+**Duel one friend:** `/pet duel` gives you a link like `https://cclevel.com/duel#7c1e…`. The first friend to accept it with `/pet duel <link>` takes the seat. The duel starts at 00:00 UTC the next day and runs seven days. XP counts at each check-in after your first one on or after the day it was accepted, so XP saved up from before never counts; whoever the board credits with more wins the ♛. A duel sits beside your group and is never published.
 
 **Post your card:** `/pet card` prints a link to a page that draws your card as a picture to save or copy. The numbers sit after `#`, so the page sends nothing, and the picture shows no creature name.
 
@@ -113,12 +113,12 @@ Anyone with the link can join until the group is full, so share it with friends 
 | **The card** | Offline. Reads your Claude Code folder, writes only `~/.claude/cclevel/`. Nothing keeps running. |
 | **The creature band** | Offline. Draws above your prompt and, when its last score is more than an hour old, rescores in the background with `--json --no-save`, which writes nothing. It keeps the level, stage, mood, XP and time of that score in the plugin's own store. To act out Claude's work it notes which tool runs, whether it failed and whether a command is a commit; it keeps only which action it is showing, for this session, never the command itself. `/creature off` stops it. |
 | **The menu bar panel** | Off until you turn it on (Mac only). It keeps a program, a copy of the scanner and the creature loops (34 of them, one per stage and per class look, about 1.7 MB, from the plugin's `mac/creatures/`) in `~/.claude/cclevel/panel/`, starts at login through `~/Library/LaunchAgents/com.cclevel.panel.plist`, and runs the card offline with `--json --no-save` at most once an hour, keeping the last result in `card.json` there. A docs link in the panel opens Claude Code's docs in your browser; the panel itself makes no network call. `/pet panel off` removes all of it. |
-| **Two modes** | **Default mode:** the board is on. The plugin's check-in hook joins the board at the first Claude Code start and checks in once a day. **Privacy mode** (`/pet privacy on`): your row is deleted and cclevel sends nothing, not even `--rank`'s download; everything offline keeps working. `/pet privacy off` asks first, then goes back. |
-| **Where data goes** | In Default mode, only to the board at `https://go.cclevel.workers.dev`, run by Amagi Labs LLC, and only for the board: joining and the daily check-in (both on by default), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. In Privacy mode, nowhere. |
+| **Two modes** | **Default mode:** the board is on. The plugin's check-in hook joins the board at the first Claude Code start and checks in once a day. **Privacy mode** (`/pet privacy on`): your row is deleted and cclevel sends nothing, not even `--rank`'s download; everything offline keeps working. Opening a share-card link loads a page from cclevel.com, whose visit (not the numbers after `#`) may be in Cloudflare's sampled visit logs. `/pet privacy off` asks first, then goes back. |
+| **Where data goes** | In Default mode, only to the CC level board (website cclevel.com, check-in address `https://go.cclevel.workers.dev`, which stores no IP addresses), run by Amagi Labs LLC, and only for the board: joining and the daily check-in (both on by default), world ranking, groups, duels and the GitHub badge. The card, `--preview`, `--card` and `--wrapped` send nothing; `--rank` only downloads the public board files. In Privacy mode, cclevel sends nothing; opening a share-card link still loads a page from cclevel.com, and that visit may be in Cloudflare's sampled visit logs. |
 | **A check-in sends** | Nine numbers and a list of badge codes (`v`, `xp`, `xp_days`, six stats, `badges`), plus a random key made on your machine. The board keeps only a hash of that key. |
 | **Never sent** | Your name, e-mail, prompts, code, file paths, or the names of your projects, skills or connectors. |
 | **The board stores** | No account, no e-mail, no IP address, and no request logs. A creature is its score, a generated name, the key's hash and a few dates and counters. |
-| **You control** | `--privacy on` (Privacy mode: deletes your row, and cclevel sends nothing after; `--leave` is the same), `--world off` (off the lists at once), `--auto off`, `--group-leave`, `--duel-leave`. A row with no check-in for 180 days deletes itself. |
+| **You control** | `--privacy on` (Privacy mode: deletes your row, and cclevel sends nothing after; a share-card or invite link you open still loads its page from cclevel.com; `--leave` is the same), `--world off` (off the lists at once), `--auto off`, `--group-leave`, `--duel-leave`. A row with no check-in for 180 days deletes itself. |
 
 The word is **pseudonymous, not anonymous**: a row stays linked to the key on your machine. [PRIVACY.md](PRIVACY.md) lists every field, every request and what we cannot promise.
 
@@ -154,7 +154,7 @@ In Claude Code, `/pet` runs these for you. Network commands you run ask first, a
 | `--panel on` / `--panel off` | Mac only: your creature in the menu bar, with a small panel. On asks first, then builds it on this Mac with Apple's `swiftc` and starts it at login; off removes it. Sends nothing. After a plugin update, run `--panel on --yes` again to update it. |
 | `--verify-github LOGIN` | Opt-in GitHub badge. First run: asks, then gives you a code to put in a public gist. Second run: the board checks the gist. |
 | `--unverify-github` | Remove the GitHub badge and every GitHub detail at once. |
-| `--privacy on` / `--privacy off` | Privacy mode. On deletes your row and the local token, and from then on cclevel sends nothing: the hook stays quiet and the board commands say Privacy mode is on. Off shows what Default mode sends and asks first; it sends nothing itself, and the hook joins at the next Claude Code start. A confirmed `--join` also ends Privacy mode. |
+| `--privacy on` / `--privacy off` | Privacy mode. On deletes your row and the local token, and from then on cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com): the hook stays quiet and the board commands say Privacy mode is on. Off shows what Default mode sends and asks first; it sends nothing itself, and the hook joins at the next Claude Code start. A confirmed `--join` also ends Privacy mode. |
 | `--leave` | The same as `--privacy on`. |
 | `--server URL` | Use a self-hosted board. A creature only talks to the board it joined. |
 | `--claude-dir DIR` | Scan another folder. |
@@ -201,6 +201,9 @@ The board is a small Cloudflare Worker with a D1 database and static pages, in `
 **Does it know who I am?**
 No. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you. Want nothing sent at all? Privacy mode: `/pet privacy on`.
 
+**Why does the plugin talk to go.cclevel.workers.dev?**
+That is the board's check-in address; the website is cclevel.com. Like every site on Cloudflare, cclevel.com keeps a sample of visits with IP addresses for at least 31 days, and we cannot switch that off. Check-ins go to the workers.dev address instead, where no such log exists, so they never sit in one.
+
 **Can people cheat?**
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
 
@@ -214,7 +217,7 @@ It reads your Claude Code folder to count things (days, tokens, tools used, prom
 So you can copy one. A link shown or pasted in a conversation becomes part of that chat's history. A link only grants a seat in that group, and you can always start a new group.
 
 **What is Privacy mode?**
-The other of the two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, `/pet privacy on`, deletes your row and from then on cclevel sends nothing at all. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels, `/pet rank` and the badge. `/pet privacy off` shows what Default mode sends and asks before switching back. Opening a share-card link still loads the card page in your browser, but the numbers after `#` stay in the browser.
+The other of the two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, `/pet privacy on`, deletes your row and from then on cclevel sends nothing at all; a share-card or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after `#`, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels, `/pet rank` and the badge. `/pet privacy off` shows what Default mode sends and asks before switching back.
 
 **How do I opt out, or get off the board?**
 `/pet privacy on` (or `/pet leave`, the same). One command, before or after the plugin joins you: your row, if there is one, is deleted at once and the plugin never joins again by itself (`/pet privacy off` or `/pet join` brings you back); the database host's backups age out after up to 30 days (7 on the free plan).

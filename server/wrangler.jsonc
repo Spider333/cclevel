@@ -3,8 +3,13 @@
 	"name": "go",
 	"main": "src/index.js",
 	"compatibility_date": "2026-03-01",
-	// Served from workers.dev on purpose: a custom domain adds sampled request logs with IP addresses.
+	// Check-ins stay on workers.dev on purpose: a custom domain adds sampled request logs with IP addresses.
+	// Keep this true even with "routes" below, or the check-in address goes away.
 	"workers_dev": true,
+	// The public board's website. The Worker refuses /api/* on it (src/index.js), so no check-in passes through
+	// its logs. A self-hosted board deletes this block (see docs/self-hosting.md); a deploy that keeps it fails,
+	// because Cloudflare refuses a custom domain on a zone you do not own.
+	"routes": [{ "pattern": "cclevel.com", "custom_domain": true }],
 	// Privacy: this Worker keeps no request logs. Do not switch this on.
 	"observability": {
 		"enabled": false

@@ -1359,8 +1359,11 @@ def learn_command(cdir, result, save):
 # when the user asks for it by flag, or from the plugin's session-start hook
 # after the user turned auto check-in on with --auto on.
 
-DEFAULT_SERVER = "https://go.cclevel.workers.dev"   # the public board; --server or $CCLEVEL_SERVER picks another
-MOVED_FROM = ("https://cclevel-board.cclevel.workers.dev",)   # the public board's earlier addresses: same board
+DEFAULT_SERVER = "https://go.cclevel.workers.dev"   # the public board's check-in address; --server or $CCLEVEL_SERVER picks another
+# The public board's website, for the links people open. Check-ins never go there: a custom domain keeps sampled
+# visit logs with IP addresses, the workers.dev address keeps none (PRIVACY.md), and the board refuses /api/* there.
+PUBLIC_SITE = "https://cclevel.com"
+MOVED_FROM = ("https://cclevel-board.cclevel.workers.dev", PUBLIC_SITE, "https://www.cclevel.com")   # the public board's other addresses: same board
 RULES_VERSION = 1        # must match RULES in server/src/index.js
 MAX_REPLY = 256 * 1024
 MAX_COUNT = 10 ** 9      # no honest number from the board is larger than this
@@ -1526,7 +1529,8 @@ def opt_back_in(cdir):
 # join): nothing is sent then either, except the requests that remove data from the board.
 PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
 STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
-PRIVACY_NOW = "Privacy mode is on: cclevel sends nothing from now on. /pet privacy off goes back to Default mode."
+PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card or invite link you open in a browser"
+               " still loads its page from cclevel.com). /pet privacy off goes back to Default mode.")
 
 
 def only_removes(args):
@@ -1638,8 +1642,31 @@ def update_identity(cdir, token, change, create=False, require=None, wait=10.0):
 
 
 def moved(server):
-    """The public board's address for one of its earlier ones. Any other address is left as it is."""
-    return DEFAULT_SERVER if server.rstrip("/").lower() in MOVED_FROM else server
+    """The public board's check-in address for any form of one of its addresses (case, a trailing slash, a trailing dot
+    or :443 on the host). Any other address is left as it is."""
+    s = re.sub(r"^(https://[^/:]+?)\.?(?::443)?$", r"\1", server.strip().rstrip("/").lower())
+    return DEFAULT_SERVER if s == DEFAULT_SERVER or s in MOVED_FROM else server
+
+
+def public(server):
+    return moved(server) == DEFAULT_SERVER
+
+
+def send_to(server):
+    """Where joining sends its numbers, as the join terms and --privacy off say it. Ends with a comma."""
+    if public(server):
+        return "the CC level board (cclevel.com) at its check-in address %s, which stores no IP addresses," % DEFAULT_SERVER
+    return server.rstrip("/") + ","
+
+
+def site(server):
+    """Where people open this board's links: the public board's website, or a self-hosted board's own address."""
+    return PUBLIC_SITE if public(server) else server.rstrip("/")
+
+
+def board_name(server):
+    """How messages name a board: the public one by its website, any other by its address."""
+    return "the CC level board (cclevel.com)" if public(server) else "the board at %s" % server.rstrip("/")
 
 
 def resolve_server(args, ident):
@@ -1647,7 +1674,7 @@ def resolve_server(args, ident):
     asked = moved(args.server or os.environ.get("CCLEVEL_SERVER") or "")
     home = moved(ident.get("server") or "")
     if home and asked and asked.rstrip("/") != home.rstrip("/"):
-        sys.exit("cclevel: this creature lives on %s. Leave that board first, or drop --server and CCLEVEL_SERVER." % home)
+        sys.exit("cclevel: this creature lives on %s. Leave that board first, or drop --server and CCLEVEL_SERVER." % board_name(home))
     server = (home or asked or DEFAULT_SERVER).rstrip("/")
     if server and not server_ok(server):
         sys.exit("cclevel: the server address must start with https:// (http:// only for localhost), with no name@ part")
@@ -1815,12 +1842,12 @@ def group_name(code):
 
 def invite_link(server, code):
     """The link friends open or paste. Shown in full: it can land in a chat transcript, and it only grants a seat."""
-    return "%s/join#%s" % (server, code)
+    return "%s/join#%s" % (site(server), code)
 
 
 def duel_link(server, code):
     """The link a challenged friend opens or pastes. Shown in full, like a group's: it only grants the second seat."""
-    return "%s/duel#%s" % (server, code)
+    return "%s/duel#%s" % (site(server), code)
 
 
 def card_link(server, result):
@@ -1829,7 +1856,7 @@ def card_link(server, result):
     numbers = [CARD_VERSION, result["xp"], *(result["stats"][s] for s in STAT_ORDER),
                list(MOODS.values()).index(result["mood"]), result["raw"]["current_streak"],
                sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"])]
-    return "%s/card#%s" % (server, "-".join(str(n) for n in numbers))
+    return "%s/card#%s" % (site(server), "-".join(str(n) for n in numbers))
 
 
 def read_invite(text, server):
@@ -1864,7 +1891,7 @@ def confirmed(args, prompt, retry):
 def join_terms(data, server, privacy=False):
     """What joining the board sends and means, shown before the first check-in. From Privacy mode, it says the yes ends it."""
     print(json.dumps(data, indent=1))
-    print("\nJoining sends exactly this to %s, with a random token made on this machine." % server)
+    print("\nJoining sends exactly this to %s with a random token made on this machine." % send_to(server))
     print("It also turns on the world ranking (your generated name, stage, class, level, Aura and witnessed XP on the public")
     print("lists) and a quiet check-in once a day when a Claude Code session starts. Opt out any time: --world off, --auto off,")
     print("or --leave, which turns Privacy mode on: your row is deleted and cclevel sends nothing after. Every creature with")
@@ -1916,7 +1943,7 @@ def invite_seat(args, cdir, server, ident, data, result, create, text, flag, ter
         print("cclevel: that is not an invite. A link ends in #, then 32 characters, 0-9 and a-f. Nothing sent.")
         return 1, None, ident
     if foreign:
-        print("Note: this invite names another address. cclevel uses only its code, on %s." % server)
+        print("Note: this invite names another address. cclevel uses only its code, on %s." % board_name(server))
     if not ident:
         # One yes covers both: joining the board and taking the seat.
         join_terms(data, server, privacy=opted_out(cdir))
@@ -2186,15 +2213,15 @@ def show_rank(server, ident, result):
             print("You are not on the world lists (turn them on with --world on). With your numbers you would be:")
         in_season = sane(season) and ident.get("month") == this_month() and board.get("month") == this_month() and season > 0
         mine = [("all", witnessed)] + ([("season", season)] if in_season else [])
-        public = {}
+        top_lists = {}
         if any((rival(lists[name], xp) or (0, None))[1] is not None for name, xp in mine):
             # Only to name the creature ahead: the public list, downloaded without the token, used only if built with the board file.
             status, top = call(server, "GET", "/top.json")
             if status == 200 and top.get("generated") == board.get("generated"):
-                public = top
+                top_lists = top
         print("  All-time: %s · {:,} XP the board witnessed · {:,} ranked".format(witnessed, lists["all"][0])
               % place(lists["all"], witnessed))
-        line = rival_line(lists["all"], witnessed, public.get("all"))
+        line = rival_line(lists["all"], witnessed, top_lists.get("all"))
         if line:
             print(line)
         if not in_season:
@@ -2202,7 +2229,7 @@ def show_rank(server, ident, result):
         else:
             print("  Season:   %s · {:,} XP this month · {:,} ranked".format(season, lists["season"][0])
                   % place(lists["season"], season))
-            line = rival_line(lists["season"], season, public.get("season"))
+            line = rival_line(lists["season"], season, top_lists.get("season"))
             if line:
                 print(line)
         if listed:
@@ -2238,7 +2265,7 @@ def world_command(args, cdir, server, ident):
     on = args.world == "on"
     name = creature_name(ident["token"])
     if on and not args.yes:
-        print("Turning the world ranking on lists %s on the public board at %s:" % (name, server))
+        print("Turning the world ranking on lists %s on %s:" % (name, board_name(server)))
         print("its generated name, stage, class, level, Aura, the XP the board witnessed and a sus mark if it applies.")
         print("A creature shows once it has check-ins on two different days; the lists update every hour.")
         print("--world off takes it off the lists at once.")
@@ -2508,7 +2535,7 @@ def privacy_off(args, cdir, ident, data, state):
         hook_board = resolve_server(argparse.Namespace(server=None), ident)
         print(json.dumps(data, indent=1))
         print("\nIn Default mode the session-start hook joins the board at the next Claude Code start and sends exactly this")
-        print("to %s, with a random token made on this machine. It also turns on the world ranking and a quiet" % hook_board)
+        print("to %s with a random token made on this machine. It also turns on the world ranking and a quiet" % send_to(hook_board))
         print("check-in once a day. --privacy on goes back at any time.")
     if not confirmed(args, "Turn Privacy mode off? [y/N] ", "Privacy mode stays on. Re-run with --yes to turn it off."):
         return 1
@@ -2532,8 +2559,12 @@ def board_command(args, cdir, result):
         return 0
     if args.card:
         print("Your card as a picture: open this link, then save or copy the image.")
-        print("  " + card_link(resolve_server(args, load_identity(cdir)), result))
+        server = resolve_server(args, load_identity(cdir))
+        print("  " + card_link(server, result))
         print("The numbers after # stay in your browser: the page sends nothing, and the picture shows no creature name.")
+        if public(server):
+            print("Opening the link is a visit to cclevel.com, which Cloudflare's sampled visit logs may keep with your IP address"
+                  " for at least 31 days.")
         return 0
     try:
         with identity_lock(cdir, 0):

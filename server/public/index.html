@@ -13,8 +13,8 @@
 <meta property="og:site_name" content="CC level">
 <meta property="og:title" content="CC level · Claude Code, gamified">
 <meta property="og:description" content="Claude Code, gamified. Your setup as a creature that levels up. Compare it on the world board or with friends. No account, nine numbers.">
-<meta property="og:url" content="https://go.cclevel.workers.dev/">
-<meta property="og:image" content="https://go.cclevel.workers.dev/og.png">
+<meta property="og:url" content="https://cclevel.com/">
+<meta property="og:image" content="https://cclevel.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="A pixel creature in Claude orange above the question: How big is your Claude Code?">
@@ -67,7 +67,7 @@
 <div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
 </div>
 <p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
-<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing, while the card and creature keep working.</p>
+<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com), while the card and creature keep working.</p>
 <p class="note">Already have it? Update: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. Pick Enable auto-update there too, and new features arrive on their own.</p>
 </section>
 
@@ -183,6 +183,10 @@
 <p>No. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you. Want nothing sent at all? Privacy mode: <code>/pet privacy on</code>.</p>
 </details>
 <details>
+<summary>Why does the plugin talk to go.cclevel.workers.dev?</summary>
+<p>That is the board's check-in address; the website is cclevel.com. Like every site on Cloudflare, cclevel.com keeps a sample of visits with IP addresses for at least 31 days, and we cannot switch that off. Check-ins go to the workers.dev address instead, where no such log exists, so they never sit in one. <a href="/how#fine-print">More in the fine print</a>.</p>
+</details>
+<details>
 <summary>How is my level worked out?</summary>
 <p>Each day you use Claude Code earns XP: 100 for showing up, plus points for tokens, for the skills, connectors and subagents you use, for edits, commits and pull requests, and for sessions that ran without you. A day earns at most 550, so one big token burn can't buy a level. Things you installed but never use barely count. Claude Code deletes its logs after 30 days by default, so older days are estimated from how many prompts you wrote, and the card tells you how many. <a href="/how#score">Full scoring rules</a>.</p>
 </details>
@@ -204,7 +208,7 @@
 </details>
 <details>
 <summary>What is Privacy mode?</summary>
-<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
+<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all; a share-card or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after <code>#</code>, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
 </details>
 <details>
 <summary>How do I opt out?</summary>
@@ -214,7 +218,7 @@
 
 <footer>
 <p><a href="/how">How it works</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> (FSL-1.1-MIT) · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a></p>
-<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: <!--email_off-->cclevel.grimace562@passmail.net<!--/email_off--></p>
 <p class="eof" aria-hidden="true">-- EOF --</p>
 </footer>
 </main>
