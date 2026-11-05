@@ -3690,8 +3690,8 @@ class Panel(unittest.TestCase):
                                  capture_output=True, text=True, timeout=60)
         self.assertEqual(refused.returncode, 1, "a card with missing fields is refused, not drawn")
         # Poke the pet: clicks sent through the panel's window at a point in the Creature card, each one read back from
-        # the creature's layer and its sound player ("hop" = it was poked). Quiet runs (--ui-sounds off) except four, which
-        # follow this Mac's own Sound setting: they really play when user interface sound effects are on.
+        # the creature's layer and its sound player ("hop" = it was poked). Most runs are quiet (--ui-sounds off); two follow
+        # this Mac's own Sound setting, and the two that test the 150 ms limit force sound effects on.
         clips = os.path.join(ROOT, "mac", "creatures")
         ui = {}
 
@@ -3727,14 +3727,12 @@ class Panel(unittest.TestCase):
                          "Reduce Motion: a boing without the hop")
         self.assertEqual(poke("Lil Guy", "250,60", "--ui-sounds", "off"), [{"what": "none", "anim": "-", "sound": "none"}],
                          "a click beside the creature is no poke")
-        fast = poke("Lil Guy", "88,88", "--times", "2", "--gap", "50")
-        self.assertEqual([(p["anim"], p["sound"]) for p in fast],
-                         [("poke", "played"), ("poke", "throttled")] if ui["on"] else [("poke", "off"), ("poke", "off")],
+        # The 150 ms limit, with sound effects on whatever this Mac is set to, so it is always tested.
+        fast = poke("Lil Guy", "88,88", "--times", "2", "--gap", "50", "--ui-sounds", "on")
+        self.assertEqual([(p["anim"], p["sound"]) for p in fast], [("poke", "played"), ("poke", "throttled")],
                          "a second poke 50 ms later hops again but boings once")
-        apart = poke("Lil Guy", "88,88", "--times", "2")   # 300 ms apart: past the 150 ms limit, so both boing
-        self.assertEqual([(p["anim"], p["sound"]) for p in apart],
-                         [("poke", "played")] * 2 if ui["on"] else [("poke", "off")] * 2,
-                         "pokes 300 ms apart both boing")
+        apart = poke("Lil Guy", "88,88", "--times", "2", "--ui-sounds", "on")   # 300 ms apart: past the limit
+        self.assertEqual([(p["anim"], p["sound"]) for p in apart], [("poke", "played")] * 2, "pokes 300 ms apart both boing")
         still = poke("Lil Guy", "88,88", "--reduce-motion", "--ui-sounds", "off")
         self.assertEqual((still[0]["what"], still[0]["anim"]), ("hop", "-"), "Reduce Motion: no hop")
         text_art = poke("Lil Guy", "88,88", "--ui-sounds", "off", with_clips=False)

@@ -27,8 +27,8 @@
 // With `--poke-at X,Y [--times N] [--gap MS]` it instead clicks the Creature card N times at that point (from the card's
 // top left; 88,88 is the creature's middle), --gap ms apart (300 if not given), through a window off screen, and prints
 // what each click did ("poke hop" = it was poked, whatever it did; "anim=blink" = the text creature's blink), read back
-// from the creature's layer and its sound player. `--reduce-motion` and
-// `--ui-sounds off` run it as if Reduce Motion were on or user interface sound effects off.
+// from the creature's layer and its sound player. `--reduce-motion` runs it as if Reduce Motion were on, and
+// `--ui-sounds on|off` as if user interface sound effects were on or off (without it, the Mac's own setting counts).
 import AppKit
 import AVFoundation
 
@@ -136,9 +136,9 @@ func peakDBFS(_ wav: Data) -> Double {
     return top == 0 ? -.infinity : 20 * log10(Double(top) / 32767)
 }
 
-/// Set by --reduce-motion and --ui-sounds off in a --snapshot run, as if this Mac were set so (for tests).
+/// Set by --reduce-motion and --ui-sounds on|off in a --snapshot run, as if this Mac were set so (for tests).
 var testReduceMotion = false
-var testUISoundsOff = false
+var testUISounds: Bool?
 
 /// Whether Reduce Motion is on: the loop shows its still, and a poke boings without moving.
 func reduceMotion() -> Bool { testReduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -146,7 +146,7 @@ func reduceMotion() -> Bool { testReduceMotion || NSWorkspace.shared.accessibili
 /// Whether macOS plays user interface sound effects (System Settings → Sound): when not, a poke hops without a boing.
 /// Read only. A Mac where it was never switched off has no value saved, which means on.
 func uiSoundsOn() -> Bool {
-    if testUISoundsOff { return false }
+    if let testUISounds { return testUISounds }
     let value = UserDefaults(suiteName: "com.apple.systemsound")?.object(forKey: "com.apple.sound.uiaudio.enabled")
     return (value as? NSNumber)?.boolValue ?? true
 }
@@ -803,8 +803,9 @@ final class PanelView: NSView {
                 boing = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: card.stage, player: $0, wav: wav) }
                 boing?.player.prepareToPlay()
             }
+            hz = voice
+            sound = "failed"   // unless the player below was made
             if let boing {
-                hz = voice
                 seconds = boing.player.duration
                 peak = peakDBFS(boing.wav)
                 if !uiSoundsOn() {
@@ -1746,7 +1747,7 @@ if let out = option("--snapshot") {
         exit(1)
     }
     testReduceMotion = CommandLine.arguments.contains("--reduce-motion")
-    testUISoundsOff = option("--ui-sounds") == "off"
+    testUISounds = ["on": true, "off": false][option("--ui-sounds") ?? ""]
     let view = PageView()
     if let text = option("--height"), let height = Double(text) {
         view.fit(height: CGFloat(height))   // as on a screen with less room
