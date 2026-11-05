@@ -2,12 +2,14 @@
 // stats; right-click (or control-click) for Refresh and Quit.
 //
 // It runs the offline card (`cclevel.py --json --no-save`, which writes nothing) when its last result is more than an hour
-// old, keeps that result in card.json beside itself, and makes no network call. `cclevel.py --panel on --yes` builds it on
+// old or older than the scanner copy beside it (so a rebuild after a plugin update scores again at once), keeps that result
+// in card.json beside itself, and makes no network call. `cclevel.py --panel on --yes` builds it on
 // this Mac with Apple's swiftc and starts it at login; `cclevel.py --panel off` removes it.
 //
-// An overview of rounded cards: the creature, Level and Today, the six stats and a 14-day Trend, then two buttons that
-// open Fix next (the card's top Needs, how to fix each, and its docs page) and Learn (the training path, each stat's next
-// lesson, and the tip of the day), each with a way back. Links open Claude Code's docs pages only.
+// An overview of rounded cards: the creature, Level and Today, the six stats and a 14-day Trend, then Friends (with a group
+// link saved, Copy invite link beside it, which copies the link at once), then two buttons that open Fix next (the card's
+// top Needs, how to fix each, and its docs page) and Learn (the training path, each stat's next lesson, and the tip of the
+// day), each with a way back. Links open Claude Code's docs pages only.
 //
 // The Creature card plays the creature's rendered loop while the panel is open (creatures/<stage>_<class>.mp4 beside the
 // panel for its class look, else creatures/<stage>.mp4), a still of its first frame otherwise or with Reduce Motion on, and
@@ -23,6 +25,20 @@ import AVFoundation
 let statOrder = ["grind", "appetite", "arsenal", "brains", "autonomy", "craft"]
 let staleAfter: TimeInterval = 60 * 60
 let scanTimeout: TimeInterval = 120
+
+/// Whether the saved card needs a new score: none saved, saved over an hour ago, or saved before the scanner beside the
+/// panel (--panel on just put in a newer one, after a plugin update, so the card may lack what the new panel shows). A
+/// scanner time in the future (the clock set back) is not counted, or every new card would look stale until it caught up.
+func cardStale(saved: Date?, scanner: Date?, now: Date = Date()) -> Bool {
+    guard let saved else { return true }
+    if let scanner, scanner > saved, scanner <= now { return true }
+    return now.timeIntervalSince(saved) > staleAfter
+}
+
+/// When a file was last written, or nil when it is not there.
+func modified(_ url: URL) -> Date? {
+    (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+}
 let orange = NSColor(srgbRed: 0xd9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
 let dim = NSColor(white: 0.55, alpha: 1)
 let track = NSColor(white: 0.22, alpha: 1)
@@ -449,8 +465,9 @@ func fillCard(_ rect: NSRect) {
     NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner).fill()
 }
 
-/// A card's title row: a small orange symbol, the title, and an optional note on the right.
-func heading(_ title: String, _ symbol: String, right: String? = nil, width: CGFloat, top: CGFloat = inset) {
+/// A card's title row: a small orange symbol, the title, and an optional note on the right. Returns where the title ends.
+@discardableResult
+func heading(_ title: String, _ symbol: String, right: String? = nil, width: CGFloat, top: CGFloat = inset) -> CGFloat {
     var x = inset
     let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         .applying(NSImage.SymbolConfiguration(paletteColors: [orange]))
@@ -466,6 +483,7 @@ func heading(_ title: String, _ symbol: String, right: String? = nil, width: CGF
         let w = min(textWidth(right, note), width - x - textWidth(title, font) - 2 * inset)
         put(right, note, dim, at: NSPoint(x: width - inset - w, y: top + 1.5), width: w)
     }
+    return x + textWidth(title, font)
 }
 
 /// The Creature card: the creature (its rendered loop, or the card's own art), who it is, and how it feels.
@@ -651,9 +669,14 @@ final class DocsButton: NSButton {
     var url: URL?
 }
 
-/// A card at the bottom of the overview that opens one of its lists: Friends (full width), Fix next or Learn.
+/// A card at the bottom of the overview that opens one of its lists (Friends, Fix next or Learn, each with a "›"), or
+/// does one thing at once without it (Copy invite link).
 final class TileButton: NSButton {
-    private let name: String, symbol: String, note: String
+    var name: String { didSet { needsDisplay = true } }
+    var symbol: String { didSet { needsDisplay = true } }
+    private let note: String
+    /// The "›" on the right: on for a card that opens a list, off for one that acts at once.
+    var opensList = true { didSet { needsDisplay = true } }
     /// Small creature faces drawn left of the note (the Friends button): each a still or nil, with its stage.
     var faces: [(NSImage?, String)] = [] { didSet { needsDisplay = true } }
     private var hovering = false { didSet { needsDisplay = true } }
@@ -690,12 +713,15 @@ final class TileButton: NSButton {
         // A little lighter while the pointer is on it, lighter still while it is pressed.
         NSColor(white: isHighlighted ? 0.18 : hovering ? 0.14 : 0.1, alpha: 1).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: corner, yRadius: corner).fill()
-        let right = note.isEmpty ? "›" : "\(note)  ›"
-        heading(name, symbol, right: right, width: bounds.width, top: (bounds.height - 17) / 2)
+        let right = opensList ? (note.isEmpty ? "›" : "\(note)  ›") : note
+        let titleEnd = heading(name, symbol, right: right.isEmpty ? nil : right, width: bounds.width, top: (bounds.height - 17) / 2)
         guard !faces.isEmpty else { return }
+        // As many faces as fit between the title and the note: all five full width, fewer on a half-width card.
         let side: CGFloat = 24, step: CGFloat = 28
-        var x = bounds.width - inset - textWidth(right, .systemFont(ofSize: 11.5)) - 10 - CGFloat(faces.count) * step + (step - side)
-        for (image, stage) in faces {
+        let end = bounds.width - inset - textWidth(right, .systemFont(ofSize: 11.5)) - 10
+        let shown = min(faces.count, max(0, Int((end - titleEnd - 8 + (step - side)) / step)))
+        var x = end - CGFloat(shown) * step + (step - side)
+        for (image, stage) in faces.prefix(shown) {
             drawFace(image, in: NSRect(x: x, y: (bounds.height - side) / 2, width: side, height: side), stage: stage)
             x += step
         }
@@ -928,7 +954,13 @@ final class PageView: NSView {
                     place(view, x: edge, y: y, width: cardWidth, height: height)
                     y += height + gap
                 }
-                place(friendsButton(c), x: edge, y: y, width: cardWidth, height: buttonHeight)
+                // With a group link saved here, Copy invite link sits beside Friends, one click from the overview.
+                if let invite = friendsNow(c)?.invite {
+                    place(friendsButton(c), x: edge, y: y, width: half, height: buttonHeight)
+                    place(inviteButton(invite), x: edge + half + gap, y: y, width: half, height: buttonHeight)
+                } else {
+                    place(friendsButton(c), x: edge, y: y, width: cardWidth, height: buttonHeight)
+                }
                 y += buttonHeight + gap
                 place(fixButton(c), x: edge, y: y, width: half, height: buttonHeight)
                 place(learnButton(c), x: edge + half + gap, y: y, width: half, height: buttonHeight)
@@ -1144,6 +1176,34 @@ final class PageView: NSView {
         return button
     }
 
+    /// The overview's Copy invite link card, beside Friends: copies the link at once, as the invite card's button does.
+    private func inviteButton(_ invite: Invite) -> TileButton {
+        let button = TileButton("Copy invite link", "link", note: "", label: inviteTileLabel(invite),
+                                target: self, action: #selector(copyInviteTile(_:)))
+        button.opensList = false
+        return button
+    }
+
+    private func inviteTileLabel(_ invite: Invite) -> String {
+        "Copy invite link: \(invite.name). Anyone with the link can join, up to \(invite.max)"
+    }
+
+    @objc private func copyInviteTile(_ sender: TileButton) {
+        guard let c = card, let invite = c.invite, copyInviteLink(c, privacyOn: privacyOn) else { return }
+        let label = inviteTileLabel(invite)
+        sender.tag += 1   // only the last click's timer puts the tile back, 2 s after that click
+        let click = sender.tag
+        sender.name = "Copied"
+        sender.symbol = "checkmark"
+        sender.setAccessibilityLabel("Invite link copied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak sender] in
+            guard let sender, sender.tag == click else { return }
+            sender.name = "Copy invite link"
+            sender.symbol = "link"
+            sender.setAccessibilityLabel(label)
+        }
+    }
+
     /// The Friends page: the invite card (when a group code is saved here), then the group's creatures.
     private func friendsCards(_ c: Card) -> [(NSView, CGFloat)] {
         guard let now = friendsNow(c) else { return [waiting("Friends", "person.2.fill")] }
@@ -1286,10 +1346,6 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         Timer.scheduledTimer(withTimeInterval: 10 * 60, repeats: true) { [weak self] _ in self?.refreshIfStale() }
     }
 
-    func modified(_ url: URL) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-    }
-
     func showTitle(_ card: Card?) {
         guard let button = item.button else { return }
         let title = card.map { "\($0.face) \($0.level)" } ?? "( ? )"
@@ -1305,9 +1361,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func refreshIfStale() {
-        // No creature to show (no card yet, or one that could not be read) counts as stale too.
-        let age = modified(cache).map { Date().timeIntervalSince($0) } ?? .infinity
-        if age > staleAfter || root.card == nil { refresh() }
+        if root.card == nil || cardStale(saved: modified(cache), scanner: modified(URL(fileURLWithPath: scanner))) { refresh() }
     }
 
     @objc func refresh() {
@@ -1414,6 +1468,16 @@ if CommandLine.arguments.contains("--copy-invite") {
         exit(1)
     }
     exit(0)
+}
+
+// Whether the running panel would score again now, from the same files and the same rule: exit 0 when the card is stale
+// (none, over an hour old, or older than the scanner beside it), 1 when it is current. For tests; prints nothing.
+if CommandLine.arguments.contains("--card-stale") {
+    guard let cache = option("--cache"), let scanner = option("--scanner") else {
+        FileHandle.standardError.write("cclevel-panel: --card-stale needs --cache CARD.json and --scanner cclevel.py\n".data(using: .utf8)!)
+        exit(2)
+    }
+    exit(cardStale(saved: modified(URL(fileURLWithPath: cache)), scanner: modified(URL(fileURLWithPath: scanner))) ? 0 : 1)
 }
 
 if let out = option("--snapshot") {
