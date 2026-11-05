@@ -25,6 +25,8 @@ import AVFoundation
 let statOrder = ["grind", "appetite", "arsenal", "brains", "autonomy", "craft"]
 let staleAfter: TimeInterval = 60 * 60
 let scanTimeout: TimeInterval = 120
+/// The menu bar item's saved name: macOS keeps its position under it.
+let statusItemName = "com.cclevel.panel"
 
 /// Whether the saved card needs a new score: none saved, saved over an hour ago, or saved before the scanner beside the
 /// panel (--panel on just put in a newer one, after a plugin update, so the card may lack what the new panel shows) or
@@ -1318,7 +1320,20 @@ final class PageView: NSView {
 /// The menu bar item, the panel it opens, and the hourly offline refresh.
 final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let python: String, scanner: String, claudeDir: String, cache: URL
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    /// The creature's menu bar item. A fixed name lets macOS keep where the user ⌘-drags it, across restarts and
+    /// updates (in this program's own preferences, cclevel-panel; --panel off removes them). The first time, with no
+    /// position saved, it is put at the right end of the menu bar items, next to the system ones, instead of macOS's
+    /// default for a new item: the far left, beside the notch, where a notch app or a crowded menu bar hides it. That
+    /// first position is saved like a drag (a registered default would pin it there and override every later drag).
+    lazy var item: NSStatusItem = {
+        let key = "NSStatusItem Preferred Position \(statusItemName)"
+        if UserDefaults.standard.object(forKey: key) == nil {
+            UserDefaults.standard.set(1.0, forKey: key)
+        }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = statusItemName
+        return item
+    }()
     let popover = NSPopover()
     let root = PageView()
     var isScanning = false
