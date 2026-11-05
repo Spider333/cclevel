@@ -13,8 +13,8 @@
 <meta property="og:site_name" content="CC level">
 <meta property="og:title" content="How it works · CC level">
 <meta property="og:description" content="Install cclevel, meet your creature, join the board and bring friends. What it sends, how it scores, and the fine print.">
-<meta property="og:url" content="https://go.cclevel.workers.dev/how">
-<meta property="og:image" content="https://go.cclevel.workers.dev/og.png">
+<meta property="og:url" content="https://cclevel.com/how">
+<meta property="og:image" content="https://cclevel.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="A pixel creature in Claude orange above the question: How big is your Claude Code?">
@@ -86,7 +86,7 @@
 <span class="step-num" aria-hidden="true">03</span>
 <h2 id="join-title">You're on the board</h2>
 <p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. You show on the lists after check-ins on two different days.</p>
-<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
+<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. Opening a share-card or invite link still loads its page from cclevel.com, so that visit (not the numbers after <code>#</code>) may be in Cloudflare's sampled visit logs. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
 <p>The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
 </section>
 
@@ -122,7 +122,7 @@
 <tr><td><code>/pet duel</code></td><td>Challenge one friend: seven days, most XP wins the ♛. <code>/pet duel &lt;link&gt;</code> accepts one</td></tr>
 <tr><td><code>/pet card</code></td><td>Your card as a picture to save and post; drawn in your browser, sends nothing</td></tr>
 <tr><td><code>/pet wrapped</code></td><td>Your year in review from your own ledger: XP, best day, longest streak, level gained, how your stats moved; sends nothing</td></tr>
-<tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after (<code>/pet leave</code> is the same)</td></tr>
+<tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after; a share-card or invite link you open still loads its page from cclevel.com (<code>/pet leave</code> is the same)</td></tr>
 <tr><td><code>/pet privacy off</code></td><td>Back to Default mode: shows what it sends and asks first; the board joins at your next Claude Code start</td></tr>
 </tbody>
 </table>
@@ -212,7 +212,7 @@
 </details>
 <details>
 <summary>Privacy</summary>
-<p>The board holds no account, e-mail address or IP address. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> takes it off the lists at once, and Privacy mode (<code>--privacy on</code>, or <code>--leave</code>) deletes the row and stops the plugin from joining or checking in again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
+<p>The board holds no account, e-mail address or IP address. The website, cclevel.com, is a domain on Cloudflare, which keeps a sample of visits with IP addresses for at least 31 days; we cannot switch that off. Check-ins never go through it: they go to the board's own address, https://go.cclevel.workers.dev, which keeps no such logs. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> takes it off the lists at once, and Privacy mode (<code>--privacy on</code>, or <code>--leave</code>) deletes the row and stops the plugin from joining or checking in again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
 </details>
 </section>
 
@@ -223,7 +223,7 @@
 
 <footer>
 <p><a href="/">The board</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> (FSL-1.1-MIT) · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a></p>
-<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: cclevel.grimace562@passmail.net</p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: <!--email_off-->cclevel.grimace562@passmail.net<!--/email_off--></p>
 <p class="eof" aria-hidden="true">-- EOF --</p>
 </footer>
 </main>

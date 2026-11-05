@@ -21,7 +21,8 @@ You need a Cloudflare account and Node.js.
 ```
 cd server
 npm install
-npx wrangler d1 create cclevel-board          # copy the database_id it prints into wrangler.jsonc
+npx wrangler d1 create cclevel-board          # copy the database_id it prints into wrangler.jsonc,
+                                              # and delete its "routes" block (the public board's website)
 npx wrangler d1 execute cclevel-board --remote --file=schema.sql
 npx wrangler deploy
 ```
@@ -32,12 +33,12 @@ Optional, for the GitHub badge: a GitHub token with **no** permissions, stored a
 npx wrangler secret put GITHUB_TOKEN
 ```
 
-Then point the scanner at your board: `--server https://<your-worker>.<your-subdomain>.workers.dev`, or set `CCLEVEL_SERVER`. If you run a public board for others, edit the operator and contact in your copy of `PRIVACY.md` and on the page footer.
+Then point the scanner at your board: `--server https://<your-worker>.<your-subdomain>.workers.dev`, or set `CCLEVEL_SERVER`. If you run a public board for others, edit the operator and contact in your copy of `PRIVACY.md` and on the page footer, and edit or remove what only fits the public board: the FAQ entry "Why does the plugin talk to go.cclevel.workers.dev?" (`server/public/index.html`), the cclevel.com paragraph in the fine print of `server/public/how.html`, and the `og:url` / `og:image` tags in the five pages.
 
 Keep these settings as they are in `wrangler.jsonc`:
 
 - `observability.enabled: false`. The Worker keeps no request logs.
-- `workers_dev: true`, with no custom route. A custom domain adds Cloudflare's sampled request logs with IP addresses. If you add one, say so in your privacy notice.
+- `workers_dev: true`, and delete the `routes` block (the public board's website). A custom domain adds Cloudflare's sampled request logs with IP addresses. If you add one, say so in your privacy notice. (The public board serves its website on cclevel.com through the `routes` block you delete; its check-ins stay on `workers.dev`, and the Worker refuses `/api/*` on that one domain. If you forget to delete the block, the deploy fails, because Cloudflare refuses a custom domain on a zone you do not own.)
 - The three rate limiters (`NEW_ROWS`, `PER_CREATURE`, `GITHUB_CALLS`). The Worker refuses those requests if a binding is missing.
 
 ## Run it locally
@@ -47,8 +48,10 @@ cd server
 npm install
 npm test
 npx wrangler d1 execute cclevel-board --local --file=schema.sql
-npx wrangler dev --test-scheduled
+npx wrangler dev --test-scheduled --local-upstream localhost
 ```
+
+`--local-upstream localhost` matters while the `routes` block is still in `wrangler.jsonc` (contributors working on the public board's copy): without it, `wrangler dev` hands every local request to the Worker as `cclevel.com`, and the Worker refuses `/api/*` there.
 
 The public files are rebuilt by a timer (every hour) that does not fire in local development. Open `http://localhost:8787/cdn-cgi/handler/scheduled` to rebuild them by hand.
 

@@ -6,7 +6,7 @@
 	"author": { "name": "cclevel contributors" },
 	"homepage": "https://cclevel.com",
 	"repository": "https://github.com/Spider333/cclevel",
-	"documentationUrl": "https://go.cclevel.workers.dev/how",
+	"documentationUrl": "https://cclevel.com/how",
 	"privacyPolicyUrl": "https://github.com/Spider333/cclevel/blob/main/PRIVACY.md",
 	"supportUrl": "https://github.com/Spider333/cclevel/issues",
 	"license": "FSL-1.1-MIT",

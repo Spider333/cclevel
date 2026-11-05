@@ -335,7 +335,9 @@ class Scanner(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(done.exception.code, 0)
         self.assertEqual(events, [])
-        self.assertIn("  %s/card#1-" % cclevel.DEFAULT_SERVER, out.getvalue())
+        self.assertIn("  %s/card#1-" % cclevel.PUBLIC_SITE, out.getvalue())   # the public board's card opens on its website
+        self.assertIn("Opening the link is a visit to cclevel.com, which Cloudflare's sampled visit logs may keep with your IP address",
+                      out.getvalue())
 
     def test_rules_match_the_server(self):
         with open(SERVER_SOURCE, encoding="utf-8") as f:
@@ -2279,6 +2281,61 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(cclevel.read_invite("%s/join#%s" % (old, code), new), (code, False))
         self.assertEqual(cclevel.read_invite("%s/join#%s" % (new, code), new), (code, False))
         self.assertEqual(cclevel.read_invite("%s/join#%s" % (old, code), self.url), (code, True))
+
+    def test_the_website_is_the_same_board_but_never_the_check_in_address(self):
+        site, api = cclevel.PUBLIC_SITE, cclevel.DEFAULT_SERVER
+        self.assertEqual(site, "https://cclevel.com")
+        self.assertEqual(api, "https://go.cclevel.workers.dev")
+        args = type("Args", (), {"server": None})()
+        for asked in (site, site + "/", "https://www.cclevel.com", "HTTPS://CCLEVEL.COM"):
+            args.server = asked
+            self.assertEqual(cclevel.resolve_server(args, {}), api, asked)   # check-ins still go to workers.dev
+            self.assertEqual(cclevel.resolve_server(args, {"server": api}), api, asked)
+        code = "0123456789abcdef0123456789abcdef"
+        for host in ("https://cclevel.com", "https://www.cclevel.com"):
+            self.assertEqual(cclevel.read_invite("%s/join#%s" % (host, code), api), (code, False))
+            self.assertEqual(cclevel.read_invite("%s/duel#%s" % (host, code), api), (code, False))
+            self.assertEqual(cclevel.read_invite("%s/join#%s" % (host, code), self.url), (code, True))
+
+    def test_every_hand_typed_form_of_the_public_board_means_the_check_in_address(self):
+        api = cclevel.DEFAULT_SERVER
+        for form in ("https://cclevel.com.", "https://cclevel.com:443", "https://CCLEVEL.COM./", "https://www.cclevel.com.",
+                     "HTTPS://GO.CCLEVEL.WORKERS.DEV", "https://go.cclevel.workers.dev.", "https://go.cclevel.workers.dev:443/"):
+            self.assertEqual(cclevel.moved(form), api, form)
+            self.assertTrue(cclevel.public(form), form)
+        for other in ("https://my.example", "http://localhost:8787", "https://cclevel.com.evil.example", "https://evilcclevel.com"):
+            self.assertEqual(cclevel.moved(other), other, other)
+            self.assertFalse(cclevel.public(other), other)
+        args = type("Args", (), {"server": "HTTPS://GO.CCLEVEL.WORKERS.DEV"})()
+        self.assertEqual(cclevel.resolve_server(args, {"server": api}), api)   # no "lives on" exit for the same board
+        args.server = "https://cclevel.com."
+        self.assertEqual(cclevel.resolve_server(args, {}), api)
+        self.assertEqual(cclevel.send_to("https://my.example/"), "https://my.example,")
+        self.assertIn("(cclevel.com) at its check-in address https://go.cclevel.workers.dev", cclevel.send_to(api))
+
+    def test_links_for_the_public_board_open_on_its_website_and_a_self_hosted_board_keeps_its_own(self):
+        code = "0123456789abcdef0123456789abcdef"
+        api = cclevel.DEFAULT_SERVER
+        self.assertEqual(cclevel.invite_link(api, code), "https://cclevel.com/join#" + code)
+        self.assertEqual(cclevel.duel_link(api, code), "https://cclevel.com/duel#" + code)
+        self.assertEqual(cclevel.invite_link(api + "/", code), "https://cclevel.com/join#" + code)
+        self.assertEqual(cclevel.invite_link(api.upper(), code), "https://cclevel.com/join#" + code)   # a hand-typed --server
+        self.assertEqual(cclevel.invite_link("https://my.example", code), "https://my.example/join#" + code)
+        self.assertEqual(cclevel.duel_link("https://my.example/", code), "https://my.example/duel#" + code)
+        self.assertEqual(cclevel.board_name(api), "the CC level board (cclevel.com)")
+        self.assertEqual(cclevel.board_name("https://my.example/"), "the board at https://my.example")
+
+    def test_the_join_terms_name_the_website_and_the_exact_check_in_address(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cclevel.join_terms({"xp": 1}, cclevel.DEFAULT_SERVER)
+        text = buf.getvalue()
+        self.assertIn("the CC level board (cclevel.com) at its check-in address https://go.cclevel.workers.dev", text)
+        self.assertIn("which stores no IP addresses, with a random token", text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cclevel.join_terms({"xp": 1}, "https://my.example")
+        self.assertIn("Joining sends exactly this to https://my.example, with a random token", buf.getvalue())
 
     def test_joining_from_an_invite_joins_the_board_too_with_one_yes(self):
         link = "https://cclevel.test/join#" + "ab" * 16
