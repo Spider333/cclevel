@@ -2891,7 +2891,7 @@ class Panel(unittest.TestCase):
         # buttons that open Fix next and Learn.
         drawn = draw(card)
         self.assertEqual(drawn.returncode, 0, drawn.stderr)
-        self.assertEqual(size(), (720, 1296))
+        self.assertEqual(size(), (720, 1392))
         labels = drawn.stdout.splitlines()
         self.assertEqual(len(labels), 7, labels)
         for label, start in zip(labels, ("Creature: ", "Level ", "Today: ", "Stats: ", "Trend: ", "Fix next: ", "Learn: ")):
@@ -2902,7 +2902,7 @@ class Panel(unittest.TestCase):
             overview = f.read()
         drawn = draw(card, "--full")
         self.assertEqual(drawn.returncode, 0, drawn.stderr)
-        self.assertEqual(size(), (720, 1296))
+        self.assertEqual(size(), (720, 1392))
         self.assertEqual(drawn.stdout.splitlines(), labels)
         with open(png, "rb") as f:
             self.assertEqual(f.read(), overview)
@@ -2910,7 +2910,7 @@ class Panel(unittest.TestCase):
         for page, start in (("fix", "Fix next: "), ("learn", "Learn: ")):
             drawn = draw(card, "--page", page)
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
-            self.assertEqual(size(), (720, 1296))
+            self.assertEqual(size(), (720, 1392))
             shown = drawn.stdout.splitlines()
             self.assertEqual(len(shown), 2, shown)
             self.assertEqual(shown[0], "Back to the overview")
@@ -3028,18 +3028,18 @@ class Panel(unittest.TestCase):
         for page in ("fix", "learn"):
             drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page)
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
-            self.assertEqual(size(), (720, 1296), "the panel stays its own size")
+            self.assertEqual(size(), (720, 1392), "the panel stays its own size")
             drawn = draw(os.path.join(self.tmp.name, "long.json"), "--page", page, "--full")
             self.assertEqual(drawn.returncode, 0, drawn.stderr)
             width, height = size()
             self.assertTrue(680 <= width < 720, width)   # the page itself: the panel's width less its scroller
-            self.assertGreater(height, 1296, page)
+            self.assertGreater(height, 1392, page)
             bottom = png_rows(png)[-60:]
             self.assertTrue(any(any(row[i] > 40 for i in range(0, len(row), 4)) for row in bottom),
                             "the footer line at the bottom of the %s page is drawn" % page)
         # The overview of the same long card still fits the panel: its lists are a click away, not a scroll.
         drawn = draw(os.path.join(self.tmp.name, "long.json"), "--full")
-        self.assertEqual((drawn.returncode, size()), (0, (720, 1296)), drawn.stderr)
+        self.assertEqual((drawn.returncode, size()), (0, (720, 1392)), drawn.stderr)
         write(self.tmp.name, "bad.json", {"stage": "Gigachad"})
         refused = subprocess.run([binary, "--snapshot", png, "--card", os.path.join(self.tmp.name, "bad.json")],
                                  capture_output=True, text=True, timeout=60)

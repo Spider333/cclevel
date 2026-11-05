@@ -27,7 +27,7 @@ let dim = NSColor(white: 0.55, alpha: 1)
 let track = NSColor(white: 0.22, alpha: 1)
 let cardFill = NSColor(white: 0.1, alpha: 1)
 let panelWidth: CGFloat = 360
-let panelHeight: CGFloat = 648
+let panelHeight: CGFloat = 696
 /// The scanner's DAY_CAP: the most XP one day can bank (a test keeps the two the same).
 let dayCap = 550
 let trendDays = 14
@@ -36,10 +36,10 @@ let inset: CGFloat = 14     // card edge to what is in it
 let gap: CGFloat = 10       // between cards
 let corner: CGFloat = 16
 let headerHeight: CGFloat = 40
-let creatureHeight: CGFloat = 128
+let creatureHeight: CGFloat = 176
 let tileHeight: CGFloat = 104
 let buttonHeight: CGFloat = 48
-let creatureBox = NSRect(x: 12, y: 12, width: 104, height: 104)
+let creatureBox = NSRect(x: 12, y: 12, width: 152, height: 152)
 let creatureCorner: CGFloat = 12
 /// The rendered loop for each stage, beside the panel in creatures/<name>.mp4 (copied there by --panel on).
 let clipNames = ["Egg": "egg", "Hatchling": "hatchling", "Lil Guy": "lil_guy", "Big Guy": "big_guy",
@@ -399,33 +399,43 @@ final class PanelView: NSView {
         let side = creatureBox.maxX + 14
         let width = bounds.width - side - inset
         guard let c = card else {
-            put("( ? )", mono(20, .medium), orange, at: NSPoint(x: inset + 16, y: 48))
-            put("No creature yet.", .systemFont(ofSize: 15, weight: .semibold), .white, at: NSPoint(x: side, y: 40), width: width)
-            put("Run /pet in Claude Code to hatch it.", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 64), width: width)
+            let unknown = mono(26, .medium)
+            let w = ("( ? )" as NSString).size(withAttributes: [.font: unknown]).width
+            put("( ? )", unknown, orange, at: NSPoint(x: creatureBox.midX - w / 2, y: creatureBox.midY - 16))
+            put("No creature yet.", .systemFont(ofSize: 14, weight: .semibold), .white, at: NSPoint(x: side, y: 60), width: width)
+            // Two lines: the hint is wider than the column beside the bigger creature box.
+            put("Run /pet in Claude Code", .systemFont(ofSize: 11), dim, at: NSPoint(x: side, y: 84), width: width)
+            put("to hatch it.", .systemFont(ofSize: 11), dim, at: NSPoint(x: side, y: 98), width: width)
             return
         }
         // The creature: its rendered loop's first frame (the loop plays over it while the panel is open), or
-        // the card's own art, which blinks now and then.
+        // the card's own art, which blinks now and then, centred in the creature's box.
         if let still {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(roundedRect: creatureBox, xRadius: creatureCorner, yRadius: creatureCorner).addClip()
             still.draw(in: creatureBox)
             NSGraphicsContext.restoreGraphicsState()
         } else {
-            var y: CGFloat = 22
+            let art = mono(19, .semibold)
+            let step: CGFloat = 26
+            let w = c.art.map { ($0 as NSString).size(withAttributes: [.font: art]).width }.max() ?? 0
+            var y = creatureBox.midY - CGFloat(c.art.count) * step / 2
             for line in c.art {
                 let shown = isBlinking ? line.replacingOccurrences(of: "o", with: "-").replacingOccurrences(of: "@", with: "-") : line
-                put(shown, mono(15, .semibold), orange, at: NSPoint(x: inset + 4, y: y))
-                y += 20
+                put(shown, art, orange, at: NSPoint(x: creatureBox.midX - w / 2, y: y))
+                y += step
             }
         }
-        put(c.stage, .systemFont(ofSize: 18, weight: .semibold), .white, at: NSPoint(x: side, y: 20), width: width)
+        // One short fact a line, so every mood, class and Brains title fits the column beside the creature,
+        // even when the overview scrolls.
+        put(c.stage, .systemFont(ofSize: 16, weight: .semibold), .white, at: NSPoint(x: side, y: 43), width: width)
         if c.cls != "Unhatched" {
-            put(c.cls, .systemFont(ofSize: 13, weight: .medium), orange, at: NSPoint(x: side, y: 44), width: width)
+            put(c.cls, .systemFont(ofSize: 12, weight: .medium), orange, at: NSPoint(x: side, y: 65), width: width)
         }
-        put("\(c.mood) · Health \(c.health)", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 70), width: width)
+        put(c.mood, .systemFont(ofSize: 11), dim, at: NSPoint(x: side, y: 87), width: width)
+        put("Health \(c.health)", .systemFont(ofSize: 11), dim, at: NSPoint(x: side, y: 103), width: width)
         if !c.brain.isEmpty {
-            put("Brains: \(c.brain)", .systemFont(ofSize: 12), dim, at: NSPoint(x: side, y: 88), width: width)
+            put("Brains: \(c.brain)", .systemFont(ofSize: 11), dim, at: NSPoint(x: side, y: 119), width: width)
         }
     }
 }
