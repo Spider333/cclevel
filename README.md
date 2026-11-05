@@ -198,8 +198,8 @@ The board is a small Cloudflare Worker with a D1 database and static pages, in `
 
 ## FAQ
 
-**Is it anonymous?**
-Almost. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you.
+**Does it know who I am?**
+No. It's pseudonymous: no account, no name, no e-mail, and the board never stores your IP address. Your creature is a made-up name tied to a random key on your machine. The catch: if you post your card or creature name publicly, or turn on the GitHub badge, people can match it to you. Want nothing sent at all? Privacy mode: `/pet privacy on`.
 
 **Can people cheat?**
 On their own card, yes. It is self-reported, for fun, and not a credential. The board limits what cheating buys: it ranks only XP it watched you earn, at most 550 a day, and marks suspicious patterns as sus.
