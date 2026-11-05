@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import plistlib
 import re
@@ -800,6 +801,129 @@ class Framework(unittest.TestCase):
         self.score(save=True)
         self.assertEqual(sorted(self.ledger()["weeks"]), ["2025-W10", week])
         self.assertEqual(self.ledger()["weeks"]["2025-W10"], good)
+
+    STORY_LEDGER = {
+        "version": 4, "first_seen": "2025-03-10",
+        "days": {"2024-12-31": 400, "2025-01-01": 100, "2025-01-02": 200, "2025-01-03": 300, "2025-03-10": 550,
+                 "2025-03-11": 550, "2025-12-31": 150},
+        "estimated": ["2025-01-01", "2024-12-31"],
+        "badges": {"first_hook": "2024-12-31", "first_skill": "2025-03-10", "streak_7": "2026-01-05"},
+        "weeks": {"2025-W11": {"xp": 1000, "stats": [10, 20, 30, 40, 50, 60], "health": 80},
+                  "2025-W40": {"xp": 2600, "stats": [10, 20, 30, 40, 80, 30], "health": 90}},
+    }
+    STORY_RESULT = {"story": {"met": "2024-12-01", "hatched": "2025-03-10", "together_days": 689},
+                    "raw": {"active_days": 7}, "class": "Shipper"}
+
+    def test_our_story_is_worked_out_from_the_ledger_alone(self):
+        write(self.dir, "cclevel/ledger.json", self.STORY_LEDGER)
+        today = date(2026, 10, 21)
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        s = cclevel.story(self.dir, self.STORY_RESULT, today)
+        self.assertEqual(events, [])
+        self.assertEqual((s["version"], s["met"], s["hatched"], s["together_days"], s["active_days"], s["estimated_days"]),
+                         (1, "2024-12-01", "2025-03-10", 689, 7, 2))
+        self.assertEqual(s["before_hatch"], {"days": 4, "xp": 1000, "estimated_days": 2, "level": 5, "stage": "Hatchling"})
+        # Every level and stage is dated on the first day an independent sum of days and badges reaches it.
+        led = self.STORY_LEDGER
+        def level_on(day):
+            xp = sum(x for d, x in led["days"].items() if d <= day)
+            xp += sum(cclevel.BADGES[b] for b, w in led["badges"].items() if w <= day)
+            return max(1, math.isqrt(xp // cclevel.LEVEL_DIVISOR))
+        days = sorted(set(led["days"]) | set(led["badges"].values()))
+        for e in s["events"]:
+            if e["kind"] in ("level", "stage"):
+                self.assertEqual(e["day"], next(d for d in days if level_on(d) >= e["level"]), e)
+        self.assertEqual([e["stage"] for e in s["events"] if e["kind"] == "stage"], ["Hatchling"])
+        # The past is "about": everything before the hatch, and the badges dated on it. Nothing after.
+        for e in s["events"]:
+            self.assertEqual(e.get("about", False), e["day"] < "2025-03-10" or (e["kind"] == "badge" and e["day"] == "2025-03-10"), e)
+        self.assertIn({"day": "2025-09-29", "kind": "class", "class": "AFK Farmer", "week": "2025-W40"}, s["events"])
+        self.assertEqual([e for e in s["events"] if e["kind"] == "best_day"], [{"day": "2025-03-10", "kind": "best_day", "xp": 550}])
+        self.assertEqual(s["records"], {"best_day": {"day": "2025-03-10", "xp": 550}, "best_week": {"week": "2025-W11", "xp": 1100},
+                                        "longest_streak": {"days": 4, "from": "2024-12-31", "to": "2025-01-03"}})
+        order = [(e["day"], cclevel.STORY_KINDS.index(e["kind"])) for e in s["events"]]
+        self.assertEqual(order, sorted(order))
+        # A year's records agree with Wrapped.
+        y = cclevel.story(self.dir, self.STORY_RESULT, today, year=2025)["records"]
+        w = cclevel.wrapped_numbers(self.dir, 2025, today)
+        self.assertEqual((y["levels"]["from"], y["levels"]["to"], y["best_day"]["day"]), (w["first"], w["last"], w["best_day"]))
+        self.assertEqual(y["longest_streak"]["days"], w["longest"])
+        text = cclevel.story_text(s, today)
+        self.assertIn("  Our story · this machine only, self-reported\n", text)
+        self.assertIn("  about 1 Dec 2024   You met Claude Code\n", text)
+        self.assertIn("  10 Mar 2025        cclevel hatched your creature: Hatchling Shipper, Lv 7\n", text)
+        self.assertIn("Before that: 4 active days, 1,000 XP (2 estimated from prompt counts)\n", text)
+        self.assertIn("  about 10 Mar 2025  Badge: Skill issue: solved\n", text)
+        self.assertIn("  29 Sep 2025        Became an AFK Farmer\n", text)
+        self.assertIn("  5 Jan              Badge: gm x7\n", text)
+        self.assertIn("  Together 689 days · 7 active days · longest streak 4 days (31 Dec 2024–3 Jan 2025)\n  Your year so far: /pet wrapped.\n", text)
+        self.assertNotIn("starts today", text)
+
+    def test_our_story_ignores_hand_edits_and_keeps_its_lines_short(self):
+        today = date(2026, 10, 21)
+        write(self.dir, "cclevel/ledger.json", self.STORY_LEDGER)
+        clean = cclevel.story(self.dir, self.STORY_RESULT, today)
+        odd = json.loads(json.dumps(self.STORY_LEDGER))
+        odd["days"].update({"2099-01-01": 500, "2025-03-11": 99999, "nope": 5})
+        odd["badges"].update({"made_up": "2025-01-01"})
+        odd["weeks"].update({"2025-W12": {"xp": "lots"}, "2025-W99": {"xp": 1, "stats": [1] * 6, "health": 1}})
+        write(self.dir, "cclevel/ledger.json", odd)
+        self.assertEqual(cclevel.story(self.dir, self.STORY_RESULT, today), clean)
+        # A heavy user's story stays at 25 event lines, the other level-ups folded into one.
+        many = {"version": 4, "first_seen": "2025-01-01",
+                "days": {(date(2025, 1, 1) + timedelta(days=i)).isoformat(): 550 for i in range(600)}}
+        write(self.dir, "cclevel/ledger.json", many)
+        s = cclevel.story(self.dir, dict(self.STORY_RESULT, story={"met": "2025-01-01", "hatched": "2025-01-01",
+                                                                 "together_days": 658}, raw={"active_days": 600}), today)
+        self.assertEqual(sum(1 for e in s["events"] if e["kind"] == "stage"), 5)
+        lines = cclevel.story_text(s, today).split("\n")
+        body = lines[lines.index("") + 1:lines.index("  Together 658 days · 600 active days · longest streak 600 days (1 Jan 2025–23 Aug)") - 1]
+        self.assertLessEqual(len([l for l in body if not l.strip().startswith(("+", "Before"))]), 25)
+        self.assertTrue(any("other level-ups" in l for l in body), body)
+        self.assertIn("Evolved into a GOAT (Lv 60)", "\n".join(body))
+
+    def test_our_story_starts_today_for_a_new_creature(self):
+        history(self.dir, {0: 3})
+        out = run("--claude-dir", self.dir, "--story")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("  Your story starts today.\n", out.stdout)
+        today = datetime.now(timezone.utc).date()
+        self.assertIn("cclevel hatched your creature: Egg", out.stdout)
+        s = json.loads(run("--claude-dir", self.dir, "--story", "--json").stdout)
+        self.assertEqual((s["met"], s["hatched"], s["together_days"], s["before_hatch"]), (today.isoformat(),) * 2 + (0, None))
+        # A folder with no activity at all: no dates, no crash.
+        empty = tempfile.mkdtemp(dir=self.dir)
+        s = json.loads(run("--claude-dir", empty, "--story", "--json").stdout)
+        self.assertEqual((s["met"], s["hatched"], s["events"]), (None, None, []))
+        self.assertIn("Your story starts today.", run("--claude-dir", empty, "--story").stdout)
+
+    def test_our_story_json_holds_only_short_known_strings(self):
+        write(self.dir, "cclevel/ledger.json", dict(self.STORY_LEDGER, first_seen="2025-03-10"))
+        history(self.dir, {1: 2, 3: 4})
+        out = run("--claude-dir", self.dir, "--story", "--json")
+        s = json.loads(out.stdout)
+        self.assertEqual(set(s), {"version", "scope", "today", "met", "hatched", "together_days", "active_days",
+                                  "estimated_days", "before_hatch", "events", "records"})
+        def strings(v):
+            if isinstance(v, dict):
+                for k, x in v.items():
+                    yield k
+                    yield from strings(x)
+            elif isinstance(v, list):
+                for x in v:
+                    yield from strings(x)
+            elif isinstance(v, str):
+                yield v
+        for text in strings(s):
+            self.assertLessEqual(len(text), 30, text)
+            self.assertNotIn(os.sep, text)
+        for e in s["events"]:
+            self.assertIn(e["kind"], cclevel.STORY_KINDS)
+        # The card's numbers carry the same short story, for the panel.
+        card = json.loads(run("--claude-dir", self.dir, "--json").stdout)
+        self.assertEqual(card["story"], {k: s[k] for k in ("met", "hatched", "together_days")})
+        self.assertEqual(card["story"]["together_days"], card["raw"]["age_days"])
 
     def test_wrapped_is_worked_out_from_the_ledger_alone(self):
         write(self.dir, "cclevel/ledger.json", {
@@ -2118,7 +2242,8 @@ class Leaderboard(unittest.TestCase):
     def test_privacy_mode_sends_nothing_and_default_mode_does(self):
         board = {"CCLEVEL_SERVER": self.url}
         quiet = [("--auto-run",)] * 3 + [
-            ("--rank",), ("--preview",), ("--card",), (), ("--json",), ("--learn",), ("--wrapped",), ("--tips", "on"),
+            ("--rank",), ("--preview",), ("--card",), (), ("--json",), ("--learn",), ("--wrapped",), ("--story",),
+            ("--story", "--json"), ("--tips", "on"),
             ("--auto", "on", "--yes"), ("--world", "off"), ("--world", "on", "--yes"), ("--sync",), ("--group",),
             ("--group-create", "--yes"), ("--group-leave",), ("--duel",), ("--duel-create", "--yes"), ("--duel-leave",),
             ("--verify-github", "octocat", "--yes"), ("--unverify-github",), ("--privacy", "off"), ("--join",)]

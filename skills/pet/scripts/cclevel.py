@@ -921,6 +921,8 @@ def score(cdir, machine_jobs, save):
     # One snapshot a week, from the week's latest run, so a year in review can show how the stats moved.
     weeks[iso_week(today)] = {"xp": xp, "stats": [stats[s] for s in STAT_ORDER], "health": health}
 
+    seen = ledger.get("first_seen")
+    hatched = seen if is_day(seen) and len(seen) == 10 and seen <= today_s else today_s if active or badges else None
     kept = {"days": banked, "estimated": sorted(estimated), "badges": badges, "weeks": weeks}
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
         try:
@@ -956,6 +958,9 @@ def score(cdir, machine_jobs, save):
         "power": sum(stats.values()), "stats": stats,
         "badges": [b for b in BADGES if b in badges], "needs": needs, "raw": raw,
         "lessons": [lesson[0] for stat in STAT_ORDER for lesson in LESSONS[stat] if done[lesson[0]]],
+        # Our story in short, for the panel: the day you met Claude Code, the day cclevel hatched your creature, and
+        # the days in between and since (the card's "days old").
+        "story": {"met": first, "hatched": hatched, "together_days": age_days},
     }
 
 
@@ -1157,6 +1162,157 @@ def wrapped(cdir, year, today, server=None):
     if server:
         out.append("  Story images to post: " + wrapped_link(server, w))
     return "\n".join(out + [""])
+
+
+STORY_VERSION = 1            # a field is only ever added; a change of meaning bumps this
+STORY_KINDS = ("met", "hatched", "level", "stage", "badge", "class", "best_day")   # the order of events on one day
+STORY_LINES = 25             # the most event lines --story prints
+
+
+def story(cdir, result, today, year=None):
+    """You and your creature as a timeline, worked out from this machine's ledger and the score. Offline, stores nothing.
+    Levels come from the same XP sum as Wrapped, classes from the weekly snapshots, badges from their dates. Everything
+    dated before cclevel first saved the ledger (and every badge dated that day) is marked "about". With a year, the
+    records are that year's."""
+    _, banked, badges, estimated, weeks = read_ledger(cdir, today)
+    today_s = today.isoformat()
+    met, hatched = result["story"]["met"], result["story"]["hatched"]
+    badges = {b: when for b, when in badges.items() if is_day(when) and len(when) == 10 and when <= today_s}
+    events = []
+    if met:
+        events.append({"day": met, "kind": "met"})
+    level = level_of(xp_until(banked, badges, hatched)) if hatched else 1
+    if hatched:
+        snaps = [weeks[w] for w in sorted(weeks)]
+        first_class = class_of(dict(zip(STAT_ORDER, snaps[0]["stats"]))) if snaps else result["class"]
+        events.append({"day": hatched, "kind": "hatched", "level": level, "stage": stage_of(level), "class": first_class})
+        before = None
+        for w in sorted(weeks):
+            now = class_of(dict(zip(STAT_ORDER, weeks[w]["stats"])))
+            if before is not None and now != before:
+                try:
+                    monday = date.fromisocalendar(int(w[:4]), int(w[6:]), 1).isoformat()
+                except ValueError:
+                    continue
+                events.append({"day": max(monday, hatched), "kind": "class", "class": now, "week": w})
+            before = now
+    # A level event on each day the level went up, a stage event on each day a stage was reached.
+    level = 1
+    for d in sorted(set(banked) | set(badges.values())):
+        now = level_of(xp_until(banked, badges, d))
+        if now > level:
+            events.append({"day": d, "kind": "level", "level": now})
+            for floor, name in sorted(STAGES[:-1]):
+                if level < floor <= now:
+                    events.append({"day": d, "kind": "stage", "stage": name, "level": floor})
+            level = now
+    for b in BADGES:
+        if b in badges:
+            events.append({"day": badges[b], "kind": "badge", "badge": b})
+    best = max(sorted(banked), key=lambda d: banked[d]) if banked else None   # the earliest of equal days
+    if best:
+        events.append({"day": best, "kind": "best_day", "xp": banked[best]})
+    for e in events:
+        if hatched and (e["day"] < hatched or (e["kind"] == "badge" and e["day"] == hatched)):
+            e["about"] = True
+    events.sort(key=lambda e: (e["day"], STORY_KINDS.index(e["kind"])))
+
+    days = {d: x for d, x in banked.items() if year is None or d.startswith("%d-" % year)}
+    by_week = Counter()
+    for d, x in days.items():
+        by_week[iso_week(date.fromisoformat(d))] += x
+    longest = run = 0
+    span = start = None
+    prev = None
+    for d in sorted(days):
+        dt = date.fromisoformat(d)
+        if prev and (dt - prev).days == 1:
+            run += 1
+        else:
+            run, start = 1, d
+        if run > longest:
+            longest, span = run, (start, d)
+        prev = dt
+    top = max(sorted(days), key=lambda d: days[d]) if days else None
+    records = {
+        "best_day": {"day": top, "xp": days[top]} if top else None,
+        "best_week": {"week": w, "xp": by_week[w]} if (w := max(sorted(by_week), key=lambda k: by_week[k], default=None)) else None,
+        "longest_streak": {"days": longest, "from": span[0], "to": span[1]} if span else None,
+    }
+    if year is not None:   # the levels a year began and ended with, as Wrapped shows them
+        records["levels"] = {"from": level_of(xp_until(banked, badges, "%d-12-31" % (year - 1))),
+                             "to": level_of(xp_until(banked, badges, "%d-12-31" % year))}
+    early = {d: x for d, x in banked.items() if hatched and d < hatched}
+    last_before = max(early, default=None)
+    level_before = level_of(xp_until(banked, badges, last_before)) if last_before else 1
+    return {
+        "version": STORY_VERSION, "scope": "one machine, self-reported", "today": today_s,
+        "met": met, "hatched": hatched, "together_days": result["story"]["together_days"],
+        "active_days": result["raw"]["active_days"], "estimated_days": len(estimated),
+        "before_hatch": {"days": len(early), "xp": sum(early.values()), "estimated_days": sum(1 for d in early if d in estimated),
+                         "level": level_before, "stage": stage_of(level_before)} if early else None,
+        "events": events, "records": records,
+    }
+
+
+def a_or_an(word):
+    return ("an " if word[0] in "AEIOU" else "a ") + word
+
+
+def story_day(day, today):
+    """ "14 Oct", with the year when it is not this year."""
+    return short_day(day) + ("" if day.startswith(str(today.year)) else " " + day[:4])
+
+
+def story_text(s, today):
+    """The story as text: at most STORY_LINES event lines, with the other level-ups folded into one line."""
+    out = ["", "  Our story · this machine only, self-reported", ""]
+    if not s["before_hatch"] and not any(e["kind"] in ("level", "badge", "best_day") for e in s["events"]) \
+            and s["hatched"] in (None, s["today"]):
+        out.append("  Your story starts today.")
+    shown = [e for e in s["events"] if e["kind"] != "level" or e["level"] % 10 == 0]
+    stage_days = {(e["day"], e["level"]) for e in s["events"] if e["kind"] == "stage"}
+    shown = [e for e in shown if not (e["kind"] == "level" and (e["day"], e["level"]) in stage_days)]
+    # Over the limit: drop level lines first, then class changes and badges, the oldest first.
+    for kind in ("level", "class", "badge"):
+        while len(shown) > STORY_LINES and any(e["kind"] == kind for e in shown):
+            shown.remove(next(e for e in shown if e["kind"] == kind))
+    folded = sum(1 for e in s["events"] if e["kind"] == "level") - sum(1 for e in shown if e["kind"] == "level")
+    dated = []
+    for e in shown:
+        dated.append(("about " if e.get("about") else "") + story_day(e["day"], today))
+    width = max((len(d) for d in dated), default=0)
+    for e, when in zip(shown, dated):
+        k = e["kind"]
+        text = {
+            "met": lambda: "You met Claude Code",
+            "hatched": lambda: "cclevel hatched your creature: %s %s, Lv %d" % (e["stage"], e["class"], e["level"]),
+            "level": lambda: "Lv %d" % e["level"],
+            "stage": lambda: "Evolved into %s (Lv %d)" % (a_or_an(e["stage"]), e["level"]),
+            "badge": lambda: "Badge: " + BADGE_NAMES[e["badge"]],
+            "class": lambda: "Became %s" % a_or_an(e["class"]),
+            "best_day": lambda: "Biggest day yet: {:,} XP".format(e["xp"]),
+        }[k]()
+        out.append("  %s  %s" % (when.ljust(width), text))
+        if k == "hatched" and s["before_hatch"]:
+            b = s["before_hatch"]
+            out.append("  %s  Before that: %s, {:,} XP%s".format(b["xp"]) % (
+                " " * width, count(b["days"], "active day"),
+                " (%d estimated from prompt counts)" % b["estimated_days"] if b["estimated_days"] else ""))
+    if folded:
+        out.append("  %s  +%s" % (" " * width, count(folded, "other level-up")))
+    if any(e.get("about") for e in shown):
+        out += ["", "  \"about\": worked out from older days, some estimated from prompt counts."]
+    out.append("")
+    streak = s["records"]["longest_streak"]
+    tail = ["Together %s" % count(s["together_days"], "day"), count(s["active_days"], "active day")]
+    if streak:
+        a, b = streak["from"], streak["to"]
+        span = story_day(a, today) if a == b else "%d–%s" % (int(a[8:]), story_day(b, today)) if a[:7] == b[:7] \
+            else "%s–%s" % (story_day(a, today) if a[:4] != b[:4] else short_day(a), story_day(b, today))
+        tail.append("longest streak %s (%s)" % (count(streak["days"], "day"), span))
+    out += ["  " + " · ".join(tail), "  Your year so far: /pet wrapped.", ""]
+    return "\n".join(out)
 
 
 def training_path(cdir):
@@ -3121,6 +3277,8 @@ def main():
     board.add_argument("--card", action="store_true", help="print a link that draws your card as a picture to save and post; sends nothing")
     board.add_argument("--wrapped", metavar="YEAR", nargs="?", type=int, const=THIS_YEAR,
                        help="your year in review from this machine's ledger (default: this year); sends nothing")
+    board.add_argument("--story", action="store_true",
+                       help="our story: a timeline of you and your creature from this machine's ledger; sends nothing")
     board.add_argument("--learn", action="store_true",
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
     board.add_argument("--tips", choices=("on", "off"),
@@ -3173,6 +3331,11 @@ def main():
         if not FIRST_YEAR <= year <= today.year:
             sys.exit("cclevel: --wrapped takes a year from %d to %d" % (FIRST_YEAR, today.year))
         print(wrapped(cdir, year, today, resolve_server(args, load_identity(cdir))))
+        return
+    if args.story:
+        today = datetime.now(timezone.utc).date()
+        s = story(cdir, result, today)
+        print(json.dumps(s, indent=1) if args.json else story_text(s, today))
         return
     if args.learn:
         sys.exit(learn_command(cdir, result, save=not args.no_save))

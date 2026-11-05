@@ -57,6 +57,7 @@ Grind and Brains never set the class. The scoring constants and the names are de
 
 - A score covers one machine and is self-reported. Anyone can edit their own local files and show any level, so it is for fun and is not a credential.
 - Claude Code deletes session logs after 30 days by default, so log-based numbers use a 30-day window. Days from before your first scan have no logs left, so their XP is an estimate from prompt counts. For a long-time user most of the level is such an estimate, and the card says how much.
+- Our story (`/pet story`) is worked out from the ledger: the level on a day is the XP of the days banked up to it plus the badges dated by then, the same sum Wrapped uses. Dates from before your first scan are estimates and say "about". Badges you already had at the first scan are dated that day, so they say "about" too.
 - "Unattended" sessions are inferred from how a session was started, which is an approximation.
 - A Brains check is passed by a single use inside its window. Brains shows what is wired and working, not how often it is used.
 - The fixed price for a day without logs is tuned to match a typical logged day on average. For a very light day it can come out a little higher than the logs would have given.
