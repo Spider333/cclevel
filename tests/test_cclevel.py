@@ -216,6 +216,30 @@ class FakeBoard(BaseHTTPRequestHandler):
         pass
 
 
+@contextlib.contextmanager
+def socket_spy():
+    """Records every outgoing connection this process tries, to any host, name lookups included."""
+    seen = []
+    real = socket.create_connection, socket.getaddrinfo, socket.socket.connect
+
+    def create(address, *args, **kw):
+        seen.append(("create_connection", address))
+        return real[0](address, *args, **kw)
+
+    def lookup(host, *args, **kw):
+        seen.append(("getaddrinfo", host))
+        return real[1](host, *args, **kw)
+
+    def connect(sock, address):
+        seen.append(("connect", address))
+        return real[2](sock, address)
+    socket.create_connection, socket.getaddrinfo, socket.socket.connect = create, lookup, connect
+    try:
+        yield seen
+    finally:
+        socket.create_connection, socket.getaddrinfo, socket.socket.connect = real
+
+
 def raw_server(reply):
     """A TCP server that answers every connection with the same bytes, valid HTTP or not."""
     srv = socket.socket()
@@ -2251,6 +2275,240 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(rows[0]["class"], cclevel.class_of(dict(zip(cclevel.STAT_ORDER, [10, 20, 30, 40, 50, 60]))))
         self.assertEqual((rows[1]["level"], rows[1]["stage"], rows[1]["class"]), (data["level"], data["stage"], data["class"]))
 
+    def later_starts(self):
+        """A machine on the board, in a group, with the panel installed, after today's check-in. Returns start() (one hook
+        run, giving the requests it sent) and age() (back-date the saved copy and the last try, in seconds)."""
+        self.joined(group="ab" * 16)
+        write(self.dir, "cclevel/panel/cclevel-panel", "#!/bin/sh\n")
+
+        def start():
+            FakeBoard.seen.clear()
+            self.assertEqual(run("--claude-dir", self.dir, "--auto-run").returncode, 0)
+            return [(r["method"], r["path"]) for r in FakeBoard.seen]
+
+        def age(friends=None, tried=None):
+            ident = json.load(open(self.identity, encoding="utf-8"))
+            if friends is not None:
+                ident["friends"]["fetched"] = int(time.time()) - friends
+            write(self.dir, "cclevel/identity.json", ident)
+            if tried is not None:
+                write(self.dir, "cclevel/group-read", "%d\n" % (int(time.time()) - tried))
+        self.assertEqual(start(), [("POST", "/api/checkin"), ("GET", "/api/group")])   # the day's check-in and read
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "cclevel", "group-read")), "the daily read counts too")
+        return start, age
+
+    def hook_here(self):
+        """One session-start hook run in this process (so a socket spy sees everything it tries)."""
+        class Args:
+            server = None
+        out, err = sys.stdout, sys.stderr
+        try:
+            return cclevel.auto_run(self.dir, Args(), self.dir)
+        finally:
+            sys.stdout, sys.stderr = out, err
+
+    def test_later_session_starts_read_the_group_again_at_most_every_15_minutes(self):
+        start, age = self.later_starts()
+        stamp = os.path.join(self.dir, "cclevel", "group-read")
+        self.assertEqual(start(), [], "read a moment ago by the daily check-in")
+        age(friends=16 * 60)
+        self.assertEqual(start(), [], "the daily read's try counts, even with the saved copy back-dated")
+        # 16 minutes later a friend has joined: one read, no check-in, and the friend is saved.
+        age(friends=16 * 60, tried=16 * 60)
+        grown = {"members": GOOD_GROUP["members"] + [dict(GOOD_GROUP["members"][2], name=[5, 5, 5])]}
+        FakeBoard.replies = {"GET /api/group": (200, grown)}
+        self.assertEqual(start(), [("GET", "/api/group")])
+        self.assertEqual(len(json.load(open(self.identity, encoding="utf-8"))["friends"]["members"]), 4)
+        self.assertTrue(os.path.isfile(stamp))
+        self.assertEqual(start(), [], "tried a moment ago")
+        # Nothing changed in the group: identity.json stays exactly as it was, so the panel does not score again.
+        age(friends=20 * 60, tried=16 * 60)
+        before = (open(self.identity, "rb").read(), os.stat(self.identity).st_mtime_ns)
+        self.assertEqual(start(), [("GET", "/api/group")])
+        self.assertEqual((open(self.identity, "rb").read(), os.stat(self.identity).st_mtime_ns), before)
+        # An unchanged group is saved again once its copy is 13 hours old, so it never ages out while reads find it.
+        age(friends=14 * 3600, tried=16 * 60)
+        self.assertEqual(start(), [("GET", "/api/group")])
+        fetched = json.load(open(self.identity, encoding="utf-8"))["friends"]["fetched"]
+        self.assertLessEqual(abs(fetched - time.time()), 60)
+        # An unreachable board: two starts 15 minutes apart from the first try make one connection attempt in all.
+        ident = json.load(open(self.identity, encoding="utf-8"))
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+        write(self.dir, "cclevel/identity.json", dict(ident, server="http://127.0.0.1:%d" % port))
+        age(friends=20 * 60, tried=16 * 60)
+        with socket_spy() as seen:
+            self.assertEqual((self.hook_here(), self.hook_here()), (0, 0))
+        self.assertEqual([s for s in seen if s[0] == "create_connection"], [("create_connection", ("127.0.0.1", port))])
+        write(self.dir, "cclevel/identity.json", ident)
+        # A board that is down, or busy, is asked once per 15 minutes too, not at every start.
+        for reply in ((500, {"error": "down"}), (429, {"reason": "busy"})):
+            age(friends=20 * 60, tried=16 * 60)
+            FakeBoard.replies = {"GET /api/group": reply}
+            self.assertEqual(start(), [("GET", "/api/group")], reply)
+            self.assertEqual(start(), [], reply)
+        # A last try from the future, or one that cannot be read, counts as due; a folder or link planted there stops it.
+        FakeBoard.replies = {"GET /api/group": (200, grown)}
+        for planted in ("%d\n" % (int(time.time()) + 3600), "zzq\n"):
+            write(self.dir, "cclevel/group-read", planted)
+            self.assertEqual(start(), [("GET", "/api/group")], planted)
+        os.remove(stamp)
+        os.mkdir(stamp)
+        self.assertEqual(start(), [], "a folder at the stamp's path")
+        self.assertTrue(os.path.isdir(stamp))
+        os.rmdir(stamp)
+        os.symlink(self.identity, stamp)
+        kept = open(self.identity, "rb").read()
+        self.assertEqual(start(), [], "a link at the stamp's path")
+        self.assertEqual(open(self.identity, "rb").read(), kept, "nothing written through the link")
+        os.remove(stamp)
+        # identity.json planted as a link to a file elsewhere: a read that finds a change replaces the link inside
+        # cclevel/ and never writes through it. A folder planted at board.lock is cleared, as for every board request.
+        outside = os.path.join(self.tmp.name, "outside.json")
+        with open(outside, "wb") as f:
+            f.write(open(self.identity, "rb").read())
+        os.remove(self.identity)
+        os.symlink(outside, self.identity)
+        age(tried=16 * 60)
+        FakeBoard.replies = {"GET /api/group": (200, GOOD_GROUP)}   # one member fewer than saved: a change
+        mine = open(outside, "rb").read()
+        self.assertEqual(start(), [("GET", "/api/group")])
+        self.assertEqual(open(outside, "rb").read(), mine, "nothing written through the link")
+        self.assertFalse(os.path.islink(self.identity))
+        lock = os.path.join(self.dir, "cclevel", "board.lock")
+        os.remove(lock)   # left as a plain file by every board request
+        os.mkdir(lock)
+        age(friends=20 * 60, tried=16 * 60)
+        FakeBoard.replies = {"GET /api/group": (200, grown)}
+        self.assertEqual(start(), [("GET", "/api/group")])
+        age(friends=20 * 60)
+        os.remove(stamp)
+        # No read without the panel, outside a group, or with auto check-in off.
+        panel = os.path.join(self.dir, "cclevel", "panel", "cclevel-panel")
+        os.rename(panel, panel + ".away")
+        self.assertEqual(start(), [], "no panel")
+        os.rename(panel + ".away", panel)
+        self.assertEqual(start(), [("GET", "/api/group")], "positive control: the panel is back")
+        ident = json.load(open(self.identity, encoding="utf-8"))
+        for change in ({"auto": False}, {"group": None, "friends": None}):
+            age(tried=16 * 60)
+            write(self.dir, "cclevel/identity.json", {k: v for k, v in dict(ident, **change).items() if v is not None})
+            self.assertEqual(start(), [], change)
+        # A new UTC day: one check-in and one read, not two reads.
+        write(self.dir, "cclevel/identity.json", dict(ident, auto_day="2000-01-01"))
+        age(tried=16 * 60)
+        self.assertEqual(start(), [("POST", "/api/checkin"), ("GET", "/api/group")])
+
+    def test_a_later_start_sends_nothing_in_privacy_mode_even_when_it_turns_on_mid_way(self):
+        start, age = self.later_starts()
+        age(friends=16 * 60, tried=16 * 60)
+        write(self.dir, "cclevel/opted-out", "off\n")
+        self.assertEqual(start(), [], "the note: nothing")
+        # A spy on this process's sockets: not one connection or name lookup, to any host, while leaving (note and
+        # token) or in Privacy mode (note, no token).
+        with socket_spy() as seen:
+            self.assertEqual(self.hook_here(), 0)
+        self.assertEqual(seen, [], "leaving")
+        kept = open(self.identity, "rb").read()
+        os.remove(self.identity)
+        with socket_spy() as seen:
+            self.assertEqual(self.hook_here(), 0)
+        self.assertEqual(seen, [], "Privacy mode")
+        with open(self.identity, "wb") as f:
+            f.write(kept)
+        os.remove(self.off)
+        with socket_spy() as seen:
+            self.assertEqual(self.hook_here(), 0)
+        self.assertTrue(any(s[0] == "create_connection" for s in seen), "positive control: Default mode connects")
+        age(friends=16 * 60, tried=16 * 60)
+        # --privacy on finishing between the hook's first look and its lock: the look under the lock catches it.
+        original = cclevel.resolve_server
+        self.addCleanup(setattr, cclevel, "resolve_server", original)
+
+        def privacy_on_meanwhile(args, ident):
+            write(self.dir, "cclevel/opted-out", "off\n")
+            return original(args, ident)
+        cclevel.resolve_server = privacy_on_meanwhile
+
+        class Args:
+            server = None
+        FakeBoard.seen.clear()
+        out, err = sys.stdout, sys.stderr
+        try:
+            self.assertEqual(cclevel.auto_run(self.dir, Args(), self.dir), 0)
+        finally:
+            sys.stdout, sys.stderr = out, err
+            cclevel.resolve_server = original
+        self.assertEqual(FakeBoard.seen, [])
+        os.remove(self.off)
+        self.assertEqual(start(), [("GET", "/api/group")], "positive control: Default mode reads")
+        # Privacy mode (--leave) and --panel off remove the hook's last-try stamp.
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "cclevel", "group-read")))
+        self.assertEqual(run("--claude-dir", self.dir, "--leave").returncode, 0)
+        self.assertFalse(os.path.lexists(os.path.join(self.dir, "cclevel", "group-read")))
+
+    def test_a_board_that_never_answers_never_holds_the_lock_long(self):
+        start, age = self.later_starts()
+        age(friends=16 * 60, tried=16 * 60)
+        # A board that answers one header line a second, forever: every read waits, none times out.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        self.addCleanup(listener.close)
+        accepted = []
+
+        def dribble():
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                accepted.append(time.monotonic())
+                def feed(conn=conn):
+                    try:
+                        conn.recv(4096)
+                        conn.sendall(b"HTTP/1.1 200 OK\r\n")
+                        for _ in range(60):
+                            time.sleep(1)
+                            conn.sendall(b"X-Wait: 1\r\n")
+                    except OSError:
+                        pass
+                    finally:
+                        conn.close()
+                threading.Thread(target=feed, daemon=True).start()
+        threading.Thread(target=dribble, daemon=True).start()
+        ident = json.load(open(self.identity, encoding="utf-8"))
+        write(self.dir, "cclevel/identity.json", dict(ident, server="http://127.0.0.1:%d" % listener.getsockname()[1]))
+        before = open(self.identity, "rb").read()
+        hook = subprocess.Popen([sys.executable, SCRIPT, "--claude-dir", self.dir, "--auto-run"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for _ in range(100):   # until the hook's read reaches the board, so the lock is surely held
+            if accepted:
+                break
+            time.sleep(0.05)
+        self.assertTrue(accepted, "the hook's read reached the board")
+        with cclevel.board_lock(self.dir, 30):   # what --leave and --privacy on wait for
+            waited = time.monotonic() - accepted[0]
+        self.assertGreater(waited, cclevel.REREAD_LIMIT - 1.5, "the hook held the lock while its read was waiting")
+        self.assertLess(waited, cclevel.REREAD_LIMIT + 3, "and let go within the re-read's limit")
+        self.assertEqual(hook.wait(timeout=10), 0)
+        self.assertEqual(hook.stdout.read() + hook.stderr.read(), b"", "silent")
+        self.assertEqual(open(self.identity, "rb").read(), before, "nothing saved from a read that never finished")
+        # Killed while its read is on the way: identity.json is whole and unchanged.
+        write(self.dir, "cclevel/group-read", "0\n")
+        reads = len(accepted)
+        hook = subprocess.Popen([sys.executable, SCRIPT, "--claude-dir", self.dir, "--auto-run"])
+        for _ in range(100):
+            if len(accepted) > reads:
+                break
+            time.sleep(0.05)
+        self.assertGreater(len(accepted), reads, "killed while its read is on the way")
+        hook.kill()
+        hook.wait(timeout=10)
+        self.assertEqual(json.loads(open(self.identity, encoding="utf-8").read()), json.loads(before))
+
     def test_a_read_that_finds_no_group_drops_the_saved_copy_and_an_error_keeps_it(self):
         self.joined(group="cd" * 16)
         self.assertEqual(run("--claude-dir", self.dir, "--group").returncode, 0)
@@ -3021,10 +3279,12 @@ class Panel(unittest.TestCase):
         self.assertEqual(self.panel("on", "--yes").returncode, 0)
         write(self.dir, "cclevel/panel/notes.txt", "mine")   # not the panel's: it stays, and so does its folder
         write(self.dir, "cclevel/panel/creatures/mine.mp4", "mine")   # the same inside the creatures folder
+        write(self.dir, "cclevel/group-read", "1793900000\n")   # the session-start hook's last group read for the panel
         out = self.panel("off")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("Panel off", out.stdout)
         self.assertFalse(os.path.exists(self.agent))
+        self.assertFalse(os.path.lexists(os.path.join(self.dir, "cclevel", "group-read")), "the hook's stamp goes too")
         self.assertEqual(sorted(os.listdir(self.folder)), ["creatures", "notes.txt"])
         self.assertEqual(os.listdir(os.path.join(self.folder, "creatures")), ["mine.mp4"])
         self.assertTrue(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
@@ -3035,6 +3295,13 @@ class Panel(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("was not on", again.stdout)
         self.assertFalse(os.path.exists(self.folder))
+        # A folder planted where the hook keeps its last group read: off still removes the panel, and leaves the folder.
+        self.assertEqual(self.panel("on", "--yes").returncode, 0)
+        os.mkdir(os.path.join(self.dir, "cclevel", "group-read"))
+        out = self.panel("off")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(os.path.exists(self.folder))
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "cclevel", "group-read")))
 
     def test_a_start_refused_while_the_old_copy_stops_is_tried_again(self):
         # launchctl refuses the first start, as macOS does while the copy it was just told to stop is still stopping.
@@ -3184,7 +3451,8 @@ class Panel(unittest.TestCase):
         shown = drawn.stdout.splitlines()
         self.assertEqual(shown[:2], ["Back to the overview", "Invite friends: Brave Otter Crew. Anyone with the link can join, up to 25"])
         self.assertTrue(shown[2].startswith("Friends: 2 in your group. 1, Brave Otter 0042, Lv 52 Gigachad, 120 XP this week, "
-                                            "most XP this week; 2, Sleepy Lynx 1207, Lv 9 Lil Guy, 0 XP this week, you, sus. As of "), shown)
+                                            "most XP this week; 2, Sleepy Lynx 1207, Lv 9 Lil Guy, 0 XP this week, you, sus. Saved "), shown)
+        self.assertIn("Checked when Claude Code starts.", shown[2])
         self.assertNotIn(link, drawn.stdout, "the link itself never goes to stdout")
         # Privacy mode turned on after the last score: the running panel reads the note itself and shows no friends.
         noted = os.path.join(self.tmp.name, "noted")
@@ -3270,6 +3538,22 @@ class Panel(unittest.TestCase):
         os.utime(saved, (now - 3700, now - 3700))
         self.assertEqual(stale(), 0, "a card over an hour old scores again")
         self.assertEqual(subprocess.run([binary, "--card-stale", "--cache", saved], capture_output=True).returncode, 2)
+        # And when identity.json changed after the card's scan began (a check-in, or a group read that found a friend).
+        ident = os.path.join(self.tmp.name, "identity.json")
+        write(self.tmp.name, "identity.json", "{}")
+
+        def stale_with_identity():
+            return subprocess.run([binary, "--card-stale", "--cache", saved, "--scanner", scanner, "--identity", ident],
+                                  capture_output=True).returncode
+        os.utime(saved, (now - 60, now - 60))
+        os.utime(ident, (now - 600, now - 600))
+        self.assertEqual(stale_with_identity(), 1, "identity.json older than the card: kept")
+        os.utime(ident, (now - 30, now - 30))
+        self.assertEqual(stale_with_identity(), 0, "identity.json changed after the scan began: scores again")
+        os.utime(ident, (now + 3600, now + 3600))
+        self.assertEqual(stale_with_identity(), 1, "an identity.json time in the future is not counted")
+        os.remove(ident)
+        self.assertEqual(stale_with_identity(), 1, "no identity.json (never joined): kept")
         # On a screen with less room (a small display, or one set to larger text) the panel is shorter and the overview
         # scrolls: nothing falls off the bottom of the screen.
         drawn = draw(card, "--height", "500")
