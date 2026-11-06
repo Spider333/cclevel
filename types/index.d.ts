@@ -16,13 +16,21 @@ export type Creature = {
   /** The creature's markings (0 to 63) and whether it is shiny, from the scan's `marks`. Missing means the classic look. */
   look?: number
   shiny?: boolean
+  /** The class from the scan (`class`), for the hatch's words. */
+  cls?: string
+  /** The ledger's first day from the scan, or null before there is a ledger: whether this machine is new. */
+  hatched?: string | null
 }
 
 /** What the creature is acting out: the kind of tool Claude is using, or how the last one ended. */
 export type Action = { kind: 'write' | 'search' | 'run' | 'commit' | 'error'; id: number }
 
 /** A level up (or a new stage) to celebrate for a few seconds. */
-export type Burst = { level: number; stage: Stage; from: Stage; id: number }
+export type Burst = {
+  level: number; stage: Stage; from: Stage; id: number
+  /** The first creature hatching on a new machine: its words, and the frame it started on. */
+  hatch?: string; frame?: number
+}
 
 declare module 'claude-code' {
   interface PluginState {

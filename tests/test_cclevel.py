@@ -1113,6 +1113,7 @@ class Training(unittest.TestCase):
 
     def test_tips_are_off_until_turned_on(self):
         self.needy()
+        self.assertIn("An egg appeared!", self.card())   # the first card hatches, once; the rest are plain
         plain = self.card()
         self.assertNotIn("How:", plain)
         self.assertNotIn("Tip of the day", plain)
@@ -4136,6 +4137,100 @@ class Panel(unittest.TestCase):
         self.assertEqual((still[0]["what"], still[0]["anim"]), ("hop", "-"), "Reduce Motion: no hop")
         text_art = poke("Lil Guy", "88,88", "--ui-sounds", "off", with_clips=False)
         self.assertEqual(text_art[0]["anim"], "blink", "without clips the text creature blinks")
+
+
+class Hatch(unittest.TestCase):
+    """The hatch block: on a new machine's first card only, never in --json, never a replay for an older ledger."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = make_folder(self.tmp.name)
+        self.ledger = os.path.join(self.dir, "cclevel", "ledger.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def card(self, *flags):
+        out = run("--claude-dir", self.dir, *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def grown(self):
+        """Thirty active days in the last month: a creature that has hatched."""
+        lines = [log_line(day_stamp(d), "m%d" % d, tools=[("Edit", {})] * 5, output=50000) for d in range(1, 31)]
+        write(self.dir, "projects/zzq-project/s1.jsonl", "\n".join(lines) + "\n")
+        history(self.dir, {d: 20 for d in range(1, 31)})
+
+    def test_the_first_card_hatches_once_and_says_what_hatched(self):
+        self.grown()
+        self.assertFalse(os.path.exists(self.ledger), "positive control: no ledger before the first run")
+        first = self.card()
+        info = json.loads(self.card("--json", "--no-save"))
+        self.assertNotEqual(info["stage"], "Egg")
+        who = info["stage"] if info["class"] == "Unhatched" else "%s %s" % (info["stage"], info["class"])
+        lines = first.splitlines()
+        self.assertEqual(lines[1], "  Your egg hatched!")
+        self.assertTrue(lines[2].startswith("  It's %s · Lv %d" % (cclevel.a_or_an(who), info["level"])), lines[2])
+        with open(self.ledger) as f:
+            self.assertEqual(json.load(f)["hatch_seen"], datetime.now(timezone.utc).date().isoformat())
+        self.assertNotIn("hatched!", self.card())
+        # A later save keeps the day it showed.
+        write(self.dir, "projects/zzq-project/s2.jsonl", log_line(day_stamp(0), "today") + "\n")
+        self.card()
+        with open(self.ledger) as f:
+            self.assertIn("hatch_seen", json.load(f))
+        self.assertNotIn("hatched!", self.card())
+
+    def test_no_save_shows_it_and_records_nothing_and_json_never_shows_it(self):
+        self.assertIn("An egg appeared!", self.card("--no-save"))
+        self.assertIn("An egg appeared!", self.card("--no-save"))
+        self.assertFalse(os.path.exists(self.ledger))
+        out = self.card("--json")
+        self.assertNotIn("egg appeared", out)
+        self.assertNotIn("hatch_due", out)
+        self.assertIsNone(json.loads(out)["hatched"], "no ledger yet")
+        with open(self.ledger) as f:
+            self.assertNotIn("hatch_seen", json.load(f), "--json banks the day but records no hatch")
+        self.assertIn("An egg appeared!", self.card())
+
+    def test_an_egg_says_when_it_hatches(self):
+        lines = self.card().splitlines()
+        self.assertEqual(lines[1:3], ["  An egg appeared!", "  It hatches at Lv 5."])
+        with open(self.ledger) as f:
+            self.assertIn("hatch_seen", json.load(f))
+        self.assertNotIn("egg appeared", self.card())
+
+    def test_an_older_ledger_never_replays_it(self):
+        self.grown()
+        for days, shows in ((30, False), (8, False), (7, True), (2, True)):
+            write(self.dir, "cclevel/ledger.json", {"version": 4, "first_seen": utc_day(days), "days": {utc_day(1): 100}})
+            self.assertEqual("Your egg hatched!" in self.card("--no-save"), shows, days)
+            self.assertEqual(json.loads(self.card("--json", "--no-save"))["hatched"], utc_day(days))
+
+    def test_both_modes_stay_on_the_first_card_and_nothing_is_sent(self):
+        real = {"CLAUDE_CONFIG_DIR": self.dir}   # the folder Claude Code uses, so the card has its two-modes lines
+        out, count = run_counted("--claude-dir", self.dir, "--no-save", env=real)
+        self.assertEqual(count, 0)
+        self.assertIn("An egg appeared!", out.stdout)
+        self.assertIn("Default mode:", out.stdout)
+        self.assertIn("Privacy mode:", out.stdout)
+        write(self.dir, "cclevel/opted-out", "")
+        out, count = run_counted("--claude-dir", self.dir, env=real)
+        self.assertEqual(count, 0)
+        self.assertIn("An egg appeared!", out.stdout)
+        self.assertIn("Privacy mode: cclevel sends nothing.", out.stdout)
+
+    def test_plain_text_only(self):
+        for flags in ((), ("--json",)):
+            out = self.card("--no-save", *flags)
+            self.assertNotIn("\x1b", out)
+            self.assertNotIn("\r", out)
+
+    def test_no_activity_no_hatch(self):
+        empty = tempfile.mkdtemp(dir=self.tmp.name)
+        out = run("--claude-dir", empty)
+        self.assertNotIn("egg appeared", out.stdout)
+        self.assertFalse(os.path.exists(os.path.join(empty, "cclevel", "ledger.json")))
 
 
 if __name__ == "__main__":

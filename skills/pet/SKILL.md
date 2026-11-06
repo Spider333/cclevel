@@ -13,7 +13,7 @@ This skill pre-approves only the offline commands. Network commands are left to 
 ## Show the card (default)
 
 1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py` and show the card exactly as printed, in a code block.
-2. In one or two plain sentences, say what the first item under Needs means and what fixing it would involve. Do not fix anything unless asked.
+2. If the card starts with "Your egg hatched!" or "An egg appeared!", this is the user's first card: add one plain welcome sentence first (for example, "Welcome: your creature just hatched."). Then, in one or two plain sentences, say what the first item under Needs means and what fixing it would involve. Do not fix anything unless asked.
 3. If the user has not heard it yet in this conversation, add one plain sentence about the two modes, matching what the card says: Default mode has the board on (the session-start hook joins this machine, then checks in once a day and reads its own private group, again at later starts at most every 15 minutes with the panel installed), and Privacy mode (`/pet privacy on`) means cclevel sends nothing (opening a share-card, Wrapped or invite link in a browser still loads its page from the board's website, cclevel.com for the public board) while the card, creature, panel, tips and Wrapped keep working.
 
 This path is fully offline. `--json` prints the numbers behind the card; in a group it also holds the invite link and friends list, so never paste it into a public place. `--no-save` scores without touching the ledger.
@@ -72,7 +72,7 @@ If no public board is configured the script says so. `--server 'ADDRESS'` (in si
 
 ## Creature band
 
-The plugin also draws the creature above the prompt in each session (Claude Code 2.1.287 or later, terminal and Desktop app): while Claude works it walks and acts out the tool (writing, sniffing around, lifting, flexing on a commit, sweating on a failure), it sleeps when Claude is idle, shows a level bar and today's XP, bursts on a level up, and in the terminal renames Claude's spinner word. It rescores offline at most once an hour. It is not a `cclevel.py` flag: when the user asks to hide or show it, tell them to type `/creature off` or `/creature on` themselves.
+The plugin also draws the creature above the prompt in each session (Claude Code 2.1.287 or later, terminal and Desktop app): while Claude works it walks and acts out the tool (writing, sniffing around, lifting, flexing on a commit, sweating on a failure), it sleeps when Claude is idle, shows a level bar and today's XP, bursts on a level up, and in the terminal renames Claude's spinner word. On a new machine its first creature hatches live, once: the egg wobbles, cracks, and the creature appears with its class, with a toast saying the same. It rescores offline at most once an hour. It is not a `cclevel.py` flag: when the user asks to hide or show it, tell them to type `/creature off` or `/creature on` themselves.
 
 ## Menu bar panel (Mac, only when the user asks)
 

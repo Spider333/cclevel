@@ -3,7 +3,8 @@
 // out the tool Claude is using: it writes while Claude edits files, sniffs around while it searches,
 // lifts while it runs commands, flexes when a commit lands and sweats when a tool fails. When Claude
 // is idle it sleeps. A level up gets a short burst. In the terminal it also renames Claude's spinner
-// word ("Gigachad is grinding"). `/creature` turns it off or on.
+// word ("Gigachad is grinding"). On a new machine the first creature hatches live: the egg wobbles,
+// cracks, and the creature appears with its class, once. `/creature` turns it off or on.
 //
 // It shows the last offline scan (`cclevel.py --json --no-save`), kept in this plugin's own store,
 // and starts a new scan in the background only when that one is more than an hour old. It makes no
@@ -24,6 +25,9 @@ const SCAN_TIMEOUT_MS = 2 * 60 * 1000
 const LINGER_MS = 2500                     // a commit's flex or a failure's sweat stays this long
 const HOLD_MS = 1200                       // a tool's look stays at least this long after the tool ends
 const BURST_MS = 6000                      // a level up is celebrated this long
+const HATCH_MS = 8000                      // the first creature's hatch plays this long
+const HATCH_DAYS = 7                       // only on a machine whose ledger is at most this old: never a replay after an update
+const DAY_MS = 24 * 60 * 60 * 1000
 const BAR = 10                             // cells in the level bar
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -39,12 +43,12 @@ const ACTION_VERBS: Record<Action['kind'], string> = {
 const MODE_VERBS: Record<string, string> = { thinking: 'big-braining', responding: 'cooking' }
 
 // Change a shape tag when its value's fields change: it declines what an earlier version stored.
-const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-3' })
+const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-4' })
 const frame = atom({ plugin: 'cclevel', key: 'frame' } as const, 0)
 const isHidden = atom({ plugin: 'cclevel', key: 'isHidden' } as const, false)
 const isScanning = atom({ plugin: 'cclevel', key: 'isScanning' } as const, false)
 const action = atom({ plugin: 'cclevel', key: 'action' } as const, null, { shape: 'action-1' })
-const burst = atom({ plugin: 'cclevel', key: 'burst' } as const, null, { shape: 'burst-1' })
+const burst = atom({ plugin: 'cclevel', key: 'burst' } as const, null, { shape: 'burst-2' })
 
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
 
@@ -56,11 +60,14 @@ export function asCreature(value: unknown): Creature | null {
   if (typeof stage !== 'string' || !(STAGES as readonly string[]).includes(stage)) return null
   if (typeof mood !== 'string' || mood.length === 0 || mood.length > 40) return null
   if (![xp, xpLevelStart, xpNextLevel, xpToday, at].every(isCount)) return null
-  const { look, shiny } = value as Record<string, unknown>
+  const { look, shiny, cls, hatched } = value as Record<string, unknown>
   const c: Creature = {
     level, stage: stage as Stage, mood, xp: xp as number, xpLevelStart: xpLevelStart as number,
     xpNextLevel: xpNextLevel as number, xpToday: xpToday as number, at: at as number,
   }
+  if (typeof cls === 'string' && /^[A-Za-z ]{1,30}$/.test(cls)) c.cls = cls
+  // The ledger's first day, or null before there is a ledger. Missing (an older scanner) means not new.
+  if (hatched === null || (typeof hatched === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(hatched))) c.hatched = hatched
   // Markings that are out of range are dropped: the classic look.
   if (typeof look === 'number' && Number.isInteger(look) && look >= 0 && look < LOOKS && typeof shiny === 'boolean') {
     c.look = look
@@ -77,7 +84,32 @@ export function fromScan(json: unknown, at: number): Creature | null {
   return asCreature({
     level: o.level, stage: o.stage, mood: o.mood, xp: o.xp, xpLevelStart: o.xp_level_start,
     xpNextLevel: o.xp_next_level, xpToday: o.xp_today_pending, at, look: marks.look, shiny: marks.shiny,
+    cls: o.class, hatched: o.hatched,
   })
+}
+
+/** Whether this scan is from a new machine: no ledger yet, or one at most HATCH_DAYS old. */
+export function isNewMachine(c: Creature): boolean {
+  if (c.hatched === null) return true
+  if (c.hatched === undefined) return false
+  const first = Date.parse(`${c.hatched}T00:00:00Z`)
+  return Number.isFinite(first) && Math.floor(c.at / DAY_MS) - Math.floor(first / DAY_MS) <= HATCH_DAYS
+}
+
+/** The hatch's words, the same in the band and its toast. */
+export function hatchText(c: Creature): string {
+  if (c.stage === 'Egg') return 'An egg appeared! It hatches at Lv 5.'
+  const who = c.cls === undefined || c.cls === 'Unhatched' ? c.stage : `${c.stage} ${c.cls}`
+  const a = /^[AEIOU]/.test(who) ? 'an' : 'a'
+  return `HATCHED! It's ${a} ${who} · Lv ${c.level}${c.shiny === true ? ' · ✦ Shiny!' : ''}`
+}
+
+/** The hatch at tick `k` of its burst: the egg wobbles two ticks, cracks two, then the creature parties. */
+export function hatchSprite(c: Creature, k: number): string {
+  const party = sprite(c.stage, c.level, k, 'party', c)
+  if (c.stage === 'Egg' || k >= 4) return party
+  const egg = k < 2 ? sprite('Egg', 1, k, 'walk').trimEnd() : k === 2 ? "(,.')" : '\\(o o)/'
+  return egg.padEnd(party.length)
 }
 
 /** How far through its level the creature is, 0 to 1. */
@@ -200,6 +232,19 @@ async function scan($: EngineInterface): Promise<void> {
     const before = asCreature(await $.store.get('creature'))
     await $.store.set('creature', fresh)
     await update($, creature, () => fresh)
+    // The first creature on a new machine hatches, once. A hidden band plays and records nothing.
+    if (before === null && isNewMachine(fresh) && (await $.store.get('hatchShown')) !== true
+        && (await $.store.get('hidden')) !== true) {
+      const id = ++nextId
+      const text = hatchText(fresh)
+      const from = await read($, frame)
+      await $.store.set('hatchShown', true)
+      await update($, burst, () => ({ level: fresh.level, stage: fresh.stage, from: 'Egg' as Stage, id, hatch: text, frame: from }))
+      startTicker($)
+      $.clock.after(HATCH_MS, () => void update($, burst, b => (b?.id === id ? null : b)))
+      $.ui.toast(text)
+      return
+    }
     if (before !== null && fresh.level > before.level) {
       const id = ++nextId
       await update($, burst, () => ({ level: fresh.level, stage: fresh.stage, from: before.stage, id }))
@@ -336,6 +381,16 @@ export const register: Register = on => {
     const look: Look = party !== null ? 'party' : !isWorking ? 'asleep' : (doing?.kind ?? 'walk')
     const cells = sprite(shown.stage, shown.level, n, look, shown)
 
+    if (party?.hatch !== undefined) {
+      const k = (n - (party.frame ?? 0) + 100_000) % 100_000
+
+      return (
+        <Box>
+          <Text color="claude">{hatchSprite(shown, k)}</Text>
+          <Text bold color="claude" wrap="truncate-end">{shown.stage !== 'Egg' && k < 4 ? '  …' : `  ${party.hatch}`}</Text>
+        </Box>
+      )
+    }
     if (party !== null) {
       const news = party.stage === party.from
         ? `  LEVEL UP!  Lv ${party.level}`

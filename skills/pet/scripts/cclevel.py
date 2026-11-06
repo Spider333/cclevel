@@ -1004,11 +1004,14 @@ def score(cdir, machine_jobs, save):
     seen = ledger.get("first_seen")
     hatched = seen if is_day(seen) and len(seen) == 10 and seen <= today_s else today_s if active or badges else None
     kept = {"days": banked, "estimated": sorted(estimated), "badges": badges, "weeks": weeks}
+    # The day the card first showed the hatch, kept so it shows once (see hatch_due).
+    hatch_seen = ledger.get("hatch_seen") if is_day(ledger.get("hatch_seen")) else None
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
         try:
             os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
             # Written to a fresh private file and swapped in: never through a link, never half written.
-            write_private(ledger_path, json.dumps(dict(kept, version=4, first_seen=ledger.get("first_seen") or today_s),
+            write_private(ledger_path, json.dumps(dict(kept, version=4, first_seen=ledger.get("first_seen") or today_s,
+                                                       **({"hatch_seen": hatch_seen} if hatch_seen else {})),
                                                   indent=1, sort_keys=True))
         except OSError:
             pass   # the card still shows; the day is banked at the next run
@@ -1041,6 +1044,11 @@ def score(cdir, machine_jobs, save):
         # Our story in short, for the panel: the day you met Claude Code, the day cclevel hatched your creature, and
         # the days in between and since (the card's "days old").
         "story": {"met": first, "hatched": hatched, "together_days": age_days},
+        # The ledger's first day (null before there is a ledger), so the creature band can tell a new machine from an old one.
+        "hatched": seen if is_day(seen) and len(seen) == 10 and seen <= today_s else None,
+        # Card only, never in --json: the hatch block shows on a new machine's first card (see hatch_lines).
+        "hatch_due": bool(active) and not hatch_seen and not (is_day(seen) and len(seen) == 10
+                                                               and seen < (today - timedelta(days=HATCH_DAYS)).isoformat()),
     }
 
 
@@ -1067,6 +1075,34 @@ def need_text(n):
     return "missing: %s (Brains +%d)" % (BRAINS[int(n["code"].split("_")[1]) - 1], g)
 
 
+HATCH_DAYS = 7   # how new a ledger may be for the hatch to show: an update never replays it for older machines
+
+
+def hatch_lines(r):
+    """The two lines on top of a new machine's first card: what hatched, or the egg and when it hatches."""
+    if r["stage"] == "Egg":
+        return ["An egg appeared!", "It hatches at Lv %d." % STAGES[-2][0]]
+    who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
+    shiny = (r.get("marks") or marks_of(None))["shiny"]
+    return ["Your egg hatched!", "It's %s · Lv %d%s" % (a_or_an(who), r["level"], " · %s!" % SHINY_MARK if shiny else "")]
+
+
+def record_hatch(cdir):
+    """Notes in the ledger that the card showed the hatch, so it shows once. Every other key stays as it is."""
+    today_s = datetime.now(timezone.utc).date().isoformat()
+    path = ledger_file(cdir)
+    ledger = load_dict(path) if os.path.isfile(path) and not os.path.islink(path) else {}
+    ledger.setdefault("version", 4)
+    if not is_day(ledger.get("first_seen")):
+        ledger["first_seen"] = today_s
+    ledger["hatch_seen"] = today_s
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_private(path, json.dumps(ledger, indent=1, sort_keys=True))
+    except OSError:
+        pass   # the block shows once more at the next run
+
+
 def render(r, board="on", how=False, tip=None, creature=None):
     """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (Default mode: the session-start
     hook joins it next time), "privacy" (Privacy mode: the opted-out note and no token, so cclevel sends nothing), "leaving"
@@ -1086,7 +1122,8 @@ def render(r, board="on", how=False, tip=None, creature=None):
         "%s old · %s%s · streak %d" % (count(raw["age_days"], "day"), count(raw["active_days"], "active day"), guessed,
                                        raw["current_streak"]),
     ]
-    out = ["", *("  %s   %s" % (art, text) for art, text in zip(marked_art(r["stage"], marks["look"], marks["shiny"]), side)), ""]
+    out = ["", *("  " + line for line in hatch_lines(r))] if r.get("hatch_due") else []
+    out += ["", *("  %s   %s" % (art, text) for art, text in zip(marked_art(r["stage"], marks["look"], marks["shiny"]), side)), ""]
     for name in STAT_ORDER:
         v = r["stats"][name]
         filled = round(v / 5)
@@ -3475,7 +3512,7 @@ def main():
         # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
         # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
         marks = result["marks"]
-        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"},
+        print(json.dumps(dict({k: v for k, v in result.items() if k not in ("lessons", "hatch_due")},
                               art=marked_art(result["stage"], marks["look"], marks["shiny"]),
                               **panel_extras(cdir, result), **friends_view(cdir, result)), indent=1))
     else:
@@ -3485,6 +3522,8 @@ def main():
         token = load_identity(cdir).get("token")
         board = privacy_state(cdir) or ("on" if token else "soon" if real else "off")
         print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token)))
+        if result["hatch_due"] and not args.no_save:
+            record_hatch(cdir)
 
 
 if __name__ == "__main__":
