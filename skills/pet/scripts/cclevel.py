@@ -1001,6 +1001,8 @@ def score(cdir, machine_jobs, save, extra=None):
         if not ok:
             needs.append({"code": "brains_%d" % (i + 1), "count": 0, "stat": "brains", "gain": per_check})
     needs.sort(key=lambda n: -n["gain"])
+    if extra is not None:   # for /pet fix only: the names it may move, never in the --json or a check-in
+        extra["unused_names"], extra["own_used"] = sorted(unused), sorted(own_used)
 
     earned = {
         "first_hook": w30["hooks_ran"] > 0, "first_skill": bool(own_used),
@@ -1176,6 +1178,7 @@ def render(r, board="on", how=False, tip=None, creature=None, leak=None):
             if how:
                 text, page = HOWTO[n["code"]]
                 out.append("      How: %s  %s%s" % (text, DOCS, page))
+        out.append("  Ask Claude: /pet fix")
     else:
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
@@ -3768,6 +3771,364 @@ def checked_in(cdir, server, ident, token, data, result):
     return 0, ident
 
 
+# ------------------------------------------------------------------ fix
+# /pet fix: the top Fix next item, done after a yes. The plan (--fix) reads and writes nothing. With --yes the scanner
+# backs up every file the plan names into ~/.claude/cclevel/fixes/<time>-<code>/ first. Only one fix is automatic: moving
+# unused own skills (a plain, local, exactly reversible move). The rest are made by Claude in the user's session, so
+# Claude Code shows the diff, or are advice only. Never run from the hook, the band or the panel. Nothing is sent.
+FIX_CLASS = {"unused_skills": "auto", "heavy_context": "assisted", "brains_1": "assisted", "brains_3": "assisted",
+             "brains_4": "assisted", "brains_5": "assisted", "brains_6": "assisted", "brains_7": "assisted",
+             "brains_8": "assisted", "brains_9": "assisted"}
+FIX_DENY_RULE = "Read(./.env)"
+FIX_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+CLASS_TEXT = {"auto": "automatic, after your yes. Reversible.",
+              "assisted": "Claude makes this change and shows you the diff first. Backup first, reversible."}
+
+
+def tilde(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def tree_hash(path):
+    """SHA-256 of a file, or of a folder's names and bytes in order. A link is hashed as its target text, never followed."""
+    h = hashlib.sha256()
+    if os.path.islink(path):
+        h.update(b"link:" + os.readlink(path).encode())
+    elif os.path.isfile(path):
+        with open(path, "rb") as f:
+            h.update(f.read())
+    elif os.path.isdir(path):
+        for top, dirs, files in os.walk(path):
+            dirs.sort()
+            for name in sorted(dirs + files):
+                full = os.path.join(top, name)
+                h.update(os.path.relpath(full, path).encode() + b"\0")
+                if os.path.islink(full):
+                    h.update(b"link:" + os.readlink(full).encode())
+                elif os.path.isfile(full):
+                    with open(full, "rb") as f:
+                        h.update(f.read())
+    else:
+        return None
+    return h.hexdigest()
+
+
+def in_git(path):
+    """True if `path` sits in a git work tree (a .git anywhere above it). Read from the folders only; git is not run."""
+    path = os.path.realpath(path)
+    while True:
+        if os.path.lexists(os.path.join(path, ".git")):
+            return True
+        up = os.path.dirname(path)
+        if up == path:
+            return False
+        path = up
+
+
+def fixes_dir(cdir):
+    return os.path.join(cdir, "cclevel", "fixes")
+
+
+def settings_refusal(path):
+    if os.path.islink(path):
+        return "Your settings.json is a link, so cclevel will not change it. Add the change yourself:"
+    if os.path.exists(path) and not isinstance(load_json(path), dict):
+        return "Your settings.json does not parse, so cclevel will not touch it. Fix it first (claude /doctor), then try again."
+    if not os.access(path if os.path.exists(path) else os.path.dirname(path), os.W_OK):
+        return "Your settings.json is write-protected, so cclevel will not change it. Add the change yourself:"
+    return None
+
+
+def fix_plan(cdir, result, extra, code, name=None):
+    """What a fix would do: {code, need, cls, targets [(path, action)], change [lines], when, refusal, id}. Reads only."""
+    need = next((n for n in result["needs"] if n["code"] == code), None)
+    plan = {"code": code, "need": need, "cls": FIX_CLASS.get(code, "advice"), "targets": [], "change": [],
+            "when": "", "refusal": None}
+    if need is None:
+        return plan
+    gain = "%s +%d" % (need["stat"].capitalize(), need["gain"])
+    plan["when"] = "%s now" % gain
+    how = HOWTO.get(code, ("", ""))[0]
+    agents = os.path.join(cdir, "agents")
+    name = name or ""
+    if name and not FIX_NAME.match(name):
+        plan["refusal"] = "A name is lower-case letters, digits and dashes, up to 40 characters."
+    if code == "unused_skills":
+        moves = []
+        for skill in extra.get("unused_names", []):
+            for base in ("skills", "commands"):
+                folder = os.path.join(cdir, base, skill)
+                if os.path.isfile(os.path.join(folder, "SKILL.md")):
+                    moves.append(folder)
+        bases = {os.path.dirname(m) for m in moves}
+        git = [b for b in sorted(bases) if in_git(b)]
+        try:
+            dev = os.stat(cdir).st_dev
+            far = [m for m in moves if os.lstat(m).st_dev != dev]
+        except OSError:
+            far = moves
+        if git:
+            plan["refusal"] = ("Your %s folder is a git repository, so cclevel will not move folders in it. Move them yourself:"
+                               % os.path.basename(git[0]))
+        elif any(os.path.islink(m) for m in moves):
+            plan["refusal"] = "One of these skill folders is a link, so cclevel will not move it. Move them yourself:"
+        elif far:
+            plan["refusal"] = "One of these folders is on another disk, so cclevel will not move it. Move them yourself:"
+        plan["targets"] = [(m, "move") for m in moves]
+        where = sorted({tilde(b) for b in bases}) or [tilde(os.path.join(cdir, "skills"))]
+        plan["change"] = ["Moves these folders out of %s into %s:" % (" and ".join(where),
+                                                                     tilde(os.path.join(fixes_dir(cdir), "<time>-unused_skills")) + "/"),
+                          "  " + ", ".join(os.path.basename(m) for m in moves)]
+    elif code in ("brains_7", "brains_8"):
+        path = os.path.join(cdir, "settings.json")
+        plan["refusal"] = plan["refusal"] or settings_refusal(path)
+        plan["targets"] = [(path, "edit" if os.path.exists(path) else "create")]
+        if code == "brains_7":
+            plan["change"] = ["Adds to permissions.deny in %s: \"%s\"" % (tilde(path), FIX_DENY_RULE)]
+        else:
+            plan["change"] = ["Adds a Stop hook to %s, with a command you pick (for example a sound when Claude finishes)."
+                              % tilde(path)]
+            plan["when"] = "%s after the hook runs once" % gain
+    elif code == "brains_9":
+        files = sorted(glob.glob(os.path.join(agents, "*.md")))
+        bare = [p for p in files if not field(frontmatter(read_head(p)), "model") and not os.path.islink(p)]
+        if not bare:
+            plan["cls"] = "advice"
+            how = "make a subagent first (brains_5), then give it model: haiku"
+        else:
+            plan["targets"] = [(bare[0], "edit")]
+            plan["change"] = ["Adds model: haiku to the frontmatter of %s." % tilde(bare[0])]
+            plan["when"] = "%s after it does real work" % gain
+    elif code in ("brains_5", "brains_6"):
+        path = os.path.join(agents, "%s.md" % (name or ("code-reviewer" if code == "brains_6" else "researcher")))
+        if os.path.lexists(path):
+            plan["cls"] = "advice"
+            how = "you have %s already: ask Claude to use it" % tilde(path)
+        else:
+            plan["targets"] = [(path, "create")]
+            plan["change"] = ["Creates a new subagent %s (%s)." % (
+                tilde(path), "a code reviewer to run after each change" if code == "brains_6" else "for research and reading")]
+            plan["when"] = "%s after you use it" % gain
+    elif code == "brains_3":
+        path = os.path.join(cdir, "skills", name or "my-task", "SKILL.md")
+        if os.path.lexists(os.path.dirname(path)):
+            plan["refusal"] = plan["refusal"] or "A skill with that name exists. Pick another name: /pet fix brains_3 NAME"
+        plan["targets"] = [(path, "create")]
+        plan["change"] = ["Creates a new skill %s from a task you name (rename it: /pet fix brains_3 NAME)." % tilde(path)]
+        plan["when"] = "%s after you use 3 own skills" % gain
+    elif code == "brains_4":
+        used = [s for s in sorted(extra.get("own_used", []))
+                if os.path.isfile(os.path.join(cdir, "skills", s, "SKILL.md"))]
+        if not used:
+            plan["cls"] = "advice"
+            how = "use one of your own skills first, then put a script next to its SKILL.md"
+        else:
+            path = os.path.join(cdir, "skills", used[0], "scripts", "%s.py" % (name or "helper"))
+            plan["refusal"] = plan["refusal"] or ("That script exists. Pick another name." if os.path.lexists(path) else None)
+            plan["targets"] = [(path, "create"), (os.path.join(cdir, "skills", used[0], "SKILL.md"), "edit")]
+            plan["change"] = ["Creates %s and adds one line to that skill's SKILL.md saying when to run it." % tilde(path)]
+            plan["when"] = "%s after you use the skill" % gain
+    elif code == "heavy_context":
+        path = os.path.join(cdir, "CLAUDE.md")
+        if not os.path.isfile(path) or os.path.islink(path):
+            plan["cls"] = "advice"
+        else:
+            skill = os.path.join(cdir, "skills", name or "claude-md-howtos", "SKILL.md")
+            plan["targets"] = [(path, "edit"), (skill, "create")]
+            plan["change"] = ["Moves long how-tos out of %s into a new skill %s." % (tilde(path), tilde(skill)),
+                              "Claude shows the trim as a diff before writing."]
+            plan["when"] = "Health up to +%d now, by how much is moved" % need["gain"]
+    elif code == "brains_1":
+        path = os.path.join(os.getcwd(), "CLAUDE.md")
+        if os.path.lexists(path):
+            plan["cls"] = "advice"
+            how = "this folder has a CLAUDE.md already: open Claude Code here once so it counts"
+        else:
+            plan["targets"] = [(path, "create")]
+            plan["change"] = ["Creates a starter CLAUDE.md for this folder: %s" % tilde(path)]
+            plan["when"] = "%s after your next session in this folder" % gain
+    plan["how"] = how
+    if plan["cls"] == "advice":
+        plan["targets"], plan["change"] = [], []
+    for path, action in plan["targets"]:
+        if action == "edit" and os.path.islink(path):
+            plan["refusal"] = plan["refusal"] or "%s is a link, so cclevel will not touch it." % tilde(path)
+    ident = json.dumps([code, name, [(p, a, tree_hash(p)) for p, a in plan["targets"]]])
+    plan["id"] = hashlib.sha256(ident.encode()).hexdigest()[:8]
+    return plan
+
+
+def fix_plan_text(plan, rank, name=None):
+    need = plan["need"]
+    out = ["  Fix next #%d: %s" % (rank, need_text(need))]
+    if plan["cls"] == "advice":
+        kind = "a habit, not a setting" if plan["code"] in ("interrupts", "brains_10", "brains_2") else "for you, not a file"
+        out.append("  This one is %s: %s." % (kind, plan["how"]))
+        return out
+    if plan["refusal"]:
+        out.append("  " + plan["refusal"])
+        out += ["  " + line for line in plan["change"]] if "yourself" in plan["refusal"] else []
+        return out
+    out.append("  Class: " + CLASS_TEXT[plan["cls"]])
+    out += ["  " + line for line in plan["change"]]
+    out.append("  Gain: %s." % plan["when"])
+    out.append("  Undo: /pet fix undo puts %s back." % ("them" if len(plan["targets"]) > 1 else "it"))
+    out.append("  To apply: --fix %s%s --plan %s --yes" % (plan["code"], " --fix-name " + name if name else "", plan["id"]))
+    return out
+
+
+def fix_command(args, cdir, result, extra, real=False):
+    """--fix [CODE] prints the plan; with --plan ID --yes it backs up and, for the automatic fix, applies it."""
+    needs = result["needs"]
+    code = args.fix
+    if code and code not in (n["code"] for n in needs):
+        print("  %s is not on your Needs list right now, so there is nothing to fix." % code)
+        return 0
+    if not needs:
+        print("  Needs: nothing right now. Nothing to fix.")
+        return 0
+    if not code:
+        out = []
+        for i, n in enumerate(needs):
+            plan = fix_plan(cdir, result, extra, n["code"], args.fix_name)
+            if plan["cls"] != "advice":
+                if i:
+                    out.append("  The next one I can fix:")
+                print("\n".join(out + fix_plan_text(plan, i + 1, args.fix_name)))
+                return 0
+            out += fix_plan_text(plan, i + 1)
+        print("\n".join(out + ["  None of your Needs is a setting cclevel can change. The How lines above say what to do."]))
+        return 0
+    rank = [n["code"] for n in needs].index(code) + 1
+    plan = fix_plan(cdir, result, extra, code, args.fix_name)
+    if not args.yes or plan["cls"] == "advice" or plan["refusal"]:
+        print("\n".join(fix_plan_text(plan, rank, args.fix_name)))
+        if args.yes and plan["cls"] == "advice":
+            print("  Nothing was changed.")
+        return 1 if args.yes and plan["refusal"] else 0
+    if args.plan != plan["id"]:
+        print("  The plan changed since you saw it (or no --plan was given). Nothing was changed. Run /pet fix again.")
+        return 1
+    return fix_apply(cdir, plan, result, real)
+
+
+def private_dir(path):
+    """Makes a 700 folder for cclevel, refusing a link or a file in the way. True if it is a plain folder now."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    st = os.lstat(path)
+    return stat.S_ISDIR(st.st_mode)
+
+
+def fix_apply(cdir, plan, result, real=False):
+    base = os.path.join(cdir, "cclevel")
+    if not (private_dir(base) and private_dir(fixes_dir(cdir))):
+        print("  %s is not a plain folder, so cclevel will not save a backup there. Nothing was changed." % tilde(fixes_dir(cdir)))
+        return 1
+    fid = "%s-%s" % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ"), plan["code"])
+    folder = os.path.join(fixes_dir(cdir), fid)
+    try:
+        os.mkdir(folder, 0o700)
+        os.mkdir(os.path.join(folder, "files"), 0o700)
+    except OSError:
+        print("  Something is in the way at %s, so cclevel will not save a backup there. Nothing was changed." % tilde(folder))
+        return 1
+    entries = []
+    for i, (path, action) in enumerate(plan["targets"]):
+        e = {"path": path, "action": action, "backup": os.path.join("files", str(i)), "sha256_before": tree_hash(path)}
+        if action == "edit":
+            e["mode"] = stat.S_IMODE(os.lstat(path).st_mode)
+            shutil.copy2(path, os.path.join(folder, e["backup"]), follow_symlinks=False)
+            os.chmod(os.path.join(folder, e["backup"]), 0o600)
+        entries.append(e)
+    manifest = {"version": 1, "id": fid, "code": plan["code"], "class": plan["cls"], "made": fid[:18], "entries": entries}
+    mpath = os.path.join(folder, "manifest.json")
+    write_private(mpath, json.dumps(manifest, indent=1))
+    if plan["cls"] != "auto":
+        print("  Backup saved in %s/. Claude now makes this change:" % tilde(folder))
+        print("\n".join("  " + line for line in plan["change"]))
+        print("  Then run /pet to confirm. Undo: /pet fix undo.")
+        return 0
+    done = []
+    try:
+        for e in entries:
+            os.rename(e["path"], os.path.join(folder, e["backup"]))
+            done.append(e)
+    except OSError as err:
+        for e in reversed(done):
+            os.rename(os.path.join(folder, e["backup"]), e["path"])
+        manifest["undone"] = True
+        write_private(mpath, json.dumps(manifest, indent=1))
+        print("  Could not move %s (%s). Everything is back as it was." % (tilde(e["path"]), err.strerror or type(err).__name__))
+        return 1
+    manifest["applied"] = True
+    write_private(mpath, json.dumps(manifest, indent=1))
+    after = score(cdir, machine_jobs=real, save=False)
+    print("  Moved %s into %s/." % (count(len(entries), "folder"), tilde(folder)))
+    print("  Health %d → %d. Undo: /pet fix undo puts them back." % (result["health"], after["health"]))
+    return 0
+
+
+def fix_undo(cdir):
+    """Puts the latest fix back from its manifest. The current versions go into the fix folder; nothing is deleted."""
+    root = fixes_dir(cdir)
+    if os.path.islink(root) or os.path.islink(os.path.join(cdir, "cclevel")):
+        print("  %s is a link, so cclevel will not undo from it." % tilde(root))
+        return 1
+    manifests = []
+    for name in sorted(os.listdir(root), reverse=True) if os.path.isdir(root) else []:
+        folder = os.path.join(root, name)
+        m = load_dict(os.path.join(folder, "manifest.json"))
+        if not os.path.islink(folder) and isinstance(m.get("entries"), list) and not m.get("undone"):
+            manifests.append((folder, m))
+    if not manifests:
+        print("  Nothing to undo.")
+        return 0
+    folder, m = manifests[0]
+    for e in m["entries"]:
+        path, backup = e.get("path"), os.path.join(folder, str(e.get("backup")))
+        if not isinstance(path, str) or not os.path.isabs(path):
+            print("  The fix list in %s is not one cclevel wrote. Nothing was changed." % tilde(folder))
+            return 1
+        if os.path.islink(path) or os.path.islink(os.path.dirname(path)):
+            print("  %s is now a link, so cclevel will not put the backup there. Nothing was changed." % tilde(path))
+            return 1
+        moved = e.get("action") == "move" and m.get("applied")
+        if e.get("action") == "edit" or moved:
+            if os.path.islink(backup) or tree_hash(backup) != e.get("sha256_before"):
+                print("  The backup of %s is missing or changed, so cclevel will not restore it. Nothing was changed."
+                      % tilde(path))
+                return 1
+    replaced = os.path.join(folder, "replaced")
+    try:
+        os.mkdir(replaced, 0o700)
+    except FileExistsError:
+        pass
+    back = 0
+    for i, e in enumerate(m["entries"]):
+        path, backup = e["path"], os.path.join(folder, e["backup"])
+        if e["action"] == "move" and not m.get("applied"):
+            continue
+        if os.path.lexists(path):
+            os.rename(path, os.path.join(replaced, str(i)))
+        if e["action"] in ("move", "edit"):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.rename(backup, path)
+            if "mode" in e:
+                os.chmod(path, e["mode"])
+            back += 1
+    m["undone"] = True
+    write_private(os.path.join(folder, "manifest.json"), json.dumps(m, indent=1))
+    what = "folder" if m.get("code") == "unused_skills" else "file"
+    print("  Put back %s from %s. The versions they replaced are in that folder." % (count(back, what), m.get("id")))
+    return 0
+
+
 def main():
     default_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     # Whole flag names only: an abbreviation such as --ye would otherwise count as --yes.
@@ -3814,6 +4175,11 @@ def main():
     board.add_argument("--leaks", action="store_true",
                        help="leak finder: where your tokens went over the last weeks, priced as an API yardstick; sends and "
                             "saves nothing")
+    board.add_argument("--fix", metavar="CODE", nargs="?", const="",
+                       help="plan the top Fix next item (or CODE); writes nothing. With --plan ID --yes: backs up, then applies")
+    board.add_argument("--fix-undo", action="store_true", help="put back the latest fix from its backup")
+    ap.add_argument("--plan", metavar="ID", help=argparse.SUPPRESS)
+    ap.add_argument("--fix-name", metavar="NAME", help="a name for a new skill, subagent or script a fix creates")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--panel", choices=("on", "off"),
@@ -3855,11 +4221,15 @@ def main():
         except (OSError, subprocess.SubprocessError) as e:
             print("cclevel: could not set up the panel (%s)." % (getattr(e, "strerror", None) or type(e).__name__))
         sys.exit(1)
+    if args.fix_undo:
+        sys.exit(fix_undo(cdir))
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     extra = {}   # the leak finder's names and numbers: never in the card's --json or a check-in
-    quiet = args.no_save or args.preview or args.readme_badge or args.evolve or args.leaks
+    quiet = args.no_save or args.preview or args.readme_badge or args.evolve or args.leaks or args.fix is not None
     result = score(cdir, machine_jobs=real, save=not quiet, extra=extra)
+    if args.fix is not None:
+        sys.exit(fix_command(args, cdir, result, extra, real))
     if args.leaks:
         report = leaks(extra, result, datetime.now(timezone.utc).date())
         print(json.dumps(report, indent=1) if args.json else leaks_text(report))

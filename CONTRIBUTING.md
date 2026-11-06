@@ -26,6 +26,7 @@ These are the promises users rely on. A change that breaks one needs a very good
 5. **Pages load only their own files.** The CSP is `default-src 'self'`. No outside fonts, scripts or images, and board data is written with `textContent`, never as HTML.
 6. **Word lists stay in sync.** Creature and group names come from the same lists in `cclevel.py`, `server/src/names.js` and `server/public/join.js`; a test checks them.
 7. **No request logs, no IP addresses stored.** Keep `observability` off and check-ins on the board's `workers.dev` address. `cclevel.com` serves the website only: a custom domain keeps Cloudflare's sampled visit logs with IP addresses, so the Worker refuses `/api/*` there and the scanner's API calls never use it. Links people open (invites, duels, cards) may point at cclevel.com.
+8. **Fixes only after a yes, backup first.** `/pet fix` is the only command that changes files outside `~/.claude/cclevel/`. It plans first and writes nothing; it changes anything only with the plan's id and `--yes`, after a backup and a manifest in `~/.claude/cclevel/fixes/`. Undo never deletes. It never removes a user's config, never touches an MCP server, and never runs from the hook, the band or the panel.
 
 ## Pull requests
 

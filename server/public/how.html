@@ -217,6 +217,10 @@
 <p><code>/pet leaks</code> works it out on your machine from the last 4 weeks of logs: tokens per week, cache written again after pauses, your start-up context, auto-compactions and connectors you never call. Dollars are API list prices, a yardstick and not a charge. Nothing is sent or stored, in Default mode and in Privacy mode, and it never changes your score. <code>/context</code> is the exact view of the session you are in.</p>
 </details>
 <details>
+<summary>Can it fix my setup?</summary>
+<p>Ask Claude <code>/pet fix</code>. It shows a plan for the top item under Needs: what is wrong, every file it would touch, the exact change and how to undo. Nothing changes until you say yes, and a backup comes first. Moving skills you have not used in 90 days is automatic after your yes; other fixes Claude makes in your session and shows you the diff first. Habits, like plan mode or signing in to a connector, stay advice. <code>/pet fix undo</code> puts the last fix back. It works the same in Default mode and in Privacy mode: cclevel sends nothing.</p>
+</details>
+<details>
 <summary>Privacy</summary>
 <p>The board holds no account, e-mail address or IP address. The website, cclevel.com, is a domain on Cloudflare, which keeps a sample of visits with IP addresses for at least 31 days; we cannot switch that off. Check-ins never go through it: they go to the board's own address, https://go.cclevel.workers.dev, which keeps no such logs. A creature is its score (nine numbers and a list of badges), a generated name, the hash of a random token and a few dates and counters. It appears on the world lists while its owner keeps the world ranking on, which joining does; <code>--world off</code> takes it off the lists at once, and Privacy mode (<code>--privacy on</code>, or <code>--leave</code>) deletes the row and stops the plugin from joining or checking in again. Totals count every creature with check-ins on two days, listed or not, and appear only from 100 creatures. <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">PRIVACY.md</a> lists every field.</p>
 </details>
