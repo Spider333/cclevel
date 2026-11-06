@@ -4393,7 +4393,7 @@ class Leaks(unittest.TestCase):
         comp = next(f for f in r["leaks"] if f["code"] == "compaction")
         self.assertEqual((comp["times"], comp["sessions"], comp["average_before"]), (2, 1, 400000))
         self.assertEqual(comp["tokens_written_again"], 9000)   # the reply after the first one; none after the second
-        self.assertIn("Auto-compaction: 2 times in 4 weeks, in 1 of 1 session", self.text())
+        self.assertIn("Auto-compaction: 2 times in 4 weeks (and 1 /compact typed), in 1 of 1 session", self.text())
 
     def test_connectors_set_up_but_never_called(self):
         plugin = os.path.join(self.dir, "plugin-root")

@@ -2060,8 +2060,9 @@ def leaks_text(report):
                     i, LEAK_WEEKS, " (%s typed)" % count(f["manual"], "/compact") if f["manual"] else ""))
             else:
                 size = ", average %s tokens before" % tok_short(f["average_before"]) if f["average_before"] else ""
-                out.append("   %d. Auto-compaction: %s in %d weeks, in %d of %s%s." % (
-                    i, count(f["times"], "time"), LEAK_WEEKS, f["sessions"], count(f["of_sessions"], "session"), size))
+                typed = " (and %s typed)" % count(f["manual"], "/compact") if f["manual"] else ""
+                out.append("   %d. Auto-compaction: %s in %d weeks%s, in %d of %s%s." % (
+                    i, count(f["times"], "time"), LEAK_WEEKS, typed, f["sessions"], count(f["of_sessions"], "session"), size))
                 out.append("      The next reply wrote %s tokens of cache again: about %s a week (yardstick)." % (
                     tok_short(f["tokens_written_again"]), money(f["per_week"])))
         out.append("      How: " + LEAK_HOW[f["code"]])
