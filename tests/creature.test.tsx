@@ -171,12 +171,16 @@ test('a level up bursts for a few seconds, then the band goes back to normal', a
 test('a new stage is an evolution, and the Egg hatches', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on, { creature: { ...STORED, level: 44, stage: 'Big Guy', at: NOW - 2 * HOUR } })
-  engine(on)
+  const toasts: string[] = []
+  engine(on, undefined, toasts)
   await $.session.start(start)
   await clock.advance(1)
   const ui = await $.ui.mount(BAND)
   expect(await bandText(ui, /EVOLVED/)).toBe('  EVOLVED into a Gigachad!  Lv 46')
   await ui.unmount()
+  // The stage-up toast says how to post it.
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('Your Big Guy became a Gigachad! Lv 46. Post it: /pet evolve')
 })
 
 test('an Egg that becomes a Hatchling hatches', async ($, on) => {

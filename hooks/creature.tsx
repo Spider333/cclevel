@@ -302,7 +302,7 @@ async function scan($: EngineInterface): Promise<void> {
       $.clock.after(BURST_MS, () => void update($, burst, b => (b?.id === id ? null : b)))
       $.ui.toast(fresh.stage === before.stage
         ? `Level up! Your ${fresh.stage} is Lv ${fresh.level}.`
-        : `Your ${before.stage} became a ${fresh.stage}! Lv ${fresh.level}.`)
+        : `Your ${before.stage} became a ${fresh.stage}! Lv ${fresh.level}. Post it: /pet evolve`)
     }
   } catch {
     // No python3, a scan past its timeout, output that is not JSON, or a surface with no host

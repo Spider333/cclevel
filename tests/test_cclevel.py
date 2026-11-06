@@ -978,6 +978,28 @@ class Framework(unittest.TestCase):
         self.assertIn("No finished days banked in 2026", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
         self.assertNotIn("Feb", cclevel.wrapped(self.dir, 2025, date(2025, 1, 20)))
 
+    def test_evolved_shows_for_seven_days_after_a_new_stage(self):
+        # 35,820 XP over 199 days, then one day that crosses 36,000: Lil Guy to Big Guy on 2026-12-03.
+        start = date(2026, 5, 18)
+        banked = {(start + timedelta(days=i)).isoformat(): 180 for i in range(199)}
+        banked["2026-12-03"] = 550
+        want = {"from": "Lil Guy", "to": "Big Guy", "day": "2026-12-03"}
+        self.assertIsNone(cclevel.evolved_of(banked, {}, date(2026, 12, 2)))   # a day to come never counts
+        for n in range(7):
+            self.assertEqual(cclevel.evolved_of(banked, {}, date(2026, 12, 3) + timedelta(days=n)), want, n)
+        self.assertIsNone(cclevel.evolved_of(banked, {}, date(2026, 12, 10)))
+        # Only the newest stage counts, and an Egg that hatched comes from "Egg".
+        self.assertEqual(cclevel.evolved_of({"2026-12-03": 550, "2026-12-04": 550}, {}, date(2026, 12, 5)),
+                         {"from": "Egg", "to": "Hatchling", "day": "2026-12-04"})
+        self.assertIsNone(cclevel.evolved_of({}, {}, date(2026, 12, 5)))
+        # The card's line.
+        result = self.score()
+        self.assertIsNone(result["evolved"])
+        result["evolved"] = want
+        self.assertIn("  Evolved into a Big Guy on 3 Dec! Post it: /pet evolve\n", cclevel.render(result))
+        result["evolved"] = None
+        self.assertNotIn("Evolved into", cclevel.render(result))
+
     def test_milestones_match_a_recount_of_the_xp(self):
         banked = {"2025-01-%02d" % d: 550 for d in range(1, 32)}
         banked.update({"2025-03-%02d" % d: 550 for d in range(1, 31)})
@@ -3387,6 +3409,64 @@ class Leaderboard(unittest.TestCase):
         out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
         self.assertGreater(sent, 0)
         self.assertTrue(FakeBoard.seen)
+
+    def test_evolve_sends_nothing_writes_nothing_in_either_mode(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        folder = os.path.join(self.dir, "cclevel")
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            before = {f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}
+            out, sent = run_counted("--claude-dir", self.dir, "--evolve", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertEqual({f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}, before)
+            self.assertIn("  Post it on X (opens a ready post you can edit): https://x.com/intent/post?text=", out.stdout)
+            self.assertIn("cclevel sends nothing", out.stdout)
+            for c in CANARIES:
+                self.assertNotIn(c, out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        # Positive control: the same counter sees --rank reach the fake board in Default mode.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
+        self.assertTrue(FakeBoard.seen)
+
+    def test_the_evolve_link_holds_only_text_and_the_class_page(self):
+        for cls, slug in (("Shipper", "shipper"), ("AFK Farmer", "afk-farmer"), ("Loot Goblin", "loot-goblin"),
+                          ("Tokenmaxxer", "tokenmaxxer"), ("Perfectly Balanced", "perfectly-balanced"), ("Noob", "noob"),
+                          ("Unhatched", None)):
+            for evolved, stage, level in ((None, "Gigachad", 47), ({"from": "Big Guy", "to": "Gigachad", "day": "2026-12-03"},
+                                          "Gigachad", 45), ({"from": "Egg", "to": "Hatchling", "day": "2026-12-03"}, "Hatchling", 5)):
+                for server, site in ((cclevel.DEFAULT_SERVER, "https://cclevel.com"), ("https://example.test", "https://example.test")):
+                    r = {"stage": stage, "class": cls, "level": level, "evolved": evolved}
+                    link = cclevel.evolve_link(server, r)
+                    parts = urllib.parse.urlsplit(link)
+                    self.assertEqual((parts.scheme, parts.netloc, parts.path), ("https", "x.com", "/intent/post"))
+                    query = urllib.parse.parse_qs(parts.query, strict_parsing=True)
+                    self.assertEqual(sorted(query), ["text", "url"])
+                    text, url = query["text"][0], query["url"][0]
+                    self.assertIn(stage, text)
+                    self.assertIn("Lv %d" % level, text)
+                    self.assertTrue(text.endswith("What's yours?"), text)
+                    if slug:
+                        self.assertIn(cls, text)
+                    self.assertNotIn("Unhatched", text)
+                    self.assertEqual(url, "%s/class/%s" % (site, slug) if slug else site)
+                    self.assertEqual(os.path.isfile(os.path.join(ROOT, "server", "public", "class", "%s.html" % slug)), bool(slug))
+                    if evolved and evolved["from"] == "Egg":
+                        self.assertIn("just hatched", text)
+                    elif evolved:
+                        self.assertIn("just evolved into", text)
+                    else:
+                        self.assertIn("My Claude Code is a", text)
+        # Nothing private: no creature name or token reaches it, on a joined machine either.
+        os.remove(self.off)
+        token = self.joined()["token"]
+        out = run("--claude-dir", self.dir, "--evolve", env={"CCLEVEL_SERVER": self.url})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn(token, out.stdout)
+        self.assertNotIn(cclevel.creature_name(token), out.stdout)
 
     def test_the_readme_badge_decodes_to_label_message_and_colour(self):
         def unbadge(part):   # shields.io's static-badge rules, read back

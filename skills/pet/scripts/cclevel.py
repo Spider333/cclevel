@@ -1054,6 +1054,8 @@ def score(cdir, machine_jobs, save):
         # The ledger's first day (null before there is a ledger), so the creature band can tell a new machine from an old one.
         "hatched": seen if is_day(seen) and len(seen) == 10 and seen <= today_s else None,
         # Card only, never in --json: the hatch block shows on a new machine's first card (see hatch_lines).
+        # The newest stage reached in the last EVOLVED_DAYS days, {from, to, day}: the card's line and /pet evolve's post.
+        "evolved": evolved_of(banked, badges, today),
         "hatch_due": bool(active) and not hatch_seen and not (is_day(seen) and len(seen) == 10
                                                                and seen < (today - timedelta(days=HATCH_DAYS)).isoformat()),
     }
@@ -1151,6 +1153,8 @@ def render(r, board="on", how=False, tip=None, creature=None):
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
+    if r.get("evolved"):
+        out += ["", "  Evolved into %s on %s! Post it: /pet evolve" % (a_or_an(r["evolved"]["to"]), short_day(r["evolved"]["day"]))]
     if tip:
         stat, (_, text, page) = tip
         out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
@@ -1191,6 +1195,59 @@ def milestones(banked, badges):
     for floor, name in sorted(STAGES[:-1]):   # Egg is where every creature starts
         marks[name] = next((d for d in days if level_of(xp_until(banked, badges, d)) >= floor), None)
     return marks
+
+
+EVOLVED_DAYS = 7   # how long after the day a new stage was reached the card says so
+
+
+def evolved_of(banked, badges, today):
+    """The newest stage reached, {from, to, day}, if that day is one of the last EVOLVED_DAYS. From the ledger alone,
+    so a stage reached while you were away still shows. None otherwise."""
+    marks = milestones(banked, badges)
+    for i, (_, name) in enumerate(STAGES[:-1]):   # GOAT first: only the newest stage counts
+        if marks[name]:
+            ago = (today - date.fromisoformat(marks[name])).days
+            return {"from": STAGES[i + 1][1], "to": name, "day": marks[name]} if 0 <= ago < EVOLVED_DAYS else None
+    return None
+
+
+def class_slug(cls):
+    """The class page's name in its address, /class/<slug>; None for Unhatched, which has no page."""
+    return None if cls == UNHATCHED else cls.lower().replace(" ", "-")
+
+
+def evolve_link(server, result):
+    """An X post link. Only its text and the class page's address go in it: stage, class and level, no name or token."""
+    who = result["stage"] if result["class"] == UNHATCHED else "%s %s" % (result["stage"], result["class"])
+    ev = result.get("evolved")
+    if ev and ev["from"] == "Egg":
+        text = "My Claude Code just hatched: Lv %d %s. What's yours?" % (result["level"], who)
+    elif ev:
+        text = "My Claude Code just evolved into %s, Lv %d. What's yours?" % (a_or_an(who), result["level"])
+    else:
+        text = "My Claude Code is %s, Lv %d. What's yours?" % (a_or_an(who), result["level"])
+    slug = class_slug(result["class"])
+    page = "%s/class/%s" % (site(server), slug) if slug else site(server)
+    return "https://x.com/intent/post?" + urllib.parse.urlencode({"text": text, "url": page}, quote_via=urllib.parse.quote)
+
+
+def evolve_text(server, result, today):
+    ev = result.get("evolved")
+    who = result["stage"] if result["class"] == UNHATCHED else "%s %s" % (result["stage"], result["class"])
+    if ev and ev["from"] == "Egg":
+        first = "Your egg hatched into a Hatchling on %s (Lv %d)." % (story_day(ev["day"], today), result["level"])
+    elif ev:
+        first = "Your %s became %s on %s (Lv %d)." % (ev["from"], a_or_an(ev["to"]), story_day(ev["day"], today), result["level"])
+    else:
+        first = "Your creature is %s, Lv %d. No new stage in the last %d days, so the post says what it is now." % (
+            a_or_an(who), result["level"], EVOLVED_DAYS)
+    return "\n".join([
+        "", "  " + first,
+        "  Post it on X (opens a ready post you can edit): " + evolve_link(server, result),
+        "  The post is public and shows your level, stage and class, nothing else. cclevel sends nothing: opening the link",
+        "  is your own visit to x.com, and the link in the post opens %s%s." % (
+            "your class's page on " if class_slug(result["class"]) else "",
+            urllib.parse.urlsplit(site(server)).netloc or site(server)), ""])
 
 
 WRAPPED_VERSION = 1          # must match the Wrapped page, server/public/wrapped.js
@@ -3437,6 +3494,8 @@ def main():
     board.add_argument("--readme-badge", action="store_true",
                        help="Markdown for a \"Lv 42 · Gigachad\" badge for a README or GitHub profile; the picture comes from "
                             "shields.io; sends nothing")
+    board.add_argument("--evolve", action="store_true",
+                       help="a ready X post with your stage, class and level and a link to your class's page; sends nothing")
     board.add_argument("--learn", action="store_true",
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
     board.add_argument("--tips", choices=("on", "off"),
@@ -3482,10 +3541,10 @@ def main():
         sys.exit(1)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
-    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview or args.readme_badge))
+    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview or args.readme_badge or args.evolve))
     # A folder with no Claude Code activity has no creature yet, so it gets no seed either.
     result["marks"] = creature_marks(cdir, save=result["raw"]["active_days"] > 0
-                                     and not (args.no_save or args.preview or args.readme_badge))
+                                     and not (args.no_save or args.preview or args.readme_badge or args.evolve))
     if args.wrapped is not None:
         today = datetime.now(timezone.utc).date()
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
@@ -3500,6 +3559,9 @@ def main():
         return
     if args.readme_badge:
         print(readme_badge_text(resolve_server(args, load_identity(cdir)), result, datetime.now(timezone.utc).date()))
+        return
+    if args.evolve:
+        print(evolve_text(resolve_server(args, load_identity(cdir)), result, datetime.now(timezone.utc).date()))
         return
     if args.learn:
         sys.exit(learn_command(cdir, result, save=not args.no_save))
