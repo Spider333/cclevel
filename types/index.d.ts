@@ -20,6 +20,10 @@ export type Creature = {
   cls?: string
   /** The ledger's first day from the scan, or null before there is a ledger: whether this machine is new. */
   hatched?: string | null
+  /** Empty UTC days just before today (`raw.away_days`), or null with none before today: a welcome back from 2. */
+  away?: number | null
+  /** The current streak in days (`raw.current_streak`): the band line shows it from 2. */
+  streak?: number
 }
 
 /** What the creature is acting out: the kind of tool Claude is using, or how the last one ended. */
@@ -30,6 +34,8 @@ export type Burst = {
   level: number; stage: Stage; from: Stage; id: number
   /** The first creature hatching on a new machine: its words, and the frame it started on. */
   hatch?: string; frame?: number
+  /** A welcome back after two or more empty days. */
+  back?: boolean
 }
 
 declare module 'claude-code' {

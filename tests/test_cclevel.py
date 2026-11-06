@@ -743,6 +743,17 @@ class Framework(unittest.TestCase):
         self.assertEqual(cclevel.streaks({day(1), day(2), day(3)}, today), (3, 3, 0))
         self.assertEqual(cclevel.streaks({day(5)}, today), (1, 0, 0))
 
+    def test_days_away_are_the_empty_days_before_today(self):
+        today = datetime.now(timezone.utc).date()
+        day = lambda n: (today - timedelta(days=n)).isoformat()
+        away = cclevel.away_days
+        self.assertEqual(away({day(1)}, today), 0)                # yesterday was active
+        self.assertEqual(away({day(0), day(1)}, today), 0)        # and today too
+        self.assertEqual(away({day(0), day(6)}, today), 5)        # back today after five empty days: the same all day
+        self.assertEqual(away({day(6)}, today), 5)                # not back yet
+        self.assertEqual(away({day(0)}, today), None)             # nothing before today
+        self.assertEqual(away(set(), today), None)
+
     def test_a_day_without_logs_has_one_fixed_price(self):
         price = cclevel.old_day_xp
         self.assertEqual((price(0), price(-5)), (0, 0))

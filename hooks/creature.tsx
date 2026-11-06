@@ -4,7 +4,9 @@
 // lifts while it runs commands, flexes when a commit lands and sweats when a tool fails. When Claude
 // is idle it sleeps. A level up gets a short burst. In the terminal it also renames Claude's spinner
 // word ("Gigachad is grinding"). On a new machine the first creature hatches live: the egg wobbles,
-// cracks, and the creature appears with its class, once. `/creature` turns it off or on.
+// cracks, and the creature appears with its class, once. Back after two or more empty days, it shows
+// dusty and asleep, shakes awake and says welcome back, once that day, with no toast. The line shows
+// your streak from 2 days. `/creature` turns it off or on.
 //
 // It shows the last offline scan (`cclevel.py --json --no-save`), kept in this plugin's own store,
 // and starts a new scan in the background only when that one is more than an hour old. It makes no
@@ -26,6 +28,8 @@ const LINGER_MS = 2500                     // a commit's flex or a failure's swe
 const HOLD_MS = 1200                       // a tool's look stays at least this long after the tool ends
 const BURST_MS = 6000                      // a level up is celebrated this long
 const HATCH_MS = 8000                      // the first creature's hatch plays this long
+const BACK_DAYS = 2                        // empty UTC days before today that make a welcome back
+const STREAK_MIN = 2                       // the band line shows the streak from this many days
 const HATCH_DAYS = 7                       // only on a machine whose ledger is at most this old: never a replay after an update
 const DAY_MS = 24 * 60 * 60 * 1000
 const BAR = 10                             // cells in the level bar
@@ -43,12 +47,12 @@ const ACTION_VERBS: Record<Action['kind'], string> = {
 const MODE_VERBS: Record<string, string> = { thinking: 'big-braining', responding: 'cooking' }
 
 // Change a shape tag when its value's fields change: it declines what an earlier version stored.
-const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-4' })
+const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-5' })
 const frame = atom({ plugin: 'cclevel', key: 'frame' } as const, 0)
 const isHidden = atom({ plugin: 'cclevel', key: 'isHidden' } as const, false)
 const isScanning = atom({ plugin: 'cclevel', key: 'isScanning' } as const, false)
 const action = atom({ plugin: 'cclevel', key: 'action' } as const, null, { shape: 'action-1' })
-const burst = atom({ plugin: 'cclevel', key: 'burst' } as const, null, { shape: 'burst-2' })
+const burst = atom({ plugin: 'cclevel', key: 'burst' } as const, null, { shape: 'burst-3' })
 
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
 
@@ -60,7 +64,7 @@ export function asCreature(value: unknown): Creature | null {
   if (typeof stage !== 'string' || !(STAGES as readonly string[]).includes(stage)) return null
   if (typeof mood !== 'string' || mood.length === 0 || mood.length > 40) return null
   if (![xp, xpLevelStart, xpNextLevel, xpToday, at].every(isCount)) return null
-  const { look, shiny, cls, hatched } = value as Record<string, unknown>
+  const { look, shiny, cls, hatched, away, streak } = value as Record<string, unknown>
   const c: Creature = {
     level, stage: stage as Stage, mood, xp: xp as number, xpLevelStart: xpLevelStart as number,
     xpNextLevel: xpNextLevel as number, xpToday: xpToday as number, at: at as number,
@@ -68,6 +72,8 @@ export function asCreature(value: unknown): Creature | null {
   if (typeof cls === 'string' && /^[A-Za-z ]{1,30}$/.test(cls)) c.cls = cls
   // The ledger's first day, or null before there is a ledger. Missing (an older scanner) means not new.
   if (hatched === null || (typeof hatched === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(hatched))) c.hatched = hatched
+  if (away === null || (isCount(away) && Number.isInteger(away))) c.away = away
+  if (isCount(streak) && Number.isInteger(streak)) c.streak = streak
   // Markings that are out of range are dropped: the classic look.
   if (typeof look === 'number' && Number.isInteger(look) && look >= 0 && look < LOOKS && typeof shiny === 'boolean') {
     c.look = look
@@ -81,10 +87,11 @@ export function fromScan(json: unknown, at: number): Creature | null {
   if (typeof json !== 'object' || json === null) return null
   const o = json as Record<string, unknown>
   const marks = typeof o.marks === 'object' && o.marks !== null ? o.marks as Record<string, unknown> : {}
+  const raw = typeof o.raw === 'object' && o.raw !== null ? o.raw as Record<string, unknown> : {}
   return asCreature({
     level: o.level, stage: o.stage, mood: o.mood, xp: o.xp, xpLevelStart: o.xp_level_start,
     xpNextLevel: o.xp_next_level, xpToday: o.xp_today_pending, at, look: marks.look, shiny: marks.shiny,
-    cls: o.class, hatched: o.hatched,
+    cls: o.class, hatched: o.hatched, away: raw.away_days, streak: raw.current_streak,
   })
 }
 
@@ -110,6 +117,37 @@ export function hatchSprite(c: Creature, k: number): string {
   if (c.stage === 'Egg' || k >= 4) return party
   const egg = k < 2 ? sprite('Egg', 1, k, 'walk').trimEnd() : k === 2 ? "(,.')" : '\\(o o)/'
   return egg.padEnd(party.length)
+}
+
+/** The UTC date of epoch milliseconds `at`: the scanner's days are UTC dates too. */
+export function utcDay(at: number): string {
+  return new Date(at).toISOString().slice(0, 10)
+}
+
+/** Whether this scan is a return: two or more empty UTC days just before today. */
+export function isBack(c: Creature): boolean {
+  return typeof c.away === 'number' && c.away >= BACK_DAYS
+}
+
+/** The welcome back's words. */
+export function backText(c: Creature): string {
+  return `Welcome back! Your ${c.stage} woke up.`
+}
+
+/** The welcome back at tick `k` of its burst: two ticks dusty and asleep, one shaking awake, then the party. */
+export function backSprite(c: Creature, k: number): string {
+  const party = sprite(c.stage, c.level, k, 'party', c)
+  if (k >= 3) return party
+  const face = sprite(c.stage, c.level, 0, 'walk').trimEnd()
+  const cells = k < 2 ? `${sprite(c.stage, c.level, 0, 'asleep', c).trimEnd()} . .` : `~${face}~`
+  return cells.padEnd(party.length)
+}
+
+/** The band line after the level bar: today's XP, the streak from 2 days, and the mood. */
+export function lineText(c: Creature): string {
+  const today = c.xpToday > 0 ? ` +${c.xpToday} today ·` : ''
+  const streak = (c.streak ?? 0) >= STREAK_MIN ? ` streak ${c.streak} ·` : ''
+  return `${today}${streak} ${c.mood}`
 }
 
 /** How far through its level the creature is, 0 to 1. */
@@ -243,6 +281,18 @@ async function scan($: EngineInterface): Promise<void> {
       startTicker($)
       $.clock.after(HATCH_MS, () => void update($, burst, b => (b?.id === id ? null : b)))
       $.ui.toast(text)
+      return
+    }
+    // Back after two or more empty days: a welcome back, once a UTC day, with no toast. A hidden band
+    // plays and records nothing.
+    const day = utcDay(at)
+    if (isBack(fresh) && (await $.store.get('greetedOn')) !== day && (await $.store.get('hidden')) !== true) {
+      const id = ++nextId
+      const from = await read($, frame)
+      await $.store.set('greetedOn', day)
+      await update($, burst, () => ({ level: fresh.level, stage: fresh.stage, from: fresh.stage, id, back: true, frame: from }))
+      startTicker($)
+      $.clock.after(BURST_MS, () => void update($, burst, b => (b?.id === id ? null : b)))
       return
     }
     if (before !== null && fresh.level > before.level) {
@@ -391,6 +441,16 @@ export const register: Register = on => {
         </Box>
       )
     }
+    if (party?.back === true) {
+      const k = (n - (party.frame ?? 0) + 100_000) % 100_000
+
+      return (
+        <Box>
+          <Text color="claude">{backSprite(shown, k)}</Text>
+          <Text bold color="claude" wrap="truncate-end">{`  ${backText(shown)}`}</Text>
+        </Box>
+      )
+    }
     if (party !== null) {
       const news = party.stage === party.from
         ? `  LEVEL UP!  Lv ${party.level}`
@@ -404,7 +464,6 @@ export const register: Register = on => {
       )
     }
     const filled = Math.round(progress(shown) * BAR)
-    const today = shown.xpToday > 0 ? ` +${shown.xpToday} today ·` : ''
 
     return (
       <Box>
@@ -412,7 +471,7 @@ export const register: Register = on => {
         <Text dimColor>{`  ${shown.stage} · Lv ${shown.level} `}</Text>
         <Text color="claude">{'█'.repeat(filled)}</Text>
         <Text dimColor>{'░'.repeat(BAR - filled)}</Text>
-        <Text dimColor wrap="truncate-end">{`${today} ${shown.mood}`}</Text>
+        <Text dimColor wrap="truncate-end">{lineText(shown)}</Text>
       </Box>
     )
   })

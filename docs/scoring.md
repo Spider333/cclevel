@@ -17,6 +17,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
   - Craft: edits, commits, pull requests, published pages and projects touched.
   - They add up to **Aura**.
 - **Brains** has ten checks worth ten points each. Eight need use: skills used within the last 90 days, and for the rest something seen in the session logs of the last 30 days. Two are things to have (an instructions file, a guardrail), so a folder of files that were never used scores 20. From 30 it earns a title: Wrinkly Brain, Big Brain from 50, Galaxy Brain from 80.
+- **Streak.** A day counts when it has any session or prompt, as a UTC date. The current streak counts the days in a row through yesterday until today is active, so the morning never shows 0. One empty UTC day ends it. There is no freeze and no repair, and nothing warns you about it. The card shows it, and the creature band shows "streak N" from 2. `--json` also gives `raw.away_days`: the empty UTC days just before today (0 when yesterday was active, null with no activity before today).
 - **Health** drives the mood. It drops for own skills that are at least 90 days old and went unused in that time, connectors waiting for sign-in, a heavy start-up context, failing tool calls and interrupted turns.
 
 ## The names
@@ -36,6 +37,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 | We're so back | Mood for the first three days after a break of two weeks or more |
 | Touching grass, Ghosting, It's so over | Mood after 3, 14 and 60 days without a session |
 | Not hatched yet | Mood of a folder with no activity |
+| Welcome back | The creature band, at your first session of a UTC day after two or more empty UTC days: your creature shows dusty and asleep, shakes awake and says "Welcome back!", once that day. No toast and no notification; nothing happens while you are away |
 | Aura | The six stats added up |
 | Markings | Each creature's own eyes, mouth and crest (an Egg: its shell mark), from a number made once on your machine (`~/.claude/cclevel/seed`). 64 looks; look 0 is the classic art. They never change the score and are never sent to the board |
 | ✦ Shiny | 1 in 100 creatures. Two twinkles on the art and "✦ Shiny" on the card and the share card. Just for fun: it changes no number |

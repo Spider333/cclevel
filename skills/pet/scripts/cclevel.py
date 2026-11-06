@@ -772,6 +772,13 @@ def streaks(active, today):
     return longest, current, gap
 
 
+def away_days(active, today):
+    """The empty UTC days just before today: 0 when yesterday was active, None with no activity before today.
+    It stays the same all day, so the band welcomes you back at most once a day."""
+    before = [d for d in active if d < today.isoformat()]
+    return (today - date.fromisoformat(max(before))).days - 1 if before else None
+
+
 def mood_of(health, idle, current_streak=0, gap=0):
     if idle is None:
         return MOODS["none"]
@@ -1017,7 +1024,7 @@ def score(cdir, machine_jobs, save):
             pass   # the card still shows; the day is banked at the next run
 
     raw.update({
-        "idle_days": idle, "skills_own": len(own), "skills_plugin": setup["plugin_skills"],
+        "idle_days": idle, "away_days": away_days(active, today), "skills_own": len(own), "skills_plugin": setup["plugin_skills"],
         "commands_flat": setup["commands_flat"], "skills_unused": len(unused),
         "connectors_need_sign_in": need_sign_in, "hooks": sum(setup["hook_events"].values()),
         "hook_event_types": len(setup["hook_events"]), "memory_files": setup["memory_files"],

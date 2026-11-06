@@ -2,7 +2,7 @@
 import type { CommandRunInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { asCreature, fromScan, hatchSprite, hatchText, isNewMachine, progress, spinnerWord, sprite } from '../hooks/creature'
+import { asCreature, backSprite, backText, fromScan, hatchSprite, hatchText, isBack, isNewMachine, lineText, progress, spinnerWord, sprite } from '../hooks/creature'
 import type { Look } from '../hooks/creature'
 import type { Creature, Stage } from '../types'
 
@@ -505,4 +505,135 @@ test('the hatch: two wobbles, two cracks, then the creature, one width throughou
   expect(hatchText({ ...c, stage: 'Hatchling', cls: 'Unhatched', level: 7 })).toBe("HATCHED! It's a Hatchling · Lv 7")
   expect(hatchText({ ...c, shiny: true, look: 0 })).toBe("HATCHED! It's a Gigachad Shipper · Lv 46 · ✦ Shiny!")
   expect(fromScan({ ...SCAN, class: '<script>' }, NOW)?.cls).toBe(undefined)
+})
+
+const backScan = (away: number | null, streak = 1) =>
+  ({ exitCode: 0, stdout: JSON.stringify({ ...SCAN, raw: { away_days: away, current_streak: streak } }) })
+
+test('back after days away: dusty and asleep, shaking awake, a welcome back, once a day, no toast', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR } })
+  const toasts: string[] = []
+  engine(on, backScan(5), toasts)
+
+  await $.session.start(start)
+  await clock.advance(1)
+  let ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe('  Welcome back! Your Gigachad woke up.')
+  expect(await bandText(ui, /- -/)).toMatch(/zZ \. \./)
+  await ui.unmount()
+
+  await clock.advance(2 * 300)
+  ui = await $.ui.mount(BAND)
+  expect((await bandText(ui, /~/))?.trim()).toBe('~\\( o o )/~')
+  await ui.unmount()
+
+  await clock.advance(6_100)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  expect(await bandText(ui, /Lv/)).toBe('  Gigachad · Lv 46 ')
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+
+  // A second session the same UTC day, with a fresh scan: no welcome again.
+  await clock.advance(2 * HOUR)
+  await $.session.start(start)
+  await clock.advance(1)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: one empty day', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(1), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: no empty day', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(0), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: no days before today', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(null), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: a hidden band, even after five empty days', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: true })
+  const toasts: string[] = []
+  engine(on, backScan(5), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  let ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+
+  // Nothing was recorded: turned on that day, it welcomes you back then.
+  await $.command.run(creatureCommand('on'))
+  await clock.advance(1)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe('  Welcome back! Your Gigachad woke up.')
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('the band line shows the streak from 2 days, and nothing at 0 or 1', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  engine(on, backScan(0, 4))
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /today/)).toBe(' +550 today · streak 4 · Vibing')
+  await ui.unmount()
+
+  const c = fromScan({ ...SCAN, raw: { current_streak: 1, away_days: null } }, NOW)
+  if (c === null) throw new Error('no creature')
+  expect(c.away).toBe(null)
+  expect(lineText(c)).toBe(' +550 today · Vibing')
+  expect(lineText({ ...c, streak: 0, xpToday: 0 })).toBe(' Vibing')
+  expect(lineText({ ...c, streak: 2, xpToday: 0 })).toBe(' streak 2 · Vibing')
+  expect(fromScan({ ...SCAN, raw: { current_streak: -3, away_days: 'x' } }, NOW)?.streak).toBe(undefined)
+})
+
+test('the welcome back: two dusty sleeps, a shake, then the party, one width throughout', async () => {
+  for (const stage of ['Egg', 'Hatchling', 'Lil Guy', 'Big Guy', 'Gigachad', 'GOAT'] as Stage[]) {
+    const c: Creature = { ...STORED, stage, level: 30, away: 4 }
+    const frames = [0, 1, 2, 3, 4].map(k => backSprite(c, k))
+    expect(new Set(frames.map(f => f.length)).size).toBe(1)
+    expect(frames[0]?.length).toBe(sprite(stage, 30, 0, 'walk').length)
+    expect(frames[2]?.trim().startsWith('~')).toBe(true)
+  }
+  expect(isBack({ ...STORED, away: 2 })).toBe(true)
+  expect(isBack({ ...STORED, away: 1 })).toBe(false)
+  expect(isBack({ ...STORED, away: null })).toBe(false)
+  expect(backText({ ...STORED, stage: 'Lil Guy' })).toBe('Welcome back! Your Lil Guy woke up.')
 })
