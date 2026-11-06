@@ -4324,5 +4324,157 @@ class Hatch(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(empty, "cclevel", "ledger.json")))
 
 
+def reply(when, message_id, model="claude-opus-5-5", output=100, fresh=10, read=0, w5=0, w1=0, speed=None, tools=()):
+    """One assistant reply with the full usage block Claude Code writes, cache split included."""
+    usage = {"input_tokens": fresh, "output_tokens": output, "cache_read_input_tokens": read,
+             "cache_creation_input_tokens": w5 + w1,
+             "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1}}
+    if speed:
+        usage["speed"] = speed
+    return json.dumps({"type": "assistant", "timestamp": when.isoformat().replace("+00:00", "Z"), "sessionId": "s1",
+                       "requestId": "req_" + message_id, "entrypoint": "cli",
+                       "message": {"id": message_id, "model": model, "usage": usage,
+                                   "content": [{"type": "tool_use", "id": "%s_%d" % (message_id, i), "name": name,
+                                                "input": {}} for i, name in enumerate(tools)]}},
+                      separators=(",", ":"))
+
+
+def compaction(when, trigger, pre=500000, post=20000):
+    return json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": when.isoformat().replace("+00:00", "Z"),
+                       "compactMetadata": {"trigger": trigger, "preTokens": pre, "postTokens": post}},
+                      separators=(",", ":"))
+
+
+class Leaks(unittest.TestCase):
+    """/pet leaks: where the tokens went, priced as a yardstick, offline, outside the score and the card's --json."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        write(self.dir, "CLAUDE.md", "x" * 4000)
+        history(self.dir, {1: 3})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def logs(self, *lines, name="s1"):
+        write(self.dir, "projects/zzq-project/%s.jsonl" % name, "\n".join(lines) + "\n")
+
+    def report(self):
+        out = run("--claude-dir", self.dir, "--leaks", "--json")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def text(self, *flags):
+        out = run("--claude-dir", self.dir, "--leaks", *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_token_totals_keep_one_line_per_message(self):
+        t = day_stamp(1)
+        # The same reply written three times (once per content block), the last one the most complete.
+        self.logs(reply(t, "m1", output=1), reply(t, "m1", output=1), reply(t, "m1", output=500, read=1000),
+                  reply(t + timedelta(minutes=1), "m2", output=7, fresh=3))
+        r = self.report()
+        self.assertEqual(r["totals_30d"]["output_tokens"], 507)
+        self.assertEqual(r["totals_30d"]["input_tokens"], 13)
+        self.assertEqual(r["totals_30d"]["cache_read_input_tokens"], 1000)
+        self.assertEqual(r["requests"], 2)
+        self.assertEqual(sum(w["tokens"]["output_tokens"] for w in r["weeks"]), 507)
+
+    def test_compactions_by_trigger_and_none_seen(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1"))
+        self.assertIn("Auto-compaction: none seen", self.text())
+        self.logs(reply(t, "m1"), compaction(t + timedelta(minutes=1), "auto"), reply(t + timedelta(minutes=2), "m2", w5=9000),
+                  compaction(t + timedelta(minutes=3), "auto", pre=300000), compaction(t + timedelta(minutes=4), "manual"))
+        r = self.report()
+        self.assertEqual(r["compactions"], {"auto": 2, "manual": 1})
+        comp = next(f for f in r["leaks"] if f["code"] == "compaction")
+        self.assertEqual((comp["times"], comp["sessions"], comp["average_before"]), (2, 1, 400000))
+        self.assertEqual(comp["tokens_written_again"], 9000)   # the reply after the first one; none after the second
+        self.assertIn("Auto-compaction: 2 times in 4 weeks, in 1 of 1 session", self.text())
+
+    def test_connectors_set_up_but_never_called(self):
+        plugin = os.path.join(self.dir, "plugin-root")
+        write(plugin, ".mcp.json", {"mcpServers": {"zzq-gamma": {"command": "x"}}})
+        write(self.dir, "plugins/installed_plugins.json", {"plugins": {"tools@market": [{"installPath": plugin}]}})
+        write(self.dir, ".claude.json", {"mcpServers": {"zzq-alpha": {}},
+                                         "projects": {"/somewhere": {"mcpServers": {"zzq-beta": {}}}}})
+        self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search"]))
+        r = self.report()
+        self.assertEqual(r["unused_connectors"], ["zzq-beta", "zzq-gamma"])
+        # Positive control: calling the plugin server by its log name takes it off the list.
+        self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search", "mcp__plugin_tools_zzq-gamma__go"]))
+        self.assertEqual(self.report()["unused_connectors"], ["zzq-beta"])
+        self.assertIn("No dollar figure", self.text())
+
+    def test_prices_are_a_yardstick_and_unknown_models_have_none(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1", model="claude-x-y", output=1200000, fresh=0))
+        r = self.report()
+        self.assertEqual(r["unpriced"], {"claude-x-y": 1200000})
+        self.assertEqual(sum(w["dollars"] for w in r["weeks"]), 0)
+        text = self.text()
+        self.assertIn("claude-x-y: 1.2M tokens, no price for this model.", text)
+        for line in text.splitlines():
+            if "$" in line:
+                self.assertIn("yardstick", line)
+
+    def test_fast_mode_and_cache_write_prices(self):
+        u = {"input_tokens": 1000000, "output_tokens": 1000000}
+        self.assertAlmostEqual(cclevel.dollars("claude-opus-5-5", dict(u, speed="fast")), 48)
+        self.assertAlmostEqual(cclevel.dollars("claude-opus-5-5", u), 24)
+        one_hour = {"cache_creation_input_tokens": 1000000, "cache_creation": {"ephemeral_1h_input_tokens": 1000000}}
+        self.assertAlmostEqual(cclevel.dollars("claude-sonnet-4-6", one_hour), 6)       # 2x the $3 input price
+        five = {"cache_creation_input_tokens": 1000000, "cache_creation": {"ephemeral_5m_input_tokens": 1000000}}
+        self.assertAlmostEqual(cclevel.dollars("claude-sonnet-4-6", five), 3.75)        # 1.25x
+        self.assertAlmostEqual(cclevel.dollars("claude-haiku-4-5-20251001", {"output_tokens": 1000000}), 5)
+        self.assertIsNone(cclevel.dollars("claude-opus-5-1", u))
+        self.assertIsNone(cclevel.dollars("claude-sonnet-4-6", dict(u, speed="fast")))  # no fast price known: no figure
+
+    def test_cache_written_again_after_a_pause(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1", w5=1000), reply(t + timedelta(minutes=2), "m2", w5=2000),
+                  reply(t + timedelta(minutes=12), "m3", w5=4000, w1=8000), reply(t + timedelta(minutes=80), "m4", w1=16000))
+        pauses = next(f for f in self.report()["leaks"] if f["code"] == "pauses")
+        # m2 came within 5 minutes; m3 after 10 minutes re-wrote its 5-minute part only; m4 after 68 minutes, its 1-hour part.
+        self.assertEqual((pauses["times"], pauses["tokens"]), (2, 20000))
+
+    def test_no_logs(self):
+        self.assertIn("No session logs in the last 30 days, so no leaks to measure.", self.text())
+
+    def test_offline_stores_nothing_and_leaves_the_card_alone(self):
+        write(self.dir, ".claude.json", {"mcpServers": {"zzq-unused-server": {}}})
+        self.logs(reply(day_stamp(1), "m1"))
+        card = run("--claude-dir", self.dir, "--json", "--no-save")
+        preview = run("--claude-dir", self.dir, "--preview").stdout
+        before = sorted(os.listdir(self.dir))
+        for privacy in (False, True):
+            if privacy:
+                cclevel.opt_out(self.dir)
+                before = sorted(os.listdir(self.dir))
+            out, events = run_counted("--claude-dir", self.dir, "--leaks")
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(events, 0)
+            self.assertIn("zzq-unused-server", out.stdout)
+            self.assertEqual(sorted(os.listdir(self.dir)), before)
+        self.assertNotIn("zzq-unused-server", card.stdout)
+        cclevel.opt_back_in(self.dir)
+        after = json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
+        self.assertEqual({k: v for k, v in after.items() if k != "generated"},
+                         {k: v for k, v in json.loads(card.stdout).items() if k != "generated"})
+        self.assertEqual(run("--claude-dir", self.dir, "--preview").stdout, preview)
+
+    def test_card_names_a_big_leak_only_with_tips_on(self):
+        t = day_stamp(1)
+        self.logs(*[reply(t + timedelta(minutes=10 * i), "m%d" % i, w5=2000000) for i in range(6)])
+        plain = run("--claude-dir", self.dir, "--no-save").stdout
+        self.assertNotIn("Leaks:", plain)
+        self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        self.assertRegex(card, r"Leaks: about \$\d+ a week in cache lost to pauses \(yardstick\)\. /pet leaks")
+
+
 if __name__ == "__main__":
     unittest.main()

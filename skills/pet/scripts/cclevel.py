@@ -492,10 +492,13 @@ def scan_history(cdir):
     return per_day
 
 
-def scan_logs(cdir, skill_names):
-    """Per-day activity from session logs. Returns (days, longest unattended run)."""
+def scan_logs(cdir, skill_names, extra=None):
+    """Per-day activity from session logs. Returns (days, longest unattended run). Given a dict, `extra` also gets what
+    the leak finder needs, from the same pass: each reply's usage with its time and log file, every compaction and
+    Claude Code's own cost figure per log. The card's numbers do not depend on it."""
     days = defaultdict(new_day)
     best = {}            # (message id, request id) -> (output tokens, day, usage)
+    when = {}            # the same key -> (time, log file), for the leak finder only
     seen_tools = set()
     longest = 0
     root = os.path.join(cdir, "projects")
@@ -531,6 +534,8 @@ def scan_logs(cdir, skill_names):
                         out = num(u.get("output_tokens"))
                         if key not in best or out > best[key][0]:
                             best[key] = (out, day, u, m.get("model"))
+                            if extra is not None:
+                                when[key] = (str(o.get("timestamp") or ""), path)
                     session = str(o.get("sessionId"))
                     if not sub:
                         run.add(str(m.get("id")))
@@ -606,7 +611,12 @@ def scan_logs(cdir, skill_names):
                     days[day]["commands"].update(COMMAND_RE.findall(line))   # some commands are logged only here
                 elif day and '"subtype":"compact_boundary"' in line:
                     days[day]["compacts"] += '"trigger":"manual"' in line   # /compact typed, not the automatic one
+                if extra is not None and ('"subtype":"compact_boundary"' in line or '"type":"cost-state"' in line):
+                    leak_line(extra, line, path)
         longest = max(longest, len(run))
+    if extra is not None:
+        extra["requests"] = [{"day": day, "time": when[k][0], "file": when[k][1], "model": str(model), "usage": u}
+                             for k, (_, day, u, model) in best.items()]
     for _, day, u, model in best.values():
         days[day]["models"][str(model)] += 1
         for k in TOKEN_WEIGHT:
@@ -614,8 +624,9 @@ def scan_logs(cdir, skill_names):
     return dict(days), longest
 
 
-def scan_setup(cdir, cfg, settings):
-    """What is installed and how it is wired. Names stay in memory; only counts leave."""
+def scan_setup(cdir, cfg, settings, leak=None):
+    """What is installed and how it is wired. Names stay in memory; only counts leave, except into `leak`, the leak
+    finder's own dict, which gets the connector names and the parts of the start-up context."""
     skills = {}
     for base in ("commands", "skills"):
         for path in glob.glob(os.path.join(cdir, base, "*", "SKILL.md")):
@@ -658,6 +669,19 @@ def scan_setup(cdir, cfg, settings):
     index_size = max([os.path.getsize(p) for p in memory if os.path.basename(p) == "MEMORY.md"] or [0])
     claude_md = os.path.join(cdir, "CLAUDE.md")
     claude_md_size = os.path.getsize(claude_md) if os.path.isfile(claude_md) else 0
+    if leak is not None:
+        here = [os.path.join(os.getcwd(), n) for n in ("CLAUDE.md", os.path.join(".claude", "CLAUDE.md"))]
+        leak["context"] = {"claude_md": claude_md_size // 4, "memory_index": index_size // 4,
+                            "skill_descriptions": sum(s["desc"] for s in skills.values()) // 4,
+                            "project_claude_md": sum(os.path.getsize(p) for p in here if os.path.isfile(p)) // 4}
+        leak["connectors"] = {c: c for c in connectors}
+        for key, installs in plugins.items():
+            for inst in installs if isinstance(installs, list) else [installs]:
+                root = as_dict(inst).get("installPath")
+                if isinstance(root, str):
+                    mcp = load_dict(os.path.join(root, ".mcp.json"))
+                    for server in as_dict(mcp.get("mcpServers", mcp)):
+                        leak["connectors"]["plugin_%s_%s" % (str(key).split("@")[0], server)] = server
     return {
         "skills": skills,
         "commands_flat": len(glob.glob(os.path.join(cdir, "commands", "*.md"))),
@@ -852,7 +876,7 @@ def read_ledger(cdir, today):
     return ledger, banked, badges, estimated, weeks
 
 
-def score(cdir, machine_jobs, save):
+def score(cdir, machine_jobs, save, extra=None):
     today = datetime.now(timezone.utc).date()
     today_s = today.isoformat()
     home_cfg = os.path.join(os.path.expanduser("~"), ".claude.json")
@@ -862,9 +886,11 @@ def score(cdir, machine_jobs, save):
     for key in ("hooks", "permissions"):       # count both files together
         settings[key] = merged_lists(settings.get(key), local.get(key))
 
-    setup = scan_setup(cdir, cfg, settings)
+    setup = scan_setup(cdir, cfg, settings, extra)
     prompts = scan_history(cdir)
-    days, longest_run = scan_logs(cdir, set(setup["skills"]))
+    days, longest_run = scan_logs(cdir, set(setup["skills"]), extra)
+    if extra is not None:
+        extra["days"] = days
     jobs = scheduled_jobs() if machine_jobs else 0
 
     recent_since = (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
@@ -1112,13 +1138,14 @@ def record_hatch(cdir):
         pass   # the block shows once more at the next run
 
 
-def render(r, board="on", how=False, tip=None, creature=None):
+def render(r, board="on", how=False, tip=None, creature=None, leak=None):
     """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (Default mode: the session-start
     hook joins it next time), "privacy" (Privacy mode: the opted-out note and no token, so cclevel sends nothing), "leaving"
     (the note, but the row is still on the board: a delete that did not go through) or "off" (a folder the hook never
     joins). Off, with XP banked in the last 7 days, the last lines say how much of it will never rank: the board counts only
     XP it sees after joining. Privacy mode never gets that nudge. Worked out here; nothing is sent.
-    With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
+    With tips on, `how` adds a how-to line under each Need, `tip` is the tip of the day, (stat, tip), and `leak` the
+    leak finder's line when the biggest leak is large."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
     marks = r.get("marks") or marks_of(None)
@@ -1158,6 +1185,8 @@ def render(r, board="on", how=False, tip=None, creature=None):
     if tip:
         stat, (_, text, page) = tip
         out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
+    if leak:
+        out += ["", "  " + leak]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
     if board == "on" and creature:
         out.append("  On the board as %s. Privacy mode: /pet privacy on deletes your row and sends nothing after." % creature)
@@ -1778,6 +1807,289 @@ def learn_command(cdir, result, save):
 
 
 # ------------------------------------------------------------ leaderboard
+# ------------------------------------------------------------------ leak finder
+# Where the tokens went over the last weeks, priced with API list prices as a yardstick: never a charge, since most
+# people pay a subscription. Outside the score. Reads only this machine's logs and prints; nothing is stored or sent.
+PRICES_CHECKED = "2026-10-06"
+PRICES_PAGE = "https://platform.claude.com/docs/en/about-claude/pricing"
+# Dollars per million tokens: (input, output, cache read). A cache write is 1.25x input (5 minutes) or 2x (1 hour).
+PRICES = {
+    "claude-opus-5-5": (4, 20, 0.20), "claude-opus-5": (5, 25, 0.5), "claude-opus-4-8": (5, 25, 0.5),
+    "claude-opus-4-7": (5, 25, 0.5), "claude-opus-4-6": (5, 25, 0.5),
+    "claude-sonnet-5-5": (2, 10, 0.20), "claude-sonnet-5": (2, 10, 0.2), "claude-sonnet-4-6": (3, 15, 0.3),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-haiku-4-5": (1, 5, 0.1),
+    "claude-fable-5-1": (10, 50, 0.25), "claude-fable-5": (10, 50, 1),
+}
+FAST_PRICES = {"claude-opus-5-5": (8, 40, 0.40)}      # fast mode; any other model in fast mode has no price here
+HAIKU_LONG = ("claude-haiku-5-5", 100000, (0.50, 2.50, 0.05))   # its price above 100K prompt tokens
+CACHE_5M, CACHE_1H = 1.25, 2
+PAUSE_5M, PAUSE_1H = 300, 3600     # seconds: a reply this long after the one before usually writes the cache again
+LEAK_WEEKS = 4                     # full ISO weeks before this one; logs live 30 days
+LEAK_GAP = 0.15                    # how far the yardstick may sit from Claude Code's own cost figure for a session
+LEAK_NUDGE = 5                     # dollars a week (yardstick) from which the card names the biggest leak, tips on
+LEAK_KINDS = (("input_tokens", "fresh input"), ("cache_creation_input_tokens", "cache writes"),
+              ("cache_read_input_tokens", "cache reads"), ("output_tokens", "output"))
+LEAK_HOW = {
+    "pauses": "before a long break, /compact or start a new session; short pauses keep the cache.",
+    "startup": "keep CLAUDE.md to the rules; move long how-tos into skills.",
+    "compaction": "/compact on your own terms with what to keep, or split long jobs into sessions.",
+    "connectors": "remove the ones you no longer need. /mcp shows them.",
+}
+LEAK_NAMES = {"pauses": "cache lost to pauses", "startup": "start-up context", "compaction": "auto-compaction"}
+LOG_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")   # how Claude Code turns a server name into its mcp__<name>__ prefix
+
+
+def leak_line(extra, line, path):
+    """A compaction or a cost-state line, kept for the leak finder."""
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(o, dict):
+        return
+    if o.get("subtype") == "compact_boundary":
+        meta = as_dict(o.get("compactMetadata"))
+        extra.setdefault("compactions", []).append({
+            "day": day_of(o.get("timestamp")), "time": str(o.get("timestamp") or ""), "file": path,
+            "trigger": str(meta.get("trigger") or "unknown"), "pre": meta.get("preTokens"), "post": meta.get("postTokens")})
+    elif o.get("type") == "cost-state" and isinstance(o.get("totalCostUSD"), (int, float)):
+        extra.setdefault("cost_state", {})[path] = o["totalCostUSD"]
+
+
+def price_of(model, usage):
+    """(input, output, cache read) per million tokens for one reply, or None when this model has no price here."""
+    model = re.sub(r"\[.*\]$", "", str(model))
+    table = FAST_PRICES if usage.get("speed") == "fast" else PRICES
+    for key in sorted(table, key=len, reverse=True):
+        if model == key or model.startswith(key + "-") and model[len(key) + 1:len(key) + 2].isdigit() \
+                and len(model) - len(key) > 2:
+            if key == HAIKU_LONG[0] and sum(num(usage.get(k)) for k, _ in LEAK_KINDS[:3]) > HAIKU_LONG[1]:
+                return HAIKU_LONG[2]
+            return table[key]
+    return None
+
+
+def cache_split(u):
+    """(5-minute, 1-hour) cache write tokens. Without the split, every write counts as a 5-minute one."""
+    c = as_dict(u.get("cache_creation"))
+    if "ephemeral_5m_input_tokens" in c or "ephemeral_1h_input_tokens" in c:
+        return num(c.get("ephemeral_5m_input_tokens")), num(c.get("ephemeral_1h_input_tokens"))
+    return num(u.get("cache_creation_input_tokens")), 0
+
+
+def dollars(model, u):
+    p = price_of(model, u)
+    if p is None:
+        return None
+    w5, w1 = cache_split(u)
+    return (num(u.get("input_tokens")) * p[0] + num(u.get("output_tokens")) * p[1]
+            + num(u.get("cache_read_input_tokens")) * p[2] + w5 * p[0] * CACHE_5M + w1 * p[0] * CACHE_1H) / 1e6
+
+
+def write_dollars(model, u, w5, w1):
+    p = price_of(model, u)
+    return None if p is None else (w5 * p[0] * CACHE_5M + w1 * p[0] * CACHE_1H) / 1e6
+
+
+def seconds(ts):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def session_of(path):
+    """The session a log belongs to: a subagent's log counts with the session that started it."""
+    parts = path.split(os.sep)
+    if "subagents" in parts:
+        return os.sep.join(parts[:parts.index("subagents")]) + ".jsonl"
+    return path
+
+
+def leaks(extra, result, today):
+    """The leak report's numbers and names. Never part of the card's --json or the check-in."""
+    monday = today - timedelta(days=today.weekday())
+    since = monday - timedelta(weeks=LEAK_WEEKS)
+    since_s, until_s, d30 = since.isoformat(), today.isoformat(), (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
+    reqs = [r for r in extra.get("requests", []) if r["day"] and since_s <= r["day"] <= until_s]
+    weeks = []
+    for i in range(LEAK_WEEKS + 1):
+        start = since + timedelta(weeks=i)
+        y, w, _ = start.isocalendar()
+        weeks.append({"week": "%d-W%02d" % (y, w), "since": start.isoformat(), "so_far": i == LEAK_WEEKS,
+                      "tokens": {k: 0 for k, _ in LEAK_KINDS}, "dollars": 0.0})
+    totals, totals_30 = Counter(), Counter()
+    unpriced = defaultdict(int)
+    by_file = defaultdict(list)
+    per_session = defaultdict(float)
+    for r in extra.get("requests", []):
+        if r["day"] and d30 <= r["day"] <= until_s:
+            for k, _ in LEAK_KINDS:
+                totals_30[k] += num(r["usage"].get(k))
+    for r in reqs:
+        u = r["usage"]
+        wk = weeks[min(LEAK_WEEKS, (date.fromisoformat(r["day"]) - since).days // 7)]
+        for k, _ in LEAK_KINDS:
+            wk["tokens"][k] += num(u.get(k))
+            totals[k] += num(u.get(k))
+        cost = dollars(r["model"], u)
+        if cost is None:
+            unpriced[r["model"]] += sum(num(u.get(k)) for k, _ in LEAK_KINDS)
+        else:
+            wk["dollars"] += cost
+            per_session[session_of(r["file"])] += cost
+        r["sec"] = seconds(r["time"])
+        if r["sec"] is not None:
+            by_file[r["file"]].append(r)
+    for rs in by_file.values():
+        rs.sort(key=lambda r: r["sec"])
+    n_weeks = max(1.0, ((today - since).days + 1) / 7)
+    found = []
+
+    # Cache written again after a pause.
+    times, tokens, cost = 0, 0, 0.0
+    for rs in by_file.values():
+        for before, r in zip(rs, rs[1:]):
+            gap = r["sec"] - before["sec"]
+            w5, w1 = cache_split(r["usage"])
+            w5, w1 = (w5 if gap > PAUSE_5M else 0), (w1 if gap > PAUSE_1H else 0)
+            if w5 + w1:
+                times += 1
+                tokens += w5 + w1
+                cost += write_dollars(r["model"], r["usage"], w5, w1) or 0
+    found.append({"code": "pauses", "times": times, "tokens": tokens, "per_week": cost / n_weeks})
+
+    # The start-up context, read by every request: a lower bound, priced as cache reads.
+    ctx = dict(extra.get("context") or {})
+    ctx_tokens = sum(ctx.values())
+    cost = sum((price_of(r["model"], r["usage"]) or (0, 0, 0))[2] for r in reqs) * ctx_tokens / 1e6
+    found.append({"code": "startup", "tokens": ctx_tokens, "parts": ctx, "requests_per_week": round(len(reqs) / n_weeks),
+                  "per_week": cost / n_weeks})
+
+    # Auto-compaction, and the cache the next reply in that log writes again.
+    comps = [c for c in extra.get("compactions", []) if c["day"] and since_s <= c["day"] <= until_s]
+    auto = [c for c in comps if c["trigger"] == "auto"]
+    rewrite, cost = 0, 0.0
+    for c in auto:
+        t = seconds(c["time"])
+        nxt = next((r for r in by_file.get(c["file"], []) if t is not None and r["sec"] > t), None)
+        if nxt:
+            w5, w1 = cache_split(nxt["usage"])
+            rewrite += w5 + w1
+            cost += write_dollars(nxt["model"], nxt["usage"], w5, w1) or 0
+    sizes = [c["pre"] for c in auto if isinstance(c["pre"], (int, float))]
+    sessions = {session_of(r["file"]) for r in reqs}
+    found.append({"code": "compaction", "times": len(auto), "manual": len(comps) - len(auto),
+                  "sessions": len({session_of(c["file"]) for c in auto}), "of_sessions": len(sessions),
+                  "average_before": round(sum(sizes) / len(sizes)) if sizes else None,
+                  "tokens_written_again": rewrite, "per_week": cost / n_weeks})
+
+    # Connectors set up but not called in 30 days: no dollar figure, since tool search keeps idle ones small.
+    called = set()
+    for day, d in (extra.get("days") or {}).items():
+        if d30 <= day <= until_s:
+            called |= {LOG_NAME_RE.sub("_", s) for s in d["servers"]}
+    idle = sorted({shown for name, shown in (extra.get("connectors") or {}).items()
+                   if LOG_NAME_RE.sub("_", name) not in called}, key=str.lower)
+    found.sort(key=lambda f: -f["per_week"])
+    checks = [{"session": os.path.basename(f)[:-6], "yardstick": round(per_session[f], 4), "claude_code": c,
+               "close": abs(per_session[f] - c) <= LEAK_GAP * c}
+              for f, c in sorted((extra.get("cost_state") or {}).items()) if f in per_session]
+    return {"since": since_s, "until": until_s, "prices_checked": PRICES_CHECKED, "prices_page": PRICES_PAGE,
+            "weeks": weeks, "totals": dict(totals), "totals_30d": {k: totals_30[k] for k, _ in LEAK_KINDS},
+            "cache_read_share": (totals["cache_read_input_tokens"] / sum(totals[k] for k, _ in LEAK_KINDS[:3])
+                                 if sum(totals[k] for k, _ in LEAK_KINDS[:3]) else None),
+            "unpriced": dict(unpriced), "leaks": found,
+            "compactions": {"auto": len(auto), "manual": len(comps) - len(auto)},
+            "unused_connectors": idle, "unused_skills": result["raw"].get("skills_unused", 0),
+            "cost_state": checks, "requests": len(reqs)}
+
+
+def tok_short(n):
+    return "%.1fM" % (n / 1e6) if n >= 100000 else "%dk" % round(n / 1000) if n >= 1000 else str(int(n))
+
+
+def money(x):
+    return "$%d" % round(x) if x >= 10 else "$%.2f" % x
+
+
+def leak_card_line(report):
+    """The card's one line about the biggest leak, or None while every leak is small."""
+    top = report["leaks"][0] if report["leaks"] else None
+    if not top or top["per_week"] < LEAK_NUDGE:
+        return None
+    return "Leaks: about %s a week in %s (yardstick). /pet leaks" % (money(top["per_week"]), LEAK_NAMES[top["code"]])
+
+
+def leaks_text(report):
+    if not report["requests"] and not report["compactions"]["auto"] + report["compactions"]["manual"]:
+        return "\n  No session logs in the last 30 days, so no leaks to measure.\n"
+    out = ["", "  Leaks · last %d weeks · this machine only" % LEAK_WEEKS,
+           "  API-price yardstick, not a charge. Prices of %s." % PRICES_CHECKED, ""]
+    labels = [w["week"][-3:] + (" so far" if w["so_far"] else "") for w in report["weeks"]]
+    out.append("  %-18s" % "Where tokens went" + "".join("%12s" % l for l in labels))
+    for k, name in LEAK_KINDS:
+        out.append("   %-17s" % name + "".join("%12s" % tok_short(w["tokens"][k]) for w in report["weeks"]))
+    out.append("   %-17s" % "yardstick" + "".join("%12s" % money(w["dollars"]) for w in report["weeks"]))
+    if report["cache_read_share"] is not None:
+        out.append("  Cache reads: %d%% of all input." % round(100 * report["cache_read_share"]))
+    for model, n in sorted(report["unpriced"].items()):
+        out.append("  %s: %s tokens, no price for this model." % (model, tok_short(n)))
+    out.append("")
+    i = 0
+    for f in report["leaks"]:
+        i += 1
+        if f["code"] == "pauses":
+            if not f["times"]:
+                i -= 1
+                continue
+            out.append("   %d. Cache written again after pauses: %s, %s tokens, about %s a week (yardstick)."
+                       % (i, count(f["times"], "time"), tok_short(f["tokens"]), money(f["per_week"])))
+        elif f["code"] == "startup":
+            p = f["parts"]
+            parts = ", ".join("%s %s" % (name, tok_short(p.get(k, 0))) for k, name in (
+                ("claude_md", "CLAUDE.md"), ("memory_index", "memory index"), ("skill_descriptions", "skill descriptions"),
+                ("project_claude_md", "this folder's CLAUDE.md")) if p.get(k))
+            out.append("   %d. Start-up context about %s tokens (estimate%s)," % (i, tok_short(f["tokens"]),
+                                                                              ": " + parts if parts else ""))
+            out.append("      read by about {:,} requests a week: at least {} a week (yardstick).".format(
+                f["requests_per_week"], money(f["per_week"])))
+        else:
+            if not f["times"]:
+                out.append("   %d. Auto-compaction: none seen in %d weeks%s." % (
+                    i, LEAK_WEEKS, " (%s typed)" % count(f["manual"], "/compact") if f["manual"] else ""))
+            else:
+                size = ", average %s tokens before" % tok_short(f["average_before"]) if f["average_before"] else ""
+                out.append("   %d. Auto-compaction: %s in %d weeks, in %d of %s%s." % (
+                    i, count(f["times"], "time"), LEAK_WEEKS, f["sessions"], count(f["of_sessions"], "session"), size))
+                out.append("      The next reply wrote %s tokens of cache again: about %s a week (yardstick)." % (
+                    tok_short(f["tokens_written_again"]), money(f["per_week"])))
+        out.append("      How: " + LEAK_HOW[f["code"]])
+    idle = report["unused_connectors"]
+    i += 1
+    if idle:
+        shown = ", ".join(idle[:10]) + (", and %d more" % (len(idle) - 10) if len(idle) > 10 else "")
+        out += ["   %d. Connectors set up but not called in %d days: %d:" % (i, RECENT_WINDOW_DAYS, len(idle)),
+                "      %s." % shown,
+                "      No dollar figure: with tool search (the default) an idle connector costs little context.",
+                "      Still worth removing: slower start-up and sign-in prompts. /mcp shows them."]
+    else:
+        out.append("   %d. Connectors: every one set up was called in the last %d days." % (i, RECENT_WINDOW_DAYS))
+    if report["unused_skills"]:
+        i += 1
+        out.append("   %d. Own skills unused for %d days: %d (also under Needs on the card)." % (
+            i, USED_WINDOW_DAYS, report["unused_skills"]))
+    checks = report["cost_state"]
+    if checks:
+        off = [c for c in checks if not c["close"]]
+        out += ["", "  Checked against Claude Code's own cost figure in %s: %d within %d%%." % (
+            count(len(checks), "session"), len(checks) - len(off), round(100 * LEAK_GAP))]
+        out += ["   %s: yardstick %s, Claude Code %s." % (c["session"][:8], money(c["yardstick"]), money(c["claude_code"]))
+                for c in off[:5]]
+    out += ["", "  Exact view of this session: /context. Plan use: /usage.", ""]
+    return "\n".join(out)
+
+
 # Nothing above this line touches the network. Everything below runs only
 # when the user asks for it by flag, or from the plugin's session-start hook
 # after the user turned auto check-in on with --auto on.
@@ -3498,6 +3810,9 @@ def main():
                        help="a ready X post with your stage, class and level and a link to your class's page; sends nothing")
     board.add_argument("--learn", action="store_true",
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
+    board.add_argument("--leaks", action="store_true",
+                       help="leak finder: where your tokens went over the last weeks, priced as an API yardstick; sends and "
+                            "saves nothing")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--panel", choices=("on", "off"),
@@ -3541,10 +3856,15 @@ def main():
         sys.exit(1)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
-    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview or args.readme_badge or args.evolve))
+    extra = {}   # the leak finder's names and numbers: never in the card's --json or a check-in
+    quiet = args.no_save or args.preview or args.readme_badge or args.evolve or args.leaks
+    result = score(cdir, machine_jobs=real, save=not quiet, extra=extra)
+    if args.leaks:
+        report = leaks(extra, result, datetime.now(timezone.utc).date())
+        print(json.dumps(report, indent=1) if args.json else leaks_text(report))
+        return
     # A folder with no Claude Code activity has no creature yet, so it gets no seed either.
-    result["marks"] = creature_marks(cdir, save=result["raw"]["active_days"] > 0
-                                     and not (args.no_save or args.preview or args.readme_badge or args.evolve))
+    result["marks"] = creature_marks(cdir, save=result["raw"]["active_days"] > 0 and not quiet)
     if args.wrapped is not None:
         today = datetime.now(timezone.utc).date()
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
@@ -3590,7 +3910,8 @@ def main():
         # itself uses gets the session-start hook, so only that one joins by itself.
         token = load_identity(cdir).get("token")
         board = privacy_state(cdir) or ("on" if token else "soon" if real else "off")
-        print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token)))
+        leak = leak_card_line(leaks(extra, result, datetime.now(timezone.utc).date())) if how else None
+        print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token), leak=leak))
         if result["hatch_due"] and not args.no_save:
             record_hatch(cdir)
 

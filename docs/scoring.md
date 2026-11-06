@@ -47,6 +47,19 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 | Hooked, Skill issue: solved, Not my job, AFK gains | Badges for the first hook that ran at the end of a turn, own skill used, subagent spawned and unattended session |
 | Loadout, Full kit, Maxed out | Badges for 10, 50 and 100 distinct skills used |
 
+## Leak finder: outside the score
+
+`/pet leaks` (`--leaks`) shows where your tokens went over the last 4 full ISO weeks plus this week so far. It never changes XP, level, a stat or a rank, and nothing about it is stored or sent. Claude Code keeps logs for 30 days, so that is as far back as it can see.
+
+- **Tokens per week**, per kind: fresh input, cache writes, cache reads and output, from each reply's `usage` in the session logs. A reply is written once per content block, so it counts once (by message id and request id, keeping the most complete line).
+- **Dollars are a yardstick, not a charge.** Each reply is priced with the API list price of its model, so token counts can be compared. Most people pay a subscription and are never charged this. Prices were checked on 2026-10-06 (`PRICES_CHECKED`, from https://platform.claude.com/docs/en/about-claude/pricing). A cache read is 0.1x input unless the model has its own price, a 5-minute cache write 1.25x input and a 1-hour one 2x. Opus 5.5 in fast mode is $8 / $40 per million. A model with no price in the table shows its tokens and "no price for this model", never $0.
+- **Cache written again after pauses:** a reply more than 5 minutes after the one before it in the same log counts its 5-minute cache writes; more than 60 minutes, its 1-hour writes too. An estimate: the log does not say why a write happened.
+- **Start-up context:** the same estimate the score uses (bytes / 4): your CLAUDE.md, the largest memory index, your own skills' descriptions, plus this folder's CLAUDE.md. Priced as a cache read for every reply in the window, so it is a lower bound.
+- **Auto-compaction:** each `compact_boundary` line with trigger `auto`, the sessions it hit, the average size before, and the cache the next reply wrote again.
+- **Connectors set up but not called in 30 days:** your configured servers (user, project and plugin ones) minus the ones a tool call named. No dollar figure: with tool search, the default, an idle connector costs little context.
+- **A check:** for each log with Claude Code's own cost figure (a `cost-state` line), the report says how many sessions are within 15% and lists the rest with both figures.
+- `/context` is the exact live view of the session you are in; the leak finder is a pattern over weeks.
+
 ## Training and tips
 
 Opt-in learning, offline, outside the score. It never changes XP, level, a stat or a rank, and nothing about it is sent.

@@ -92,10 +92,11 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | **Our story** | A timeline of you and your creature: the day you met, each evolve, badges, your biggest day. `/pet story`. | No. Worked out from your own ledger. |
 | **Evolve post** | For 7 days after your creature reaches a new stage, the card says so ("Evolved into a Big Guy on 3 Dec! Post it: /pet evolve"), and so does the band's stage-up toast. `/pet evolve` prints a link that opens X with a ready post you can edit: "My Claude Code just evolved into a Big Guy Shipper, Lv 30. What's yours?" (invented numbers). Any other day it says what your creature is now. The post links to your class's page on cclevel.com, the same page for everyone. | No, in both modes. The link is only printed. Opening it is your own visit to x.com, and the post is public. |
 | **README badge** | A "Lv 42 · Gigachad" badge for your GitHub profile or any README, as one line of Markdown to paste. `/pet readme badge`. It doesn't update itself: run it again to refresh. | No. The numbers sit in the badge's address; the picture comes from shields.io, a free badge service. |
+| **Leak finder** | Where your tokens went over the last 4 weeks, priced with API list prices as a yardstick (not a charge): cache written again after pauses, your start-up context, auto-compactions, and connectors you set up but never call. `/pet leaks`. With tips on, the card names the biggest leak when it is over $5 a week. Outside the score. | No. Fully offline, the same in both modes. It prints your connector names on your screen and stores nothing. |
 | **Training** | Five lessons per stat that tick themselves from your logs, and opt-in tips: a how-to under each Need and one Claude Code tip a day. | No. Fully offline. |
 | **GitHub badge** | Prove a GitHub account is yours and show how many of its public commits Claude co-signed. | Only if you ask for it. |
 
-In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank me`, `/pet start a group`, `/pet join <invite link>`, `/pet duel`, `/pet card`, `/pet learn`, `/pet tips on`.
+In Claude Code you can just ask: `/pet`, `/pet join the leaderboard`, `/pet rank me`, `/pet start a group`, `/pet join <invite link>`, `/pet duel`, `/pet card`, `/pet leaks`, `/pet learn`, `/pet tips on`.
 
 ## Play with friends
 
@@ -158,6 +159,7 @@ In Claude Code, `/pet` runs these for you. Network commands you run ask first, a
 | `--evolve` | A link that opens X with a ready post: your stage, class and level, and a link to your class's page (`/class/shipper` and so on). Sends nothing, in both modes. |
 | `--readme-badge` | Markdown for a "Lv 42 · Gigachad" badge for a README or GitHub profile (example numbers). Offline; the picture comes from shields.io. Re-run to update it. Sends nothing, in both modes. |
 | `--story` | Our story: a timeline of you and your creature, from the day you met Claude Code. Dates from before cclevel first scored you say "about". Add `--json` for the numbers. Sends nothing, in both modes. |
+| `--leaks` | Leak finder: tokens per week for the last 4 weeks, the cache-read share, and the biggest leaks with how to fix each, priced as an API yardstick (prices of 2026-10-06). Add `--json` for the numbers and names. Sends and saves nothing, in both modes. |
 | `--learn` | The training path: five lessons per stat, ticked by what your logs show, with how to do the next one. Offline. |
 | `--tips on` / `--tips off` | A how-to under each Need and one Claude Code tip a day on the card. Off by default; kept on this machine, sends nothing. |
 | `--panel on` / `--panel off` | Mac only: your creature in the menu bar, with a small panel. On asks first, then builds it on this Mac with Apple's `swiftc` and starts it at login; off removes it. The panel sends nothing (its Friends page shows the group as of the last check-in, Claude Code start or `--group`). After a plugin update, run `--panel on --yes` again to update it. |
