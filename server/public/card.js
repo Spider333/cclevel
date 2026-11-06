@@ -3,7 +3,7 @@
 // request of any kind: saving and copying hand the picture straight to this device.
 (function () {
 	// These must match skills/pet/scripts/cclevel.py; a test checks them.
-	var CARD_VERSION = 1;
+	var CARD_VERSION = 2;   // version 1 links (no look) still draw, with the classic look
 	var LEVEL_DIVISOR = 40;
 	var LEVEL_MAX = 99;
 	var STAT_ORDER = ["grind", "appetite", "arsenal", "brains", "autonomy", "craft"];
@@ -27,6 +27,20 @@
 		Gigachad: [" \\.-^-./ ", " ( o o ) ", " /\\ = /\\ ", " _/| |\\_ "],
 		"GOAT": ["*\\.-^-./*", " ( @ @ ) ", "</\\ = /\\>", " _/| |\\_ "],
 	};
+	// Markings: the look after the link's last "-" picks an eye style, a mouth and a crest; 64 more means shiny.
+	var LOOKS = 64;
+	var EYES = "o.O0";
+	var MOUTHS = "wv-";
+	var CRESTS = { Egg: ".:o~", Hatchling: "_^.~" };
+	var MARK_SLOTS = {
+		Egg: { crest: [2, 4] },
+		Hatchling: { eyes: [[1, 3], [1, 5]], mouth: [2, 4], crest: [0, 4] },
+		"Lil Guy": { eyes: [[1, 3], [1, 5]], mouth: [2, 4], crest: [0, 4] },
+		"Big Guy": { eyes: [[1, 3], [1, 5]], mouth: [2, 4], crest: [0, 4] },
+		Gigachad: { eyes: [[1, 3], [1, 5]], mouth: [2, 4], crest: [0, 4] },
+		"GOAT": { mouth: [2, 4], crest: [0, 4] },
+	};
+	var SHINY_MARK = "\u2726 Shiny";
 	// The picture always uses the site's dark colours, whatever this browser's theme.
 	var C = { bg: "#201f1c", surface: "#2a2926", raised: "#34322e", fg: "#f3f1ea", muted: "#b5b1a7", line: "#46433d", accent: "#d97757" };
 	var CLASS_COLORS = {
@@ -67,15 +81,36 @@
 		return copy;
 	};
 
-	// The card from the address, or null: eleven whole numbers joined by "-", each in range. The version, XP, the six
-	// stats, the mood, the streak, and the badges as bits.
+	// The stage's art with its markings, the way the scanner's marked_art() draws it.
+	function markedArt(stage, look, shiny) {
+		var lines = ART[stage].map(function (line) { return line.split(""); });
+		var slots = MARK_SLOTS[stage];
+		var eye = look % 4;
+		var mouth = Math.floor(look / 4) % 4;
+		var crest = Math.floor(look / 16) % 4;
+		if (eye && slots.eyes) slots.eyes.forEach(function (at) { lines[at[0]][at[1]] = EYES[eye]; });
+		if (mouth && slots.mouth) lines[slots.mouth[0]][slots.mouth[1]] = MOUTHS[mouth - 1];
+		if (crest) lines[slots.crest[0]][slots.crest[1]] = (CRESTS[stage] || "^~='")[crest];
+		if (shiny) {
+			(stage === "GOAT" ? [[3, 0], [3, 8]] : [[0, 8], [3, 0]]).forEach(function (at) {
+				lines[at[0]][at[1]] = stage === "GOAT" ? "+" : "*";
+			});
+		}
+		return lines.map(function (line) { return line.join(""); });
+	}
+
+	// The card from the address, or null: whole numbers joined by "-", each in range. The version, XP, the six stats,
+	// the mood, the streak, the badges as bits and, from version 2, the look (plus 64 if shiny). Version 1 has eleven
+	// numbers and the classic look; version 2 has twelve.
 	function read(hash) {
 		var parts = hash.split("-");
-		if (parts.length !== 11 ||!parts.every(function (p) { return /^\d{1,9}$/.test(p); })) return null;
+		if (!parts.every(function (p) { return /^\d{1,9}$/.test(p); })) return null;
 		var n = parts.map(Number);
+		if (!(n[0] === 1 && n.length === 11) && !(n[0] === CARD_VERSION && n.length === 12 && n[11] < LOOKS * 2)) return null;
+		var look = n.length === 12 ? n[11] : 0;
 		var stats = n.slice(2, 8);
 		var badges = Object.keys(BADGE_NAMES);
-		var ok = n[0] === CARD_VERSION && n[1] <= 10000000 && n[8] < MOODS.length && n[9] <= 100000 && n[10] < Math.pow(2, badges.length)
+		var ok = n[1] <= 10000000 && n[8] < MOODS.length && n[9] <= 100000 && n[10] < Math.pow(2, badges.length)
 			&& stats.every(function (s) { return s <= 100 && s % 5 === 0; });
 		if (!ok) return null;
 		var card = { xp: n[1], stats: {}, mood: MOODS[n[8]], streak: n[9] };
@@ -89,6 +124,8 @@
 		card.who = card.cls === "Unhatched" ? card.stage : card.stage + " " + card.cls;
 		card.brain = (BRAIN_TITLES.filter(function (b) { return card.stats.brains >= b[0]; })[0] || [0, ""])[1];
 		card.aura = stats.reduce(function (a, b) { return a + b; }, 0);
+		card.shiny = look >= LOOKS;
+		card.art = markedArt(card.stage, look % LOOKS, card.shiny);
 		return card;
 	}
 
@@ -149,13 +186,21 @@
 		ctx.setLineDash([6, 6]);
 		ctx.strokeRect(left, 112, 360, 280);
 		ctx.setLineDash([]);
-		var art = ART[card.stage];
+		var art = card.art;
 		ctx.textAlign = "center";
 		ctx.font = font(700, 44);
 		ctx.fillStyle = C.accent;
 		art.forEach(function (line, i) {
 			ctx.fillText(line, left + 180, 112 + (280 - art.length * 52) / 2 + 40 + i * 52);
 		});
+		if (card.shiny) {
+			// A few twinkles around the shiny creature, inside its box.
+			ctx.font = font(700, 30);
+			ctx.fillStyle = C.fg;
+			[[left + 34, 150], [left + 326, 190], [left + 46, 360], [left + 312, 372]].forEach(function (at, i) {
+				ctx.fillText(i % 2 ? "+" : "\u2726", at[0], at[1]);
+			});
+		}
 		ctx.textAlign = "left";
 		ctx.fillStyle = C.fg;
 		ctx.font = font(800, 60);
@@ -167,12 +212,18 @@
 		// Right: who it is, its mood, the six stats, Aura and badges.
 		var x = 470;
 		var width = right - x;
-		fit(ctx, card.who, 800, 52, 26, width);
+		var shiny = card.shiny ? " · " + SHINY_MARK : "";
+		fit(ctx, card.who + shiny, 800, 52, 26, width);
 		ctx.fillStyle = C.fg;
 		ctx.fillText(card.stage, x, 150);
 		if (card.who !== card.stage) {
 			ctx.fillStyle = CLASS_COLORS[card.cls];
 			ctx.fillText(card.cls, x + ctx.measureText(card.stage + " ").width, 150);
+		}
+		if (shiny) {
+			// Not in gold, Loot Goblin's colour: the text colour, so it reads as a mark, not a class.
+			ctx.fillStyle = C.fg;
+			ctx.fillText(shiny, x + ctx.measureText(card.who).width, 150);
 		}
 		var mood = ["Mood: " + card.mood];
 		if (card.streak) mood.push("streak " + card.streak);
@@ -250,13 +301,14 @@
 	}
 	var canvas = el("shot");
 	draw(canvas, card);
-	canvas.setAttribute("aria-label", card.who + ", level " + card.level + ", " + card.xp.toLocaleString("en-US") + " XP. "
+	canvas.dataset.art = card.art.join("\n");   // the creature as drawn, for tests
+	canvas.setAttribute("aria-label", (card.shiny ? "Shiny " : "") + card.who + ", level " + card.level + ", " + card.xp.toLocaleString("en-US") + " XP. "
 		+ STAT_ORDER.map(function (s) { return s + " " + card.stats[s]; }).join(", ") + ". Mood: " + card.mood + ".");
 	var title = el("title");
 	var dot = title.lastElementChild;
-	title.replaceChildren(card.who, dot);
+	title.replaceChildren(card.who + (card.shiny ? " · " + SHINY_MARK : ""), dot);
 	document.title = card.who + " · Lv " + card.level + " · CC level";
-	var caption = "My Claude Code is " + (/^[AEIOU]/.test(card.who) ? "an " : "a ") + card.who + ", Lv " + card.level + ". What's yours? cclevel.com";
+	var caption = "My Claude Code is " + (card.shiny ? "a shiny " : /^[AEIOU]/.test(card.who) ? "an " : "a ") + card.who + ", Lv " + card.level + ". What's yours? cclevel.com";
 	el("caption").textContent = caption;
 	el("caption").nextElementSibling.setAttribute("aria-label", "Copy: " + caption);
 	el("share").hidden = false;

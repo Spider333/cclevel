@@ -30,13 +30,16 @@ const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SEARCH_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch', 'ToolSearch'])
 const COMMIT_RE = /\bgit\s+commit\b/       // the scanner counts commits the same way
 const SPARKLE = ['*', '+', '.', '+']
+const EYES = 'o.O0'                         // must match the scanner's EYES (skills/pet/scripts/cclevel.py)
+const EGG_CRESTS = '.:o~'                   // and its Egg shell marks
+const LOOKS = 64
 const ACTION_VERBS: Record<Action['kind'], string> = {
   write: 'writing code', search: 'sniffing around', run: 'lifting', commit: 'flexing', error: 'sweating',
 }
 const MODE_VERBS: Record<string, string> = { thinking: 'big-braining', responding: 'cooking' }
 
 // Change a shape tag when its value's fields change: it declines what an earlier version stored.
-const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-2' })
+const creature = atom({ plugin: 'cclevel', key: 'creature' } as const, null, { shape: 'creature-3' })
 const frame = atom({ plugin: 'cclevel', key: 'frame' } as const, 0)
 const isHidden = atom({ plugin: 'cclevel', key: 'isHidden' } as const, false)
 const isScanning = atom({ plugin: 'cclevel', key: 'isScanning' } as const, false)
@@ -53,19 +56,27 @@ export function asCreature(value: unknown): Creature | null {
   if (typeof stage !== 'string' || !(STAGES as readonly string[]).includes(stage)) return null
   if (typeof mood !== 'string' || mood.length === 0 || mood.length > 40) return null
   if (![xp, xpLevelStart, xpNextLevel, xpToday, at].every(isCount)) return null
-  return {
+  const { look, shiny } = value as Record<string, unknown>
+  const c: Creature = {
     level, stage: stage as Stage, mood, xp: xp as number, xpLevelStart: xpLevelStart as number,
     xpNextLevel: xpNextLevel as number, xpToday: xpToday as number, at: at as number,
   }
+  // Markings that are out of range are dropped: the classic look.
+  if (typeof look === 'number' && Number.isInteger(look) && look >= 0 && look < LOOKS && typeof shiny === 'boolean') {
+    c.look = look
+    c.shiny = shiny
+  }
+  return c
 }
 
 /** A creature from the scan's JSON (`--json`), stamped with when the scan started, or null. */
 export function fromScan(json: unknown, at: number): Creature | null {
   if (typeof json !== 'object' || json === null) return null
   const o = json as Record<string, unknown>
+  const marks = typeof o.marks === 'object' && o.marks !== null ? o.marks as Record<string, unknown> : {}
   return asCreature({
     level: o.level, stage: o.stage, mood: o.mood, xp: o.xp, xpLevelStart: o.xp_level_start,
-    xpNextLevel: o.xp_next_level, xpToday: o.xp_today_pending, at,
+    xpNextLevel: o.xp_next_level, xpToday: o.xp_today_pending, at, look: marks.look, shiny: marks.shiny,
   })
 }
 
@@ -101,15 +112,20 @@ function shell(stage: Stage, n: number, level: number): { left: string; eyes: st
 /** What the creature looks like: walking, acting out a tool, asleep, or celebrating. */
 export type Look = 'walk' | Action['kind'] | 'asleep' | 'party'
 
-/** The creature's cells at step `n`, always the same width for a stage so the text beside it stays put. */
-export function sprite(stage: Stage, level: number, n: number, look: Look): string {
+/** The creature's cells at step `n`, always the same width for a stage so the text beside it stays put.
+ * `marks` is the scan's look: the walk uses its eye style (the Egg its shell mark), and a shiny one
+ * twinkles in the prop room. Every other look keeps its own eyes, since they act. */
+export function sprite(stage: Stage, level: number, n: number, look: Look, marks: { look?: number; shiny?: boolean } = {}): string {
   const step = look === 'asleep' ? 0 : n
-  const { left, eyes: ownEyes, right } = shell(stage, step, level)
+  const { left, eyes: shellEyes, right } = shell(stage, step, level)
+  const mark = marks.look ?? 0
+  const ownEyes = stage === 'Egg' ? shellEyes.replace('.', EGG_CRESTS[(mark >> 4) % 4] ?? '.')
+    : stage === 'GOAT' ? shellEyes : shellEyes.replaceAll('o', EYES[mark % 4] ?? 'o')
   const eye = stage === 'GOAT' ? '@' : 'o'
   const eyes = stage === 'Egg' ? ownEyes : {
     walk: ownEyes,
     asleep: '- -',
-    write: ownEyes,
+    write: shellEyes,
     search: n % 2 === 0 ? `${eye}${eye} ` : ` ${eye}${eye}`,
     run: '> <',
     commit: '^ ^',
@@ -120,7 +136,7 @@ export function sprite(stage: Stage, level: number, n: number, look: Look): stri
   const width = shell(stage, 0, 1).left.length + 3 + shell(stage, 0, 1).right.length + PROPS + TRACK
   const isOdd = n % 2 === 1
   const body = {
-    walk: face,
+    walk: marks.shiny ? `${face} ${SPARKLE[n % SPARKLE.length] ?? '*'}` : face,
     asleep: `${face} zZ`,
     write: face + (isOdd ? ' ✎~' : ' ~✎'),
     search: face + (isOdd ? '  ?' : ' ?'),
@@ -318,7 +334,7 @@ export const register: Register = on => {
     const n = isWorking || party !== null ? await read($, frame) : 0
     const doing = isWorking && party === null ? await read($, action) : null
     const look: Look = party !== null ? 'party' : !isWorking ? 'asleep' : (doing?.kind ?? 'walk')
-    const cells = sprite(shown.stage, shown.level, n, look)
+    const cells = sprite(shown.stage, shown.level, n, look, shown)
 
     if (party !== null) {
       const news = party.stage === party.from

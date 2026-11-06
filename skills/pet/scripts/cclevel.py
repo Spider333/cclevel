@@ -289,6 +289,86 @@ ART = {
     "GOAT": [r"*\.-^-./*", r" ( @ @ ) ", r"</\ = /\>", r" _/| |\_ "],
 }
 
+# Markings: each creature's own look, from a number made on this machine the first time a run saves (the seed file).
+# look = seed mod 64 picks an eye style, a mouth and a crest (the Egg's shell mark); (seed / 64) mod 100 == 0 is shiny,
+# 1 in 100. Look 0, not shiny, is the classic art above. Every slot swaps one character, so each line stays 9 wide.
+# These must match server/public/card.js; a test checks them.
+LOOKS = 64
+SHINY_ODDS = 100
+SEED_RE = re.compile(r"[0-9a-f]{16}")
+EYES = "o.O0"                      # GOAT keeps its @ eyes
+MOUTHS = "wv-"                     # after the stage's own mouth (^, ~ or =)
+CRESTS = {"Egg": ".:o~", "Hatchling": "_^.~"}   # the rest: "^~='"
+MARK_SLOTS = {                     # (line, column) of the eyes, the mouth and the crest
+    "Egg": {"crest": (2, 4)},
+    "Hatchling": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Lil Guy": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Big Guy": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Gigachad": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "GOAT": {"mouth": (2, 4), "crest": (0, 4)},
+}
+SHINY_MARK = "\u2726 Shiny"
+
+
+def marks_of(seed):
+    """The look (0-63) and whether it is shiny, from the seed as a number, or the classic look for None."""
+    if seed is None:
+        return {"look": 0, "shiny": False}
+    return {"look": seed % LOOKS, "shiny": (seed // LOOKS) % SHINY_ODDS == 0}
+
+
+def marked_art(stage, look=0, shiny=False):
+    """The stage's art with its markings. Shiny adds two twinkles: "*" corners, or "+" for the GOAT, which has "*" already."""
+    lines = [list(line) for line in ART[stage]]
+    slots = MARK_SLOTS[stage]
+    eye, mouth, crest = look % 4, look // 4 % 4, look // 16 % 4
+    if eye and "eyes" in slots:
+        for row, col in slots["eyes"]:
+            lines[row][col] = EYES[eye]
+    if mouth and "mouth" in slots:
+        row, col = slots["mouth"]
+        lines[row][col] = MOUTHS[mouth - 1]
+    if crest:
+        row, col = slots["crest"]
+        lines[row][col] = CRESTS.get(stage, "^~='")[crest]
+    if shiny:
+        for row, col in ([(3, 0), (3, 8)] if stage == "GOAT" else [(0, 8), (3, 0)]):
+            lines[row][col] = "+" if stage == "GOAT" else "*"
+    return ["".join(line) for line in lines]
+
+
+def seed_path(cdir):
+    return os.path.join(cdir, "cclevel", "seed")
+
+
+def read_seed(cdir):
+    """The seed as a number, or None: no file, a link, a folder or anything but 16 hex digits all mean the classic look."""
+    path = seed_path(cdir)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        with open(path, encoding="ascii") as f:
+            text = f.read(64).strip()
+    except (OSError, ValueError):
+        return None
+    return int(text, 16) if SEED_RE.fullmatch(text) else None
+
+
+def creature_marks(cdir, save):
+    """This creature's markings. A run that saves makes the seed once, if nothing is at its place yet; it is never
+    rewritten, and a run that does not save only reads it. Kept apart from identity.json, which Privacy mode deletes."""
+    seed = read_seed(cdir)
+    if seed is None and save and not os.path.lexists(seed_path(cdir)):
+        try:
+            os.makedirs(os.path.dirname(seed_path(cdir)), exist_ok=True)
+            text = secrets.token_hex(8)
+            write_private(seed_path(cdir), text + "\n")
+            seed = int(text, 16)
+        except OSError:
+            seed = None
+    return marks_of(seed)
+
+
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 FIRST_YEAR = 2025            # Claude Code's first public release: no Wrapped before it
 THIS_YEAR = object()         # what --wrapped means without a YEAR (not a string, so argparse leaves it as it is)
@@ -996,16 +1076,17 @@ def render(r, board="on", how=False, tip=None, creature=None):
     With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
+    marks = r.get("marks") or marks_of(None)
     to_next = "top level" if level >= LEVEL_MAX else "{:,} to Lv {}".format(r["xp_next_level"] - r["xp"], level + 1)
     guessed = " (%d estimated)" % raw["xp_days_estimated"] if raw["xp_days_estimated"] else ""
     side = [
-        "%s · Lv %d" % (who, level),
+        "%s · Lv %d%s" % (who, level, " · " + SHINY_MARK if marks["shiny"] else ""),
         "XP {:,} · {} · today so far +{}".format(r["xp"], to_next, r["xp_today_pending"]),
         "Mood: %s · Health %d · %s %d" % (r["mood"], r["health"], AURA, r["power"]),
         "%s old · %s%s · streak %d" % (count(raw["age_days"], "day"), count(raw["active_days"], "active day"), guessed,
                                        raw["current_streak"]),
     ]
-    out = ["", *("  %s   %s" % (art, text) for art, text in zip(ART[r["stage"]], side)), ""]
+    out = ["", *("  %s   %s" % (art, text) for art, text in zip(marked_art(r["stage"], marks["look"], marks["shiny"]), side)), ""]
     for name in STAT_ORDER:
         v = r["stats"][name]
         filled = round(v / 5)
@@ -1617,7 +1698,7 @@ INVITE_LINK_RE = re.compile(r"https?://([^/\s#?]+)\S*?#([0-9a-f]{32})(?![0-9a-f]
 INVITE_CODE_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])")
 GROUP_MAX = 25           # must match the board
 DUEL_DAYS = 7            # must match the board
-CARD_VERSION = 1         # must match the card page, server/public/card.js
+CARD_VERSION = 2         # must match the card page, server/public/card.js
 GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")   # GitHub's rule for a login
 
 
@@ -2266,10 +2347,13 @@ def duel_link(server, code):
 
 def card_link(server, result):
     """The share card's address. Its numbers sit after "#", which browsers never send: the page draws the picture from
-    them. XP, the six stats, the mood, the streak and the badges as bits; the page works out the rest the way this file does."""
+    them. XP, the six stats, the mood, the streak and the badges as bits; the page works out the rest the way this file does.
+    The last number is the creature's look, plus 64 if it is shiny."""
+    marks = result.get("marks") or marks_of(None)
     numbers = [CARD_VERSION, result["xp"], *(result["stats"][s] for s in STAT_ORDER),
                list(MOODS.values()).index(result["mood"]), result["raw"]["current_streak"],
-               sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"])]
+               sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"]),
+               marks["look"] + (LOOKS if marks["shiny"] else 0)]
     return "%s/card#%s" % (site(server), "-".join(str(n) for n in numbers))
 
 
@@ -3355,6 +3439,9 @@ def main():
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview or args.readme_badge))
+    # A folder with no Claude Code activity has no creature yet, so it gets no seed either.
+    result["marks"] = creature_marks(cdir, save=result["raw"]["active_days"] > 0
+                                     and not (args.no_save or args.preview or args.readme_badge))
     if args.wrapped is not None:
         today = datetime.now(timezone.utc).date()
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
@@ -3387,7 +3474,9 @@ def main():
     if args.json:
         # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
         # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
-        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]],
+        marks = result["marks"]
+        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"},
+                              art=marked_art(result["stage"], marks["look"], marks["shiny"]),
                               **panel_extras(cdir, result), **friends_view(cdir, result)), indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)

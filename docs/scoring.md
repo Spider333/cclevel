@@ -37,6 +37,8 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 | Touching grass, Ghosting, It's so over | Mood after 3, 14 and 60 days without a session |
 | Not hatched yet | Mood of a folder with no activity |
 | Aura | The six stats added up |
+| Markings | Each creature's own eyes, mouth and crest (an Egg: its shell mark), from a number made once on your machine (`~/.claude/cclevel/seed`). 64 looks; look 0 is the classic art. They never change the score and are never sent to the board |
+| ✦ Shiny | 1 in 100 creatures. Two twinkles on the art and "✦ Shiny" on the card and the share card. Just for fun: it changes no number |
 | Skill issue, Certified chonk, Touch grass | Asides in the Needs list: unused skills, a heavy start-up context, nothing to fix |
 | gm x7, No days off, Terminally online | Badges for 7, 30 and 100 days in a row |
 | Hooked, Skill issue: solved, Not my job, AFK gains | Badges for the first hook that ran at the end of a turn, own skill used, subagent spawned and unattended session |

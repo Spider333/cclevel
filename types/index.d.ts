@@ -13,6 +13,9 @@ export type Creature = {
   xpToday: number
   /** When the scan that gave these values started, in epoch milliseconds. */
   at: number
+  /** The creature's markings (0 to 63) and whether it is shiny, from the scan's `marks`. Missing means the classic look. */
+  look?: number
+  shiny?: boolean
 }
 
 /** What the creature is acting out: the kind of tool Claude is using, or how the last one ended. */

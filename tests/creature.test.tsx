@@ -360,3 +360,31 @@ test('the level bar runs from where the level began to the next one', async () =
   expect(progress({ ...STORED, level: 99 })).toBe(1)
   expect(progress({ ...STORED, xpNextLevel: STORED.xpLevelStart })).toBe(0)
 })
+
+test('markings: the walk wears the look, every action keeps its eyes, and the width holds', async () => {
+  const looks: Look[] = ['walk', 'asleep', 'write', 'search', 'run', 'commit', 'error', 'party']
+  const stages: Stage[] = ['Egg', 'Hatchling', 'Lil Guy', 'Big Guy', 'Gigachad', 'GOAT']
+  for (const stage of stages) {
+    const width = sprite(stage, 10, 0, 'walk').length
+    for (let mark = 0; mark < 64; mark++) for (const shiny of [false, true]) for (const look of looks) {
+      for (let n = 0; n < 4; n++) expect(sprite(stage, 10, n, look, { look: mark, shiny }).length).toBe(width)
+    }
+  }
+  // Look 0 is the classic creature; look 2 has wide eyes; look 32 marks the Egg's shell.
+  expect(sprite('Gigachad', 46, 0, 'walk', { look: 0, shiny: false })).toBe(sprite('Gigachad', 46, 0, 'walk'))
+  expect(sprite('Gigachad', 46, 0, 'walk', { look: 2, shiny: false }).trimEnd()).toBe('\\( O O )/')
+  expect(sprite('Gigachad', 46, 0, 'run', { look: 2, shiny: false }).trimEnd()).toBe('o=\\( > < )/=o')
+  expect(sprite('Gigachad', 46, 0, 'write', { look: 2, shiny: false })).toBe(sprite('Gigachad', 46, 0, 'write'))
+  expect(sprite('Egg', 1, 2, 'walk', { look: 32, shiny: false }).trimEnd()).toBe('( o )')
+  expect(sprite('GOAT', 60, 0, 'walk', { look: 3, shiny: false })).toBe(sprite('GOAT', 60, 0, 'walk'))
+  // A shiny one twinkles beside itself while it walks.
+  expect(sprite('Big Guy', 30, 0, 'walk', { look: 0, shiny: true }).trimEnd()).toBe('/( o o )\\ *')
+})
+
+test('the scan\'s markings are kept only when they are in range', async () => {
+  expect(fromScan({ ...SCAN, marks: { look: 17, shiny: true } }, NOW)).toEqual({ ...STORED, look: 17, shiny: true })
+  expect(fromScan({ ...SCAN, marks: { look: 64, shiny: true } }, NOW)).toEqual(STORED)
+  expect(fromScan({ ...SCAN, marks: { look: 3, shiny: 'yes' } }, NOW)).toEqual(STORED)
+  expect(fromScan({ ...SCAN, marks: null }, NOW)).toEqual(STORED)
+  expect(asCreature({ ...STORED, look: -1, shiny: false })).toEqual(STORED)
+})

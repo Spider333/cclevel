@@ -22,7 +22,7 @@ Short version: the card is offline, and cclevel has two modes.
 | `--duel`, `--duel-leave` | one request to the board | the token |
 | `--duel-code` | none | nothing; it shows the saved duel invite link |
 | opening an invite link (group or duel) in a browser | one request for the invite page on cclevel.com, which Cloudflare's sampled visit logs may include with your IP address (see "What we cannot promise") | nothing about you; the code after `#` stays in your browser and the page makes no request with it |
-| `--card` | none | nothing; it prints a link to the card page, with your card's numbers after `#` |
+| `--card` | none | nothing; it prints a link to the card page, with your card's numbers after `#`. From version 2 of the link the last number is your creature's look (0 to 127: its markings, plus 64 if it is shiny) |
 | `--wrapped [YEAR]` | none | nothing; it reads the ledger on your machine, which keeps your banked days, badge dates and, from version 0.5.0, one snapshot a week of your XP, six stats and Health. Its last line is a link to the Wrapped page with the year's numbers after `#`: XP, active and estimated days, levels, the best day's date and XP, the best month, the longest streak, XP per month, badges earned, weekly snapshot count, most-weeks class, strongest stat and how each stat moved, and the dates each stage was reached. It is only printed, never sent |
 | `--story` | none | nothing, in Default mode and in Privacy mode; it reads the ledger on your machine and prints a timeline. `--story --json` prints the same as numbers, dates and codes, on your screen only. It stores nothing new |
 | `--readme-badge` | none | nothing, in Default mode and in Privacy mode; it prints Markdown for a badge image at img.shields.io whose address holds your level and stage. Anyone who views a page with the badge loads that image from shields.io (on GitHub, through GitHub's image proxy). It stores nothing |
@@ -73,6 +73,7 @@ Names of skills, projects, files or connectors. Prompts, code and paths. Your e-
 ## Identity
 
 - The first join (the session-start hook's, `--join`, or joining from an invite) creates a random 64-character token on your machine. Once the board has accepted the first check-in, the token is stored in `~/.claude/cclevel/identity.json`, readable only by you.
+- Your creature's markings come from a different number: 16 random hex digits made on your machine the first time a run of the card saves, kept in `~/.claude/cclevel/seed`, readable only by you. It is written once and never sent. It is not in `identity.json`, so Privacy mode (`--privacy on`) keeps it and your creature keeps its look. Runs with `--no-save` (the creature band, the menu bar panel) only read it. Delete the file and the next run makes a new one, with a new look.
 - The board stores the SHA-256 hash of that token, never the token.
 - A token is only ever sent to the board it joined.
 - There is no account, login or e-mail address. Your name on the board is generated from the hash, for example "Mossy Falcon 4821". Your own copy works out the same name locally.
@@ -141,7 +142,7 @@ A creature is on the world lists only while its owner keeps the world ranking on
 - **Timing is coarse, not hidden.** The public files are rebuilt every hour. Someone watching them could tell within the hour when a listed creature's XP changed, and at once when one left or turned the world ranking off.
 - **GitHub sees the board's lookups.** To check a gist and count commits, the board asks GitHub about your login with its own key. GitHub sees those requests coming from Cloudflare, not from you. Your login and gist are public on GitHub anyway.
 - **Groups and duels see check-ins as they happen.** Members of a private group, and the two creatures in a duel, see each other's numbers change as soon as each one checks in, so a member who keeps looking can tell roughly when a friend runs `--sync`. Joining and leaving are seen at once by anyone who runs `/pet group`. The Mac menu bar panel's Friends page shows a copy saved at the last daily check-in, later Claude Code start (at most every 15 minutes with the panel installed) or `/pet group`, so it can show a friend who left, or turned Privacy mode on, until the next of those, and for at most 36 hours: an older copy is never shown, and in Privacy mode the page shows no friends at all.
-- **Pseudonymous, not anonymous.** A row stays linked to the token on your machine. If you post your card or creature name publicly, people can match it to your row. A picture from `--card` shows no name, but its level, stage, class and Aura can still match a listed row.
+- **Pseudonymous, not anonymous.** A row stays linked to the token on your machine. If you post your card or creature name publicly, people can match it to your row. A picture from `--card` shows no name, but its level, stage, class and Aura can still match a listed row. A card's markings come from a number made on your machine. They are the same on every card you post, so two of your cards can be matched to each other. They are never sent to the board, so they cannot be matched to your row.
 
 ## Your controls
 

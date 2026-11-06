@@ -39,7 +39,7 @@ Both are offline and kept on this machine in `~/.claude/cclevel/training.json`.
 
 ## Share the card as a picture
 
-When the user asks to share, post or get a picture of their card (for example `/pet card`), run `--card`. It is offline: it only prints a link. Show the link exactly as printed and tell the user to open it in their browser, where the page draws the card and offers Save image and Copy image. The numbers after `#` never reach a server, and the picture shows no creature name. Never open or fetch the link yourself.
+When the user asks to share, post or get a picture of their card (for example `/pet card`), run `--card`. It is offline: it only prints a link. Show the link exactly as printed and tell the user to open it in their browser, where the page draws the card and offers Save image and Copy image. The numbers after `#` never reach a server, and the picture shows no creature name. The link also carries the creature's look (its markings, and whether it is shiny), so the picture matches the card's art; that number is the same on every card the user posts, so two of their cards can be matched to each other. It works the same in Default mode and in Privacy mode. Never open or fetch the link yourself.
 
 ## Two modes: Default and Privacy
 

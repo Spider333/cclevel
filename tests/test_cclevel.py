@@ -7,6 +7,7 @@ import json
 import math
 import os
 import plistlib
+import random
 import re
 import shutil
 import socket
@@ -361,7 +362,7 @@ class Scanner(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(done.exception.code, 0)
         self.assertEqual(events, [])
-        self.assertIn("  %s/card#1-" % cclevel.PUBLIC_SITE, out.getvalue())   # the public board's card opens on its website
+        self.assertIn("  %s/card#2-" % cclevel.PUBLIC_SITE, out.getvalue())   # the public board's card opens on its website
         self.assertIn("Opening the link is a visit to cclevel.com, which Cloudflare's sampled visit logs may keep with your IP address",
                       out.getvalue())
 
@@ -427,6 +428,16 @@ class Scanner(unittest.TestCase):
         for stage, lines in cclevel.ART.items():
             drawn = re.search(r'(?:"%s"|\b%s): (\[.*?\]),\n' % (re.escape(stage), re.escape(stage)), art).group(1)
             self.assertEqual(json.loads(drawn), lines, stage)
+        # The markings tables, too: the page must draw the same marked art for every look.
+        self.assertEqual(int(re.search(r"var LOOKS = (\d+);", card).group(1)), cclevel.LOOKS)
+        for name in ("EYES", "MOUTHS"):
+            self.assertEqual(re.search(r'var %s = "([^"]+)";' % name, card).group(1), getattr(cclevel, name), name)
+        self.assertEqual(dict(re.findall(r'(\w+): "([^"]+)"', re.search(r"var CRESTS = \{(.*?)\};", card).group(1))), cclevel.CRESTS)
+        slots = re.search(r"var MARK_SLOTS = \{(.*?\n)\t\};", card, re.S).group(1)
+        for stage, mine in cclevel.MARK_SLOTS.items():
+            line = re.search(r'(?:"%s"|\b%s): \{(.*?)\},\n' % (re.escape(stage), re.escape(stage)), slots).group(1)
+            drawn = json.loads("{%s}" % re.sub(r"(\w+):", r'"\1":', line))
+            self.assertEqual(drawn, {k: [list(v) for v in at] if k == "eyes" else list(at) for k, at in mine.items()}, stage)
         for page in (card, duel_page):
             for call in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "import(", ".src ="):
                 self.assertNotIn(call, page)
@@ -2313,6 +2324,19 @@ class Leaderboard(unittest.TestCase):
         self.assertFalse(os.path.exists(self.identity))
         self.assertIn("Privacy mode: cclevel sends nothing.", run("--claude-dir", self.dir).stdout)
 
+    def test_privacy_on_keeps_the_seed_and_the_look(self):
+        self.joined()
+        seed = os.path.join(self.dir, "cclevel", "seed")
+        with open(seed) as f:
+            before = f.read()
+        look = json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)["marks"]
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertFalse(os.path.exists(self.identity))
+        with open(seed) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)["marks"], look)
+
     def test_privacy_on_deletes_the_row_and_a_failed_delete_still_stops_the_hook(self):
         board = {"CCLEVEL_SERVER": self.url}
         self.joined()
@@ -3377,14 +3401,16 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual(FakeBoard.seen, [])
         link = re.search(r"\n  (\S+/card#\S+)\n", out.stdout).group(1)
         result = cclevel.score(self.dir, machine_jobs=False, save=False)
+        result["marks"] = cclevel.creature_marks(self.dir, save=False)
         self.assertEqual(link, cclevel.card_link(self.url, result))
         numbers = [int(n) for n in link.split("#")[1].split("-")]
-        self.assertEqual(len(numbers), 11)
+        self.assertEqual(len(numbers), 12)
         self.assertEqual(numbers[:2], [cclevel.CARD_VERSION, result["xp"]])
         self.assertEqual(numbers[2:8], [result["stats"][s] for s in cclevel.STAT_ORDER])
         self.assertEqual(list(cclevel.MOODS.values())[numbers[8]], result["mood"])
         self.assertEqual(numbers[9], result["raw"]["current_streak"])
         self.assertEqual([b for i, b in enumerate(cclevel.BADGES) if numbers[10] >> i & 1], result["badges"])
+        self.assertEqual(numbers[11], result["marks"]["look"] + (64 if result["marks"]["shiny"] else 0))
         for canary in CANARIES:
             self.assertNotIn(canary, out.stdout)
         # A joined machine's card page is on its own board.
@@ -3394,6 +3420,99 @@ class Leaderboard(unittest.TestCase):
 
 
 PANEL_SOURCE = os.path.realpath(os.path.join(ROOT, "mac", "CclevelPanel.swift"))
+
+
+class Markings(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = make_folder(self.tmp.name)
+        self.seed = os.path.join(self.dir, "cclevel", "seed")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, *flags):
+        out = run("--claude-dir", self.dir, "--json", *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_every_look_keeps_every_line_nine_ascii_characters(self):
+        for stage in cclevel.ART:
+            self.assertEqual(cclevel.marked_art(stage), cclevel.ART[stage], "look 0 is the classic art")
+            for look in range(cclevel.LOOKS):
+                for shiny in (False, True):
+                    for line in cclevel.marked_art(stage, look, shiny):
+                        self.assertEqual(len(line), 9, (stage, look, shiny))
+                        self.assertTrue(line.isascii(), (stage, look, shiny))
+        # The GOAT keeps its @ eyes and * sparkles; its shiny twinkles are + instead.
+        goat = cclevel.marked_art("GOAT", 63, True)
+        self.assertEqual(goat[1], " ( @ @ ) ")
+        self.assertEqual((goat[0][0], goat[0][8], goat[3][0], goat[3][8]), ("*", "*", "+", "+"))
+        self.assertEqual(cclevel.marked_art("Big Guy", 2), ["  .-^-.  ", " ( O O ) ", " /\\ ~ /\\ ", "  /| |\\  "])
+
+    def test_one_in_a_hundred_is_shiny_and_every_look_appears(self):
+        rng = random.Random(7)
+        marks = [cclevel.marks_of(rng.getrandbits(64)) for _ in range(100000)]
+        share = sum(m["shiny"] for m in marks) / len(marks)
+        self.assertTrue(0.009 <= share <= 0.011, share)
+        self.assertEqual({m["look"] for m in marks}, set(range(cclevel.LOOKS)))
+        self.assertEqual(cclevel.marks_of(None), {"look": 0, "shiny": False})
+        self.assertEqual(cclevel.marks_of(64 * 100 + 5), {"look": 5, "shiny": True})
+
+    def test_the_seed_is_made_once_and_the_look_is_the_same_everywhere(self):
+        self.assertFalse(self.scan("--no-save")["marks"]["shiny"])
+        self.assertFalse(os.path.exists(self.seed), "a run that does not save makes no seed")
+        first = self.scan()
+        self.assertEqual(stat.S_IMODE(os.stat(self.seed).st_mode), 0o600)
+        with open(self.seed) as f:
+            text = f.read()
+        self.assertRegex(text, r"^[0-9a-f]{16}\n$")
+        self.assertEqual(first["marks"], cclevel.marks_of(int(text, 16)))
+        again = self.scan()
+        self.assertEqual((again["marks"], again["art"]), (first["marks"], first["art"]))
+        with open(self.seed) as f:
+            self.assertEqual(f.read(), text, "never rewritten")
+        self.assertEqual(first["art"], cclevel.marked_art(first["stage"], first["marks"]["look"], first["marks"]["shiny"]))
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        for line in first["art"]:
+            self.assertIn("  %s   " % line, card)
+
+    def test_a_shiny_seed_shows_on_the_card_and_in_the_link(self):
+        write(self.dir, "cclevel/seed", "%016x\n" % (64 * 100 * 3 + 17))
+        data = self.scan("--no-save")
+        self.assertEqual(data["marks"], {"look": 17, "shiny": True})
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        first = next(line for line in card.splitlines() if "· Lv " in line)
+        self.assertTrue(first.endswith("· \u2726 Shiny"), first)
+        out = run("--claude-dir", self.dir, "--card", "--server", "http://127.0.0.1:9")
+        numbers = re.search(r"/card#([\d-]+)", out.stdout).group(1).split("-")
+        self.assertEqual((len(numbers), numbers[0], numbers[-1]), (12, "2", str(17 + 64)))
+
+    def test_an_odd_seed_means_the_classic_look_and_is_left_alone(self):
+        for odd in ("folder", "link", "garbage", "short"):
+            with self.subTest(odd):
+                shutil.rmtree(os.path.join(self.dir, "cclevel"), ignore_errors=True)
+                os.makedirs(os.path.join(self.dir, "cclevel"))
+                if odd == "folder":
+                    os.mkdir(self.seed)
+                elif odd == "link":
+                    write(self.tmp.name, "elsewhere", "%016x\n" % (64 * 100 + 9))
+                    os.symlink(os.path.join(self.tmp.name, "elsewhere"), self.seed)
+                else:
+                    write(self.dir, "cclevel/seed", "zzzz not hex zzzz\n" if odd == "garbage" else "abc\n")
+                data = self.scan()
+                self.assertEqual(data["marks"], {"look": 0, "shiny": False})
+                self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+                self.assertTrue(os.path.lexists(self.seed))
+                self.assertEqual(os.path.isdir(self.seed), odd == "folder")
+                self.assertEqual(os.path.islink(self.seed), odd == "link")
+
+    def test_the_look_is_never_sent(self):
+        write(self.dir, "cclevel/seed", "%016x\n" % (64 * 100 + 9))
+        preview = run("--claude-dir", self.dir, "--preview").stdout
+        self.assertNotIn("marks", preview)
+        self.assertNotIn("look", preview)
+        self.assertEqual(sorted(json.loads(preview.split("\n\n")[0])), ["badges", "stats", "v", "xp", "xp_days"])
 
 
 class PanelData(unittest.TestCase):
@@ -3625,7 +3744,7 @@ class Panel(unittest.TestCase):
         out = run("--claude-dir", self.dir, "--json", "--no-save")
         self.assertEqual(out.returncode, 0, out.stderr)
         data = json.loads(out.stdout)
-        self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+        self.assertEqual(data["art"], cclevel.marked_art(data["stage"], data["marks"]["look"], data["marks"]["shiny"]))
         # Fix next: the card's own Needs, in order, each with how to fix it and its docs page.
         self.assertTrue(data["needs"], "the test folder has Needs")
         self.assertEqual([f["text"] for f in data["fix"]], [cclevel.need_text(n) for n in data["needs"][:5]])

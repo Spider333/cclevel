@@ -86,7 +86,8 @@ It needs Python 3.9 or newer and nothing else: standard library only, no depende
 | **The world board** | Season and all-time lists at [cclevel.com](https://cclevel.com), ranked only on XP the board watched you earn. | Yes, in Default mode: nine numbers a day. Privacy mode (`/pet privacy on`) turns it off. |
 | **Private groups** | Up to 25 friends compare in private, joined with one invite link. | Starting or joining one, yes. In Default mode the daily check-in also reads your own group once (the token only; an empty list when you are in none), and with the Mac panel installed later Claude Code starts read it again, at most every 15 minutes. |
 | **Duels** | Challenge one friend: seven days, most XP the board credits wins the ♛. | Only if you start or accept one. |
-| **Share card** | Your card as a picture to post, drawn in your browser. | No. The numbers stay in the link after `#`. |
+| **Markings** | Every creature gets its own markings (eyes, mouth, crest) from a number made on your machine, and 1 in 100 is shiny. | No. The number never leaves your machine; a card link you post carries its look. |
+| **Share card** | Your card as a picture to post, drawn in your browser, with your creature's markings. | No. The numbers stay in the link after `#`. |
 | **Wrapped** | Your year in review: XP, best day and month, longest streak, level gained, badges, and how your stats moved week by week, and 5 story images to post, drawn in your browser. | No. Worked out from your own ledger; the images' numbers stay in the link after `#`. |
 | **Our story** | A timeline of you and your creature: the day you met, each evolve, badges, your biggest day. `/pet story`. | No. Worked out from your own ledger. |
 | **README badge** | A "Lv 42 · Gigachad" badge for your GitHub profile or any README, as one line of Markdown to paste. `/pet readme badge`. It doesn't update itself: run it again to refresh. | No. The numbers sit in the badge's address; the picture comes from shields.io, a free badge service. |
@@ -108,7 +109,7 @@ Anyone with the link can join until the group is full, so share it with friends 
 
 **Badge for your README:** `/pet readme badge` prints one line of Markdown, for example `[![CC level: Lv 42 Gigachad (5 Nov 2026)](https://img.shields.io/badge/CC_level-Lv_42_%C2%B7_Gigachad-d97757)](https://cclevel.com)` (invented numbers). Paste it into your GitHub profile README. cclevel sends nothing; anyone who views the page loads the picture from shields.io. Anyone who sees it sees your level next to your name, so if your creature is on the world lists, `/pet world off` keeps people from matching the two.
 
-**Post your card:** `/pet card` prints a link to a page that draws your card as a picture to save or copy. The numbers sit after `#`, so the page sends nothing, and the picture shows no creature name.
+**Post your card:** `/pet card` prints a link to a page that draws your card as a picture to save or copy. The numbers sit after `#`, so the page sends nothing, and the picture shows no creature name. The link also carries your creature's look (one number), so two of your posted cards can be matched to each other.
 
 ## Privacy at a glance
 
