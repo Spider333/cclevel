@@ -4478,3 +4478,167 @@ class Leaks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Timesheet(unittest.TestCase):
+    """/pet timesheet: hours per project in local time, offline. Numbers in the chat, names only in the local CSV."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.dir = os.path.join(self.home, ".claude")
+        self.a = os.path.join(self.home, "work", "zzq-alpha")
+        self.b = os.path.join(self.home, "work", "zzq-bravo")
+        for repo in (self.a, self.b):
+            os.makedirs(os.path.join(repo, ".git"))
+        self.wt = os.path.join(self.a, ".claude", "worktrees", "zzq-wt")
+        os.makedirs(self.wt)
+        self.fixture()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def log(self, rel, *events, **extra):
+        lines = []
+        for ts, kind, cwd in events:
+            o = {"type": "assistant" if kind == "a" else "user", "timestamp": ts, "cwd": cwd, "sessionId": rel}
+            if kind == "a":
+                o["message"] = {"id": "m" + ts, "role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+            elif kind == "t":
+                o["message"] = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}
+            else:
+                o["message"] = {"role": "user", "content": "zzq prompt text"}
+            o.update(extra)
+            lines.append(json.dumps(o))
+        write(self.dir, "projects/-zzq/%s.jsonl" % rel, "\n".join(lines) + "\n")
+
+    def fixture(self):
+        a, b, wt = self.a, self.b, self.wt
+        # Two blocks with a 20-minute gap, lines out of order; its subagent fills 08:05 and 08:12.
+        self.log("s1", ("2026-11-02T08:40:30Z", "a", a), ("2026-11-02T08:00:00Z", "p", a), ("2026-11-02T08:10:00Z", "a", a),
+                 ("2026-11-02T08:30:00Z", "p", a))
+        self.log("s1/subagents/agent-x", ("2026-11-02T08:12:00Z", "a", a), ("2026-11-02T08:05:00Z", "p", a))
+        self.log("s2", ("2026-11-02T08:05:00Z", "p", a), ("2026-11-02T08:20:00Z", "a", a))       # side by side with s1
+        self.log("s3", ("2026-11-02T22:50:00Z", "p", wt), ("2026-11-02T23:05:00Z", "a", wt),
+                 ("2026-11-02T23:20:00Z", "a", wt))     # a worktree, midnight
+        self.log("s4", ("2026-11-03T10:00:00Z", "p", b), ("2026-11-03T10:15:00Z", "a", b), ("2026-11-03T10:30:00Z", "a", b),
+                 sessionKind="bg")
+        self.log("s5", ("2026-11-03T10:15:00Z", "p", b), ("2026-11-03T10:30:00Z", "a", b), ("2026-11-03T10:45:00Z", "a", b),
+                 entrypoint="sdk-cli")
+        self.log("s6", ("2026-10-25T00:40:00Z", "p", b), ("2026-10-25T00:52:00Z", "t", b),       # summer time ends
+                 ("2026-10-25T01:05:00Z", "a", b), ("2026-10-25T01:20:00Z", "a", b))
+        self.log("s7", ("2026-11-04T12:00:00Z", "p", self.home), ("2026-11-04T12:05:00Z", "a", self.home))
+
+    def sheet(self, *flags, week="2026-W45", tz="Europe/Bratislava"):
+        out = run("--claude-dir", self.dir, "--timesheet", week, "--tz", tz, *flags, env={"HOME": self.home})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def rows(self):
+        import csv
+        with open(os.path.join(self.dir, "cclevel", "timesheet.csv"), newline="", encoding="utf-8") as f:
+            r = list(csv.reader(f))
+        self.assertEqual(r[0], cclevel.TS_HEADER)
+        return [(x[0], x[2], x[3], int(x[4]), x[5], x[6], x[11]) for x in r[1:]]
+
+    def test_hand_count_bratislava(self):
+        out = self.sheet()
+        A, B, H = "zzq-alpha", "zzq-bravo", "(home)"
+        self.assertEqual(self.rows(), [
+            ("2026-10-25", "02:40", "03:00", 20, "you", B, "+02:00"),
+            ("2026-10-25", "02:00", "02:20", 20, "you", B, "+01:00"),
+            ("2026-11-02", "09:00", "09:12", 12, "you", A, "+01:00"),
+            ("2026-11-02", "09:05", "09:20", 15, "you", A, "+01:00"),
+            ("2026-11-02", "09:30", "09:41", 11, "you", A, "+01:00"),
+            ("2026-11-02", "23:50", "24:00", 10, "you", A, "+01:00"),
+            ("2026-11-03", "00:00", "00:20", 20, "you", A, "+01:00"),
+            ("2026-11-03", "11:00", "11:30", 30, "alone", B, "+01:00"),
+            ("2026-11-03", "11:15", "11:45", 30, "alone", B, "+01:00"),
+            ("2026-11-04", "13:00", "13:05", 5, "you", H, "+01:00"),
+        ])
+        lines = {l.split()[0] + (l.split()[1] if l.split()[0] != "Week" else ""): l.split() for l in out.splitlines()
+                 if l.startswith("   ")}
+        self.assertEqual(lines["Mon2"][3:], ["41m", "-", "41m", "-", "-"])
+        self.assertEqual(lines["Tue3"][3:], ["20m", "45m", "20m", "45m", "-"])
+        self.assertEqual(lines["Wed4"][3:], ["5m", "-", "-", "-", "5m"])
+        self.assertEqual(lines["Week"][1:], ["1h", "06m", "45m", "1h", "01m", "45m", "5m"])
+        self.assertIn("Europe/Bratislava", out)
+        self.assertIn("home folder", out)
+        for secret in (A, B, "zzq-wt", "zzq prompt text", "work"):
+            self.assertNotIn(secret, out)
+
+    def test_hand_count_los_angeles(self):
+        out = self.sheet(tz="America/Los_Angeles")
+        A, B = "zzq-alpha", "zzq-bravo"
+        self.assertEqual(self.rows(), [
+            ("2026-10-24", "17:40", "18:20", 40, "you", B, "-07:00"),
+            ("2026-11-02", "00:00", "00:12", 12, "you", A, "-08:00"),
+            ("2026-11-02", "00:05", "00:20", 15, "you", A, "-08:00"),
+            ("2026-11-02", "00:30", "00:41", 11, "you", A, "-08:00"),
+            ("2026-11-02", "14:50", "15:20", 30, "you", A, "-08:00"),
+            ("2026-11-03", "02:00", "02:30", 30, "alone", B, "-08:00"),
+            ("2026-11-03", "02:15", "02:45", 30, "alone", B, "-08:00"),
+            ("2026-11-04", "04:00", "04:05", 5, "you", "(home)", "-08:00"),
+        ])
+        self.assertIn("Mon 2 Nov", out)
+        self.assertIn("1h 01m", out)   # 20 + 11 + 30 on Monday, with you
+
+    def test_names_only_with_names_flag_and_in_csv(self):
+        self.assertNotIn("zzq-alpha", self.sheet())
+        with open(os.path.join(self.dir, "cclevel", "timesheet.csv"), encoding="utf-8") as f:
+            self.assertIn("zzq-alpha", f.read())
+        self.assertIn("zzq-alpha", self.sheet("--names"))
+
+    def test_idle_rule_never_adds_minutes(self):
+        self.sheet("--idle", "5")
+        five = self.rows()
+        self.sheet()
+        fifteen = self.rows()
+        self.assertGreaterEqual(len(five), len(fifteen))
+        self.assertLessEqual(sum(r[3] for r in five), sum(r[3] for r in fifteen))
+        self.assertNotEqual(run("--claude-dir", self.dir, "--timesheet", "--idle", "0").returncode, 0)
+
+    def test_csv_private_and_link_refused(self):
+        self.sheet()
+        path = os.path.join(self.dir, "cclevel", "timesheet.csv")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        ino = os.stat(path).st_ino
+        self.sheet()
+        self.assertNotEqual(os.stat(path).st_ino, ino)   # replaced in one step, not written over
+        os.unlink(path)
+        target = os.path.join(self.home, "elsewhere.txt")
+        with open(target, "w") as f:
+            f.write("keep")
+        os.symlink(target, path)
+        out = self.sheet()
+        self.assertIn("Not written", out)
+        self.assertTrue(os.path.islink(path))
+        with open(target) as f:
+            self.assertEqual(f.read(), "keep")
+
+    def test_bad_zone_falls_back(self):
+        out = self.sheet(tz="Nowhere/Zzq")
+        self.assertIn("Unknown time zone 'Nowhere/Zzq'. Using this machine's zone", out)
+
+    def test_no_logs(self):
+        empty = os.path.join(self.home, "empty")
+        os.makedirs(empty)
+        out = run("--claude-dir", empty, "--timesheet")
+        self.assertIn("No session logs in the last 30 days, so no timesheet.", out.stdout)
+
+    def test_offline_in_both_modes_and_nothing_else_moves(self):
+        before = json.loads(run("--claude-dir", self.dir, "--json", "--no-save", env={"HOME": self.home}).stdout)
+        out, n = run_counted("--claude-dir", self.dir, "--timesheet", "2026-W45", env={"HOME": self.home})
+        self.assertEqual((out.returncode, n), (0, 0), out.stderr)
+        write(self.dir, "cclevel/opted-out", "")
+        out, n = run_counted("--claude-dir", self.dir, "--timesheet", "2026-W45", env={"HOME": self.home})
+        self.assertEqual((out.returncode, n), (0, 0), out.stderr)
+        os.unlink(os.path.join(self.dir, "cclevel", "opted-out"))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
+        after = json.loads(run("--claude-dir", self.dir, "--json", "--no-save", env={"HOME": self.home}).stdout)
+        before.pop("generated", None), after.pop("generated", None)
+        self.assertEqual(before, after)
+        for flags in (("--json", "--no-save"), ("--preview",), ("--leaks", "--json")):
+            text = run("--claude-dir", self.dir, *flags, env={"HOME": self.home}).stdout
+            self.assertNotIn("zzq-alpha", text)
+            self.assertNotIn("zzq-bravo", text)

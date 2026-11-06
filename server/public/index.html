@@ -231,6 +231,10 @@
 <p>Type <code>/pet evolve</code>. For 7 days after your creature reaches a new stage, the card reminds you. It prints a link that opens X with a ready post you can edit, such as "My Claude Code just evolved into a Big Guy Shipper, Lv 30. What's yours?" (example numbers). The post links to your class's page, like <a href="/class/shipper">Shipper</a>, which is the same for everyone. It works the same in Default mode and in Privacy mode: cclevel sends nothing. Opening the link is your own visit to x.com, and the post is public, with your level, stage and class.</p>
 </details>
 <details>
+<summary>Can it track my hours?</summary>
+<p><code>/pet timesheet</code> works out hours per project for a week from your session logs, in your local time: minutes with you, minutes Claude worked alone, and each project. A block ends after 15 minutes without activity. It is activity time, not proof you were at the desk. The chat sees numbered projects only; the names and every block go into <code>timesheet.csv</code> on your machine, ready for a spreadsheet. Nothing is sent, in Default mode and in Privacy mode, and it never changes your score.</p>
+</details>
+<details>
 <summary>Where do my tokens go?</summary>
 <p>Type <code>/pet leaks</code>. It reads your last 4 weeks of Claude Code logs on your machine and shows tokens per week, then the biggest leaks: cache written again after pauses, your start-up context, auto-compactions, and connectors you set up but never call. Dollars use API list prices as a yardstick, not a charge. It works the same in Default mode and in Privacy mode: cclevel sends and stores nothing. For the exact view of the session you are in, use <code>/context</code>.</p>
 </details>

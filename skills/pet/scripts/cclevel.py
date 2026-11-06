@@ -16,11 +16,13 @@ code.
 """
 import argparse
 import contextlib
+import csv
 import fcntl
 import getpass
 import glob
 import hashlib
 import http.client
+import io
 import json
 import math
 import os
@@ -2091,6 +2093,307 @@ def leaks_text(report):
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------ timesheet
+# Hours per project from the session logs, in local time. Outside the score. Reads only this machine's logs; the
+# printed view numbers the projects, so names stay out of the conversation. Names and every block go only into
+# timesheet.csv on this machine. Nothing is sent.
+TS_IDLE = 15                       # minutes without activity that end a block (--idle changes it)
+TS_COLUMNS = 5                     # numbered project columns in the printed view; the rest share "others"
+TS_HOME = "(home)"
+TS_HEADER = ["date", "weekday", "start", "end", "minutes", "kind", "project", "project_no", "sessions", "prompts",
+             "tz", "utc_offset"]
+
+
+def idle_minutes(v):
+    try:
+        n = int(v)
+    except ValueError:
+        n = 0
+    if not 1 <= n <= 240:
+        raise argparse.ArgumentTypeError("takes whole minutes from 1 to 240")
+    return n
+
+
+def ts_zone(name):
+    """(tzinfo or None for this machine's zone, the zone's name, a warning or None)."""
+    def machine():
+        tz = os.environ.get("TZ", "")
+        if "/" in tz:
+            return tz.lstrip(":")
+        try:
+            link = os.path.realpath("/etc/localtime")
+            if "zoneinfo" + os.sep in link:
+                return link.split("zoneinfo" + os.sep, 1)[1]
+        except OSError:
+            pass
+        return datetime.now().astimezone().tzname() or "local time"
+    if not name:
+        return None, machine(), None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name), name, None
+    except Exception:   # an unknown name, or no zone database on this machine
+        here = machine()
+        return None, here, "Unknown time zone '%s'. Using this machine's zone (%s)." % (name, here)
+
+
+def ts_local(t, tz):
+    return datetime.fromtimestamp(t, tz) if tz else datetime.fromtimestamp(t).astimezone()
+
+
+def ts_root(cwd, cache, home):
+    """The project a working folder belongs to: the nearest folder at or above it that holds .git, or the folder
+    itself. A worktree under <repo>/.claude/worktrees/<name> counts as <repo>. The home folder and / are (home)."""
+    if cwd in cache:
+        return cache[cwd]
+    path = os.path.normpath(cwd)
+    parts = path.split(os.sep)
+    if ".claude" in parts and parts.index(".claude") + 1 < len(parts) and parts[parts.index(".claude") + 1] == "worktrees":
+        path = os.sep.join(parts[:parts.index(".claude")]) or os.sep
+    if path in (home, os.sep) or re.fullmatch(r"/(Users|home)/[^/]+", path):
+        cache[cwd] = TS_HOME
+        return TS_HOME
+    root, probe = path, path
+    while probe not in (home, os.sep, ""):
+        if os.path.exists(os.path.join(probe, ".git")):
+            root = probe
+            break
+        probe = os.path.dirname(probe)
+    cache[cwd] = root
+    return root
+
+
+def ts_scan(cdir):
+    """Every log line's time, working folder and whether a person typed it, grouped by session (a subagent's log
+    counts with the session that started it). Returns ({session: {"events", "alone"}}, earliest time)."""
+    root = os.path.join(cdir, "projects")
+    files = glob.glob(os.path.join(root, "*", "*.jsonl")) + \
+        glob.glob(os.path.join(root, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
+    sessions = defaultdict(lambda: {"events": [], "alone": False})
+    first = None
+    for path in files:
+        sub = os.sep + "subagents" + os.sep in path
+        s = sessions[session_of(path)]
+        rows, cwd0 = [], None
+        try:
+            fh = open(path, encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"timestamp"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(o, dict) or o.get("type") not in ("user", "assistant", "system", "attachment"):
+                    continue
+                t = seconds(o.get("timestamp"))
+                if t is None:
+                    continue
+                if str(o.get("entrypoint") or "").startswith("sdk") or o.get("sessionKind") == "bg":
+                    s["alone"] = True
+                cwd = o.get("cwd") if isinstance(o.get("cwd"), str) and o.get("cwd") else None
+                cwd0 = cwd0 or cwd
+                prompt = False
+                if o.get("type") == "user" and not sub and not o.get("isMeta") and not o.get("isSidechain"):
+                    c = as_dict(o.get("message")).get("content")
+                    prompt = not (isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                                              for b in c))
+                rows.append([t, cwd, prompt])
+        for r in rows:
+            if r[1] is None:
+                r[1] = cwd0   # a line without its folder belongs where the log started
+            if r[1] is not None:
+                s["events"].append(tuple(r))
+                first = r[0] if first is None else min(first, r[0])
+    return {k: v for k, v in sessions.items() if v["events"]}, first
+
+
+def ts_blocks(sessions, idle, tz, home):
+    """The CSV rows: one per block, per session and project. A block runs from its first event to its last, start
+    rounded down and end up to the minute, at least 1 minute; a gap longer than `idle` minutes ends it. Each block is
+    split at local midnight and where the UTC offset changes, so every row has one date and one offset."""
+    cache, rows = {}, []
+    for key in sorted(sessions):
+        s = sessions[key]
+        by_project = defaultdict(list)
+        for t, cwd, prompt in s["events"]:
+            by_project[ts_root(cwd, cache, home)].append((t, prompt))
+        for project, evs in by_project.items():
+            evs.sort()
+            blocks = [[evs[0][0], evs[0][0], int(evs[0][1])]]
+            for t, prompt in evs[1:]:
+                if t - blocks[-1][1] > idle * 60:
+                    blocks.append([t, t, 0])
+                blocks[-1][1] = t
+                blocks[-1][2] += prompt
+            for start, end, prompts in blocks:
+                a = int(start // 60)
+                b = max(a + 1, int(-(-end // 60)))
+                kind = "you" if prompts and not s["alone"] else "alone"
+                pieces = []
+                for m in range(a, b):
+                    loc = ts_local(m * 60, tz)
+                    tag = (loc.date(), loc.utcoffset())
+                    if pieces and pieces[-1]["tag"] == tag:
+                        pieces[-1]["b"] = m + 1
+                    else:
+                        pieces.append({"tag": tag, "a": m, "b": m + 1, "project": project, "kind": kind,
+                                       "session": key, "prompts": 0})
+                pieces[0]["prompts"] = prompts   # a block's prompt count sits on its first row
+                rows += pieces
+    return rows
+
+
+def ts_union(spans):
+    """Minutes covered by a set of (start, end) minute spans."""
+    total, reach = 0, None
+    for a, b in sorted(spans):
+        if reach is None or a > reach:
+            total += b - a
+            reach = b
+        elif b > reach:
+            total += b - reach
+            reach = b
+    return total
+
+
+def ts_week(arg, today):
+    """The Monday of the week asked for: this, last or YYYY-Www."""
+    if arg in (None, "this"):
+        return today - timedelta(days=today.weekday())
+    if arg == "last":
+        return today - timedelta(days=today.weekday() + 7)
+    m = re.fullmatch(r"(\d{4})-W(\d{1,2})", arg or "")
+    if m:
+        try:
+            return date.fromisocalendar(int(m.group(1)), int(m.group(2)), 1)
+        except ValueError:
+            pass
+    return None
+
+
+def hm(minutes):
+    if not minutes:
+        return "-"
+    h, m = divmod(int(minutes), 60)
+    return "%dh %02dm" % (h, m) if h else "%dm" % m
+
+
+def ts_offset(delta):
+    mins = int(delta.total_seconds() // 60)
+    return "%s%02d:%02d" % ("-" if mins < 0 else "+", abs(mins) // 60, abs(mins) % 60)
+
+
+def ts_hhmm(m, off, day):
+    """A row's start or end as local HH:MM, in the row's own UTC offset; a row ending at midnight ends at 24:00."""
+    loc = datetime.fromtimestamp(m * 60, timezone(off))
+    return "24:00" if loc.date() > day else loc.strftime("%H:%M")
+
+
+def timesheet(cdir, week=None, idle=TS_IDLE, tz_name=None, names=False, now=None):
+    """The printed view, and timesheet.csv beside the ledger. Returns the text to print."""
+    tz, zone, warning = ts_zone(tz_name)
+    now = now if now is not None else time.time()
+    today = ts_local(now, tz).date()
+    monday = ts_week(week, today)
+    if monday is None:
+        return "cclevel: --timesheet takes this, last or a week like 2026-W45."
+    head = [warning] if warning else []
+    sessions, first = ts_scan(cdir)
+    if not sessions:
+        return "\n".join(head + ["", "  No session logs in the last 30 days, so no timesheet.", ""])
+    home = os.path.normpath(os.path.expanduser("~"))
+    rows = ts_blocks(sessions, idle, tz, home)
+    # Numbers: projects with the most time in the week shown first, then the rest by all their time.
+    days = [monday + timedelta(days=i) for i in range(7)]
+    in_week = [r for r in rows if monday <= r["tag"][0] <= days[-1]]
+    def time_of(rs, p):
+        return ts_union((r["a"], r["b"]) for r in rs if r["project"] == p)
+    projects = sorted({r["project"] for r in rows if r["project"] != TS_HOME},
+                      key=lambda p: (-time_of(in_week, p), -time_of(rows, p), p))
+    number = {p: i + 1 for i, p in enumerate(projects)}
+    base = defaultdict(set)
+    for p in projects:
+        base[os.path.basename(p) or p].add(p)
+    def label(p):
+        if p == TS_HOME:
+            return TS_HOME
+        name = os.path.basename(p) or p
+        return "%s/%s" % (os.path.basename(os.path.dirname(p)), name) if len(base[name]) > 1 else name
+    csv_text = ts_csv(rows, zone, number, label)
+    path = os.path.join(cdir, "cclevel", "timesheet.csv")
+    try:
+        if os.path.islink(path) or (os.path.exists(path) and not os.path.isfile(path)):
+            saved = "Not written: %s is a link or not a plain file. Remove it and run again." % path
+        else:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            write_private(path, csv_text)
+            saved = "Project names and every block: %s (on this machine only)." % path
+    except OSError as e:
+        saved = "Could not write %s (%s)." % (path, e.strerror or type(e).__name__)
+
+    y, w, _ = monday.isocalendar()
+    out = head + ["", "  Timesheet · week %d-W%02d · %s · this machine only" % (y, w, zone),
+                  "  A block ends after %d min without activity. Activity, not proof you were at the desk." % idle, ""]
+    shown = [p for p in projects if time_of(in_week, p)]
+    cols = shown[:TS_COLUMNS]
+    others = shown[TS_COLUMNS:]
+    has_home = any(r["project"] == TS_HOME for r in in_week)
+    heads = ["P%d" % number[p] for p in cols] + (["others"] if others else []) + ([TS_HOME] if has_home else [])
+    out.append("  %-11s%10s%15s" % ("", "with you", "Claude alone") + "".join("%9s" % h for h in heads))
+    week_rows = []
+    for d in days:
+        rs = [r for r in in_week if r["tag"][0] == d]
+        if rs:
+            week_rows.append(("%s %d %s" % (d.strftime("%a"), d.day, d.strftime("%b")), rs))
+    if not week_rows:
+        out.append("   No activity in this week.")
+    total_line = ("Week", in_week)
+    sums = None
+    for title, rs in week_rows + ([total_line] if week_rows else []):
+        if title == "Week":
+            vals = sums
+        else:
+            you = ts_union((r["a"], r["b"]) for r in rs if r["kind"] == "you")
+            alone = ts_union((r["a"], r["b"]) for r in rs) - you
+            vals = [you, alone] + [time_of(rs, p) for p in cols]
+            if others:
+                vals.append(ts_union((r["a"], r["b"]) for r in rs if r["project"] in others))
+            if has_home:
+                vals.append(time_of(rs, TS_HOME))
+            sums = vals if sums is None else [a + b for a, b in zip(sums, vals)]
+        out.append("   %-10s%10s%15s" % (title, hm(vals[0]), hm(vals[1])) + "".join("%9s" % hm(v) for v in vals[2:]))
+    out.append("")
+    if sums and sum(sums[2:]) > sums[0] + sums[1]:
+        out.append("  Projects can add up to more than the day when sessions ran side by side.")
+    if sums and has_home and sums[-1]:
+        out.append("  %s was in sessions started from your home folder: start Claude Code inside a project to split it."
+                   % hm(sums[-1]))
+    if names and shown:
+        out += ["  %-8s%s" % ("P%d" % number[p], label(p)) for p in shown] + [""]
+    elif others:
+        out.append("  others: %s." % ", ".join("P%d" % number[p] for p in others))
+    out.append("  Logs reach back to %s (Claude Code deletes them after 30 days unless cleanupPeriodDays says otherwise)."
+               % "{d.day} {d:%b} {d.year}".format(d=ts_local(first, tz).date()))
+    out += ["  " + saved, ""]
+    return "\n".join(out)
+
+
+def ts_csv(rows, zone, number, label):
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(TS_HEADER)
+    for r in sorted(rows, key=lambda r: (r["a"], r["b"], r["project"])):
+        day, off = r["tag"]
+        w.writerow([day.isoformat(), day.strftime("%a"), ts_hhmm(r["a"], off, day), ts_hhmm(r["b"], off, day),
+                    r["b"] - r["a"], r["kind"], label(r["project"]), number.get(r["project"], ""), 1, r["prompts"],
+                    zone, ts_offset(off)])
+    return buf.getvalue()
+
+
 # Nothing above this line touches the network. Everything below runs only
 # when the user asks for it by flag, or from the plugin's session-start hook
 # after the user turned auto check-in on with --auto on.
@@ -3779,6 +4082,10 @@ def main():
     ap.add_argument("--yes", action="store_true",
                     help="with --join, --world on, --auto on, --panel on, --privacy off, a group or duel start or join, or --verify-github: "
                          "do not ask again")
+    ap.add_argument("--names", action="store_true", help="with --timesheet: show project names (for your own terminal)")
+    ap.add_argument("--idle", metavar="MIN", type=idle_minutes, default=TS_IDLE,
+                    help="with --timesheet: minutes without activity that end a block, 1 to 240 (default: %(default)s)")
+    ap.add_argument("--tz", metavar="AREA/CITY", help="with --timesheet: the time zone (default: this machine's)")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
     board.add_argument("--join", action="store_true", help="join the leaderboard (asks first)")
@@ -3814,6 +4121,9 @@ def main():
     board.add_argument("--leaks", action="store_true",
                        help="leak finder: where your tokens went over the last weeks, priced as an API yardstick; sends and "
                             "saves nothing")
+    board.add_argument("--timesheet", metavar="WEEK", nargs="?", const="this",
+                       help="hours per project from your session logs, in local time: this (default), last or 2026-W45; "
+                            "projects are numbered, names go only to timesheet.csv on this machine; sends nothing")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--panel", choices=("on", "off"),
@@ -3855,6 +4165,10 @@ def main():
         except (OSError, subprocess.SubprocessError) as e:
             print("cclevel: could not set up the panel (%s)." % (getattr(e, "strerror", None) or type(e).__name__))
         sys.exit(1)
+    if args.timesheet is not None:
+        text = timesheet(cdir, args.timesheet, args.idle, args.tz, args.names)
+        print(text)
+        sys.exit(1 if text.startswith("cclevel:") else 0)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
     extra = {}   # the leak finder's names and numbers: never in the card's --json or a check-in

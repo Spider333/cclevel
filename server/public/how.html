@@ -213,6 +213,10 @@
 <p>Optional. <span class="gh">✓ login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
 </details>
 <details>
+<summary>Can it track my hours?</summary>
+<p><code>/pet timesheet</code> works out hours per project for a week from your session logs, in your local time: minutes with you, minutes Claude worked alone, and each project. A block ends after 15 minutes without activity. It is activity time, not proof you were at the desk. The chat sees numbered projects only; the names and every block go into <code>timesheet.csv</code> on your machine, ready for a spreadsheet. Nothing is sent, in Default mode and in Privacy mode, and it never changes your score.</p>
+</details>
+<details>
 <summary>Where do my tokens go?</summary>
 <p><code>/pet leaks</code> works it out on your machine from the last 4 weeks of logs: tokens per week, cache written again after pauses, your start-up context, auto-compactions and connectors you never call. Dollars are API list prices, a yardstick and not a charge. Nothing is sent or stored, in Default mode and in Privacy mode, and it never changes your score. <code>/context</code> is the exact view of the session you are in.</p>
 </details>
