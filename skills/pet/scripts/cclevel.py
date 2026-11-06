@@ -2192,7 +2192,7 @@ def ts_scan(cdir):
                 t = seconds(o.get("timestamp"))
                 if t is None:
                     continue
-                if str(o.get("entrypoint") or "").startswith("sdk") or o.get("sessionKind") == "bg":
+                if str(o.get("entrypoint") or "").startswith("sdk"):
                     s["alone"] = True
                 cwd = o.get("cwd") if isinstance(o.get("cwd"), str) and o.get("cwd") else None
                 cwd0 = cwd0 or cwd
@@ -2201,6 +2201,8 @@ def ts_scan(cdir):
                     c = as_dict(o.get("message")).get("content")
                     prompt = not (isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
                                                               for b in c))
+                    if o.get("sessionKind") == "bg":   # a background job: only what a person typed, not notices or peers
+                        prompt = prompt and as_dict(o.get("origin")).get("kind") == "human"
                 rows.append([t, cwd, prompt])
         for r in rows:
             if r[1] is None:
@@ -2375,7 +2377,8 @@ def timesheet(cdir, week=None, idle=TS_IDLE, tz_name=None, names=False, now=None
     if names and shown:
         out += ["  %-8s%s" % ("P%d" % number[p], label(p)) for p in shown] + [""]
     elif others:
-        out.append("  others: %s." % ", ".join("P%d" % number[p] for p in others))
+        n = [number[p] for p in others]
+        out.append("  others: P%d." % n[0] if len(n) == 1 else "  others: P%d–P%d (%d projects)." % (min(n), max(n), len(n)))
     out.append("  Logs reach back to %s (Claude Code deletes them after 30 days unless cleanupPeriodDays says otherwise)."
                % "{d.day} {d:%b} {d.year}".format(d=ts_local(first, tz).date()))
     out += ["  " + saved, ""]

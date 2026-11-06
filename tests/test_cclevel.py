@@ -4567,6 +4567,33 @@ class Timesheet(unittest.TestCase):
         for secret in (A, B, "zzq-wt", "zzq prompt text", "work"):
             self.assertNotIn(secret, out)
 
+    def test_background_job_counts_only_typed_prompts(self):
+        # Week 44, outside the fixture: a bg prompt a person typed is "you"; notices and peer messages are "alone".
+        b = self.b
+        for rel, kind, ts in (("bg1", "human", "2026-10-28T09:00:00Z"), ("bg2", "task-notification", "2026-10-28T12:00:00Z"),
+                              ("bg3", "peer", "2026-10-28T15:00:00Z")):
+            write(self.dir, "projects/-zzq/%s.jsonl" % rel, "\n".join(json.dumps(o) for o in (
+                {"type": "user", "timestamp": ts, "cwd": b, "sessionKind": "bg", "entrypoint": "cli",
+                 "origin": {"kind": kind}, "message": {"role": "user", "content": "zzq prompt text"}},
+                {"type": "assistant", "timestamp": ts[:14] + "10:00Z", "cwd": b, "sessionKind": "bg", "entrypoint": "cli",
+                 "message": {"id": "m" + rel, "role": "assistant", "content": [{"type": "text", "text": "ok"}]}})) + "\n")
+        out = self.sheet(week="2026-W44")
+        week = [r for r in self.rows() if r[0] == "2026-10-28"]
+        self.assertEqual(sorted((r[1], r[4]) for r in week), [("10:00", "you"), ("13:00", "alone"), ("16:00", "alone")])
+        wed = [l.split() for l in out.splitlines() if l.startswith("   Wed")][0]
+        self.assertEqual(wed[3:5], ["10m", "20m"])
+
+    def test_others_is_one_short_line(self):
+        for i in range(90):
+            repo = os.path.join(self.home, "many", "zzq-m%02d" % i)
+            os.makedirs(os.path.join(repo, ".git"))
+            self.log("m%02d" % i, ("2026-10-28T%02d:%02d:00Z" % (8 + i // 30, i % 30 * 2), "p", repo))
+        out = self.sheet(week="2026-W44")
+        lines = [l for l in out.splitlines() if "others:" in l]
+        self.assertEqual(lines, ["  others: P6–P90 (85 projects)."])
+        self.assertNotIn("P7,", out)
+        self.assertEqual(len([r for r in self.rows() if r[0] == "2026-10-28"]), 90)   # the CSV keeps every project
+
     def test_hand_count_los_angeles(self):
         out = self.sheet(tz="America/Los_Angeles")
         A, B = "zzq-alpha", "zzq-bravo"
