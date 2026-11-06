@@ -4559,6 +4559,19 @@ class Fix(unittest.TestCase):
         self.assertEqual(tree_hashes(self.dir), before)
         self.assertIn("Nothing to undo", self.fix("--fix-undo").stdout)
 
+    def test_planned_gain_counts_the_lighter_context(self):
+        # Unused skills with long descriptions: moving them also lightens the start-up context, and the plan says so.
+        write(self.dir, "CLAUDE.md", "x" * 70000)
+        old = time.time() - 91 * 86400
+        for name in ("old-a", "old-b", "old-c"):
+            write(self.dir, "skills/%s/SKILL.md" % name, "---\ndescription: %s\n---\nbody\n" % ("d" * 30000))
+            os.utime(os.path.join(self.dir, "skills", name, "SKILL.md"), (old, old))
+        health = self.health()
+        out = self.fix("--fix", "unused_skills")
+        gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        self.assertEqual(self.health(), health + gain)
+
     def test_assisted_edit_and_undo(self):
         path = os.path.join(self.dir, "settings.json")
         with open(path, "rb") as f:

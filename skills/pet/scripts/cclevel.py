@@ -698,6 +698,7 @@ def scan_setup(cdir, cfg, settings, leak=None):
         "project_md": any(os.path.isfile(os.path.join(p, "CLAUDE.md")) or
                           os.path.isfile(os.path.join(p, ".claude", "CLAUDE.md")) for p in projects),
         "context_tokens": (claude_md_size + index_size + sum(s["desc"] for s in skills.values())) // 4,
+        "context_chars": claude_md_size + index_size + sum(s["desc"] for s in skills.values()),
     }
 
 
@@ -1003,6 +1004,11 @@ def score(cdir, machine_jobs, save, extra=None):
     needs.sort(key=lambda n: -n["gain"])
     if extra is not None:   # for /pet fix only: the names it may move, never in the --json or a check-in
         extra["unused_names"], extra["own_used"] = sorted(unused), sorted(own_used)
+        # What the card's Health would be without the unused skills: their descriptions leave the start-up context too.
+        ctx_after = (setup["context_chars"] - sum(own[n]["desc"] for n in unused)) // 4
+        over_after = min(1.0, max(0.0, (ctx_after - CONTEXT_OK) / (CONTEXT_HEAVY - CONTEXT_OK)))
+        rest = sum(p for c, (p, _) in penalties.items() if c not in ("unused_skills", "heavy_context"))
+        extra["health_without_unused"] = round(100 - rest - PENALTY_CONTEXT_MAX * over_after)
 
     earned = {
         "first_hook": w30["hooks_ran"] > 0, "first_skill": bool(own_used),
@@ -3814,6 +3820,21 @@ def tree_hash(path):
     return h.hexdigest()
 
 
+def fingerprint(path):
+    """A quick identity for a plan: each name under `path` with its size and change time. Reads no file contents."""
+    out = []
+    for top, dirs, files in os.walk(path) if os.path.isdir(path) and not os.path.islink(path) else [("", [], [path])]:
+        dirs.sort()
+        for name in sorted(files + dirs):
+            full = os.path.join(top, name)
+            try:
+                st = os.lstat(full)
+                out.append((os.path.relpath(full, path) if top else "", st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+            except OSError:
+                out.append((full, None))
+    return out
+
+
 def in_git(path):
     """True if `path` sits in a git work tree (a .git anywhere above it). Read from the folders only; git is not run."""
     path = os.path.realpath(path)
@@ -3876,6 +3897,8 @@ def fix_plan(cdir, result, extra, code, name=None):
         elif far:
             plan["refusal"] = "One of these folders is on another disk, so cclevel will not move it. Move them yourself:"
         plan["targets"] = [(m, "move") for m in moves]
+        if "health_without_unused" in extra:
+            plan["when"] = "Health +%d now" % (extra["health_without_unused"] - result["health"])
         where = sorted({tilde(b) for b in bases}) or [tilde(os.path.join(cdir, "skills"))]
         plan["change"] = ["Moves these folders out of %s into %s:" % (" and ".join(where),
                                                                      tilde(os.path.join(fixes_dir(cdir), "<time>-unused_skills")) + "/"),
@@ -3895,7 +3918,7 @@ def fix_plan(cdir, result, extra, code, name=None):
         bare = [p for p in files if not field(frontmatter(read_head(p)), "model") and not os.path.islink(p)]
         if not bare:
             plan["cls"] = "advice"
-            how = "make a subagent first (brains_5), then give it model: haiku"
+            how = "ask Claude to create a subagent first, then give it model: haiku in its frontmatter"
         else:
             plan["targets"] = [(bare[0], "edit")]
             plan["change"] = ["Adds model: haiku to the frontmatter of %s." % tilde(bare[0])]
@@ -3954,7 +3977,7 @@ def fix_plan(cdir, result, extra, code, name=None):
     for path, action in plan["targets"]:
         if action == "edit" and os.path.islink(path):
             plan["refusal"] = plan["refusal"] or "%s is a link, so cclevel will not touch it." % tilde(path)
-    ident = json.dumps([code, name, [(p, a, tree_hash(p)) for p, a in plan["targets"]]])
+    ident = json.dumps([code, name, [(p, a, fingerprint(p)) for p, a in plan["targets"]]])
     plan["id"] = hashlib.sha256(ident.encode()).hexdigest()[:8]
     return plan
 
