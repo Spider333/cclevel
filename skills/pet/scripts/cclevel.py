@@ -2273,6 +2273,33 @@ def card_link(server, result):
     return "%s/card#%s" % (site(server), "-".join(str(n) for n in numbers))
 
 
+BADGE_COLOUR = "d97757"   # the brand colour of the README's own badges
+
+
+def badge_part(text):
+    """One part of a shields.io static badge path: "-" and "_" doubled, spaces as "_", then percent-encoded."""
+    return urllib.parse.quote(text.replace("-", "--").replace("_", "__").replace(" ", "_"), safe="_")
+
+
+def readme_badge(server, result, today):
+    """Markdown for a "Lv 42 · Gigachad" badge. The numbers sit in the image address, so nothing looks anything up."""
+    when = "%d %s %d" % (today.day, MONTHS[today.month - 1], today.year)
+    image = "https://img.shields.io/badge/%s-%s-%s" % (
+        badge_part("CC level"), badge_part("Lv %d · %s" % (result["level"], result["stage"])), BADGE_COLOUR)
+    return "[![CC level: Lv %d %s (%s)](%s)](%s)" % (result["level"], result["stage"], when, image, site(server))
+
+
+def readme_badge_text(server, result, today):
+    when = "%d %s %d" % (today.day, MONTHS[today.month - 1], today.year)
+    return "\n".join([
+        "", readme_badge(server, result, today), "",
+        "Paste this into a README. For your GitHub profile, that's the repository named after your login.",
+        "It shows Lv %d as of %s and doesn't update itself. Run /pet readme badge again to refresh it." % (result["level"], when),
+        "Anyone who sees it sees your level next to your name. If your creature is on the world lists, people may be able to "
+        "match the two: /pet world off takes it off the lists. The picture comes from shields.io, a free badge service; "
+        "cclevel sends nothing."])
+
+
 def read_invite(text, server):
     """(code, foreign) from an invite link, a bare code or a message holding one; (None, False) if there is none.
     Only the code is ever used: a link never chooses the board, so it cannot send a token anywhere else."""
@@ -3279,6 +3306,9 @@ def main():
                        help="your year in review from this machine's ledger (default: this year); sends nothing")
     board.add_argument("--story", action="store_true",
                        help="our story: a timeline of you and your creature from this machine's ledger; sends nothing")
+    board.add_argument("--readme-badge", action="store_true",
+                       help="Markdown for a \"Lv 42 · Gigachad\" badge for a README or GitHub profile; the picture comes from "
+                            "shields.io; sends nothing")
     board.add_argument("--learn", action="store_true",
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
     board.add_argument("--tips", choices=("on", "off"),
@@ -3324,7 +3354,7 @@ def main():
         sys.exit(1)
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
-    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
+    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview or args.readme_badge))
     if args.wrapped is not None:
         today = datetime.now(timezone.utc).date()
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
@@ -3336,6 +3366,9 @@ def main():
         today = datetime.now(timezone.utc).date()
         s = story(cdir, result, today)
         print(json.dumps(s, indent=1) if args.json else story_text(s, today))
+        return
+    if args.readme_badge:
+        print(readme_badge_text(resolve_server(args, load_identity(cdir)), result, datetime.now(timezone.utc).date()))
         return
     if args.learn:
         sys.exit(learn_command(cdir, result, save=not args.no_save))

@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zlib
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -3324,6 +3325,51 @@ class Leaderboard(unittest.TestCase):
         self.joined()
         out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
         self.assertGreater(sent, 0)
+
+    def test_the_readme_badge_sends_nothing_writes_nothing_in_either_mode(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        folder = os.path.join(self.dir, "cclevel")
+        today = datetime.now(timezone.utc).date()
+        when = "%d %s %d" % (today.day, cclevel.MONTHS[today.month - 1], today.year)
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            before = {f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}
+            out, sent = run_counted("--claude-dir", self.dir, "--readme-badge", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertEqual({f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}, before)
+            self.assertRegex(out.stdout, r"\[!\[CC level: Lv \d+ [A-Za-z ]+ \(%s\)\]\(https://img\.shields\.io/badge/CC_level-"
+                                         r"Lv_\d+_%%C2%%B7_[A-Za-z_]+-d97757\)\]\(%s\)\n" % (when, re.escape(self.url)))
+            self.assertIn("as of %s and doesn't update itself" % when, out.stdout)
+            self.assertIn("sees your level next to your name", out.stdout)
+            for c in CANARIES:
+                self.assertNotIn(c, out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        # Positive control: the same counter sees --rank reach the fake board in Default mode.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
+        self.assertTrue(FakeBoard.seen)
+
+    def test_the_readme_badge_decodes_to_label_message_and_colour(self):
+        def unbadge(part):   # shields.io's static-badge rules, read back
+            part = urllib.parse.unquote(part)
+            return re.sub(r"__|--|_", lambda m: {"__": "_", "--": "-", "_": " "}[m.group()], part)
+        today = date(2026, 11, 5)
+        for floor, stage in cclevel.STAGES:
+            for level in (1, 5, 42, 99):
+                for server, link in ((cclevel.DEFAULT_SERVER, "https://cclevel.com"),
+                                     ("https://example.test", "https://example.test")):
+                    md = cclevel.readme_badge(server, {"level": level, "stage": stage}, today)
+                    m = re.fullmatch(r"\[!\[CC level: Lv %d %s \(5 Nov 2026\)\]\(https://img\.shields\.io/badge/"
+                                     r"([^/()]+)\)\]\((.+)\)" % (level, stage), md)
+                    self.assertTrue(m, md)
+                    parts = re.split(r"(?<!-)-(?!-)", m.group(1))
+                    self.assertEqual([unbadge(p) for p in parts], ["CC level", "Lv %d · %s" % (level, stage), "d97757"])
+                    self.assertEqual(m.group(2), link)
+        # The escapes that can fail: dashes, underscores and spaces in a name.
+        self.assertEqual(cclevel.badge_part("a-b_c d·"), "a--b__c_d%C2%B7")
 
     def test_the_card_link_carries_only_the_card_numbers_and_points_at_the_board(self):
         out = run("--claude-dir", self.dir, "--card", "--server", self.url)
