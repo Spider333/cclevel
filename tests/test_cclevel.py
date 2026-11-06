@@ -4607,6 +4607,15 @@ class Fix(unittest.TestCase):
         self.assertIsNone(plan)
         self.assertIn("is a git repository", self.assertRefused("unused_skills"))
         os.rmdir(os.path.join(self.dir, "skills", ".git"))
+        # A kept skill whose SKILL.md links into a folder the plan would move (gstack-browse into gstack).
+        write(self.dir, "skills/old-a/browse/SKILL.md", "---\ndescription: b\n---\n")
+        os.makedirs(os.path.join(self.dir, "skills", "kept-link"))
+        os.symlink(os.path.join(self.dir, "skills", "old-a", "browse", "SKILL.md"),
+                   os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        self.assertNotIn("--plan", self.fix("--fix", "unused_skills").stdout)
+        self.assertIn("links into old-a", self.assertRefused("unused_skills"))
+        os.remove(os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        os.rmdir(os.path.join(self.dir, "skills", "kept-link"))
         # A folder renamed after the plan.
         plan = self.plan_id("unused_skills")
         os.rename(os.path.join(self.dir, "skills", "old-c"), os.path.join(self.dir, "skills", "old-d"))

@@ -3861,6 +3861,30 @@ def settings_refusal(path):
     return None
 
 
+def linked_into(moves):
+    """The first folder in moves that a link in a kept sibling (or its direct children) points into, else None."""
+    real = [(m, os.path.realpath(m) + os.sep) for m in moves]
+    for base in sorted({os.path.dirname(m) for m in moves}):
+        try:
+            kept = [os.path.join(base, e) for e in os.listdir(base) if os.path.join(base, e) not in moves]
+        except OSError:
+            continue
+        for k in kept:
+            links = [k]
+            if os.path.isdir(k) and not os.path.islink(k):
+                try:
+                    links += [os.path.join(k, e) for e in os.listdir(k)]
+                except OSError:
+                    pass
+            for link in links:
+                if os.path.islink(link):
+                    target = os.path.realpath(link) + os.sep
+                    for m, r in real:
+                        if target.startswith(r):
+                            return m
+    return None
+
+
 def fix_plan(cdir, result, extra, code, name=None):
     """What a fix would do: {code, need, cls, targets [(path, action)], change [lines], when, refusal, id}. Reads only."""
     need = next((n for n in result["needs"] if n["code"] == code), None)
@@ -3892,6 +3916,9 @@ def fix_plan(cdir, result, extra, code, name=None):
         if git:
             plan["refusal"] = ("Your %s folder is a git repository, so cclevel will not move folders in it. Move them yourself:"
                                % os.path.basename(git[0]))
+        elif linked_into(moves):
+            plan["refusal"] = ("A skill you keep links into %s, so moving it would break that skill. Move them yourself:"
+                               % os.path.basename(linked_into(moves)))
         elif any(os.path.islink(m) for m in moves):
             plan["refusal"] = "One of these skill folders is a link, so cclevel will not move it. Move them yourself:"
         elif far:
