@@ -239,6 +239,10 @@
 <p>Type <code>/pet leaks</code>. It reads your last 4 weeks of Claude Code logs on your machine and shows tokens per week, then the biggest leaks: cache written again after pauses, your start-up context, auto-compactions, and connectors you set up but never call. Dollars use API list prices as a yardstick, not a charge. It works the same in Default mode and in Privacy mode: cclevel sends and stores nothing. For the exact view of the session you are in, use <code>/context</code>.</p>
 </details>
 <details>
+<summary>Can it fix my setup?</summary>
+<p>Ask Claude <code>/pet fix</code>. It shows a plan for the top item under Needs: what is wrong, every file it would touch, the exact change and how to undo. Nothing changes until you say yes, and a backup comes first. Moving skills you have not used in 90 days is automatic after your yes; other fixes Claude makes in your session and shows you the diff first. Habits, like plan mode or signing in to a connector, stay advice. <code>/pet fix undo</code> puts the last fix back. If Claude Code's sandbox blocks the fix, nothing changes and Claude asks before running it outside the sandbox. It works the same in Default mode and in Privacy mode: cclevel sends nothing.</p>
+</details>
+<details>
 <summary>Can I put my level on my GitHub profile?</summary>
 <p>Yes. Type <code>/pet readme badge</code>. It prints one line of Markdown for a "Lv 42 · Gigachad" badge (example numbers) to paste into your profile README. It works the same in Default mode and in Privacy mode: cclevel sends nothing, and the picture comes from shields.io, a free badge service, when someone views the page. It doesn't update itself; run it again to refresh. Anyone who sees it sees your level next to your name. If your creature is on the world lists, <code>/pet world off</code> keeps people from matching the two. This is not the verified GitHub badge on the board.</p>
 </details>

@@ -4476,6 +4476,248 @@ class Leaks(unittest.TestCase):
         self.assertRegex(card, r"Leaks: about \$\d+ a week in cache lost to pauses \(yardstick\)\. /pet leaks")
 
 
+def tree_hashes(root, skip="cclevel"):
+    """{relative path: SHA-256} for every file under root, cclevel's own folder left out."""
+    out = {}
+    for top, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not (top == root and d == skip))
+        for name in files:
+            full = os.path.join(top, name)
+            with open(full, "rb") as f:
+                out[os.path.relpath(full, root)] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
+class Fix(unittest.TestCase):
+    """/pet fix: the plan writes nothing, the one automatic fix round-trips, refusals hold, advice never writes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        history(self.dir, {1: 3})
+        write(self.dir, "projects/zzq-project/s1.jsonl", reply(day_stamp(1), "m1") + "\n")
+        old = time.time() - 91 * 86400
+        for name in ("old-a", "old-b", "old-c", "fresh", "used-one"):
+            write(self.dir, "skills/%s/SKILL.md" % name, "---\ndescription: %s\n---\nbody\n" % name)
+            if name != "fresh":
+                os.utime(os.path.join(self.dir, "skills", name, "SKILL.md"), (old, old))
+        stamp = int(day_stamp(1).timestamp() * 1000)
+        write(self.dir, ".claude.json", {"skillUsage": {"used-one": {"usageCount": 2, "lastUsedAt": stamp}}})
+        write(self.dir, "settings.json", {"theme": "dark", "permissions": {"allow": ["Bash(ls)"]}})
+        write(self.dir, ".mcp.json", {"mcpServers": {"zzq-alpha": {"command": "x"}}})
+        plugin = os.path.join(self.dir, "plugins", "cache", "tool")
+        write(plugin, "skills/plug-old/SKILL.md", "---\ndescription: p\n---\n")
+        write(self.dir, "plugins/installed_plugins.json", {"plugins": {"tool@m": [{"installPath": plugin}]}})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fix(self, *flags):
+        return run("--claude-dir", self.dir, *flags)
+
+    def plan_id(self, code, *flags):
+        out = self.fix("--fix", code, *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return re.search(r"--plan (\w+) --yes", out.stdout).group(1)
+
+    def health(self):
+        return json.loads(self.fix("--json", "--no-save").stdout)["health"]
+
+    def test_the_plan_writes_nothing_and_sends_nothing(self):
+        before = tree_hashes(self.dir, skip="")
+        codes = [n["code"] for n in json.loads(self.fix("--json", "--no-save").stdout)["needs"]]
+        self.assertIn("unused_skills", codes)
+        for code in [""] + codes:
+            out, calls = run_counted("--claude-dir", self.dir, "--fix", *([code] if code else []))
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(calls, 0)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel")))
+
+    def test_card_points_to_fix(self):
+        self.assertIn("Ask Claude: /pet fix", self.fix("--no-save").stdout)
+
+    def test_auto_round_trip(self):
+        before, health = tree_hashes(self.dir), self.health()
+        out = self.fix("--fix")
+        self.assertIn("old-a, old-b, old-c", out.stdout)
+        gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        # Without the plan's id nothing happens.
+        self.assertEqual(self.fix("--fix", "unused_skills", "--yes").returncode, 1)
+        self.assertEqual(tree_hashes(self.dir), before)
+        out = self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        left = sorted(os.listdir(os.path.join(self.dir, "skills")))
+        self.assertEqual(left, ["fresh", "used-one"])   # the used one and the new one stay
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "plugins", "cache", "tool", "skills", "plug-old")))
+        self.assertEqual(self.health(), health + gain)
+        folder = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*-unused_skills"))
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(folder, "manifest.json")).st_mode), 0o600)
+        out = self.fix("--fix-undo")
+        self.assertIn("Put back 3 folders", out.stdout)
+        self.assertEqual(tree_hashes(self.dir), before)
+        self.assertIn("Nothing to undo", self.fix("--fix-undo").stdout)
+
+    def test_planned_gain_counts_the_lighter_context(self):
+        # Unused skills with long descriptions: moving them also lightens the start-up context, and the plan says so.
+        write(self.dir, "CLAUDE.md", "x" * 70000)
+        old = time.time() - 91 * 86400
+        for name in ("old-a", "old-b", "old-c"):
+            write(self.dir, "skills/%s/SKILL.md" % name, "---\ndescription: %s\n---\nbody\n" % ("d" * 30000))
+            os.utime(os.path.join(self.dir, "skills", name, "SKILL.md"), (old, old))
+        health = self.health()
+        out = self.fix("--fix", "unused_skills")
+        gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        self.assertEqual(self.health(), health + gain)
+
+    def test_assisted_edit_and_undo(self):
+        path = os.path.join(self.dir, "settings.json")
+        with open(path, "rb") as f:
+            original = f.read()
+        out = self.fix("--fix", "brains_7", "--plan", self.plan_id("brains_7"), "--yes")
+        self.assertIn("Backup saved", out.stdout)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), original)   # the scanner itself never edits: Claude does
+        data = json.loads(original)
+        data["permissions"]["deny"] = ["Read(./.env)"]
+        write(self.dir, "settings.json", data)
+        with open(path, encoding="utf-8") as f:
+            edited = json.load(f)
+        self.assertEqual({k: v for k, v in edited.items() if k != "permissions"}, {"theme": "dark"})
+        self.assertNotIn("brains_7", [n["code"] for n in json.loads(self.fix("--json", "--no-save").stdout)["needs"]])
+        self.assertIn("Put back 1 file", self.fix("--fix-undo").stdout)
+        with open(path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).digest(), hashlib.sha256(original).digest())
+        kept = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*-brains_7", "replaced", "0"))
+        with open(kept, encoding="utf-8") as f:
+            self.assertIn("Read(./.env)", f.read())
+
+    def assertRefused(self, code, *flags, plan=None):
+        before = tree_hashes(self.dir, skip="")
+        out = self.fix("--fix", code, "--plan", plan or "00000000", "--yes", *flags)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        return out.stdout
+
+    def test_refusals(self):
+        os.mkdir(os.path.join(self.dir, "skills", ".git"))
+        plan = re.search(r"--plan (\w+)", self.fix("--fix", "unused_skills").stdout)
+        self.assertIsNone(plan)
+        self.assertIn("is a git repository", self.assertRefused("unused_skills"))
+        os.rmdir(os.path.join(self.dir, "skills", ".git"))
+        # A kept skill whose SKILL.md links into a folder the plan would move (gstack-browse into gstack).
+        write(self.dir, "skills/old-a/browse/SKILL.md", "---\ndescription: b\n---\n")
+        os.makedirs(os.path.join(self.dir, "skills", "kept-link"))
+        os.symlink(os.path.join(self.dir, "skills", "old-a", "browse", "SKILL.md"),
+                   os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        self.assertNotIn("--plan", self.fix("--fix", "unused_skills").stdout)
+        self.assertIn("links into old-a", self.assertRefused("unused_skills"))
+        os.remove(os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        os.rmdir(os.path.join(self.dir, "skills", "kept-link"))
+        # A folder renamed after the plan.
+        plan = self.plan_id("unused_skills")
+        os.rename(os.path.join(self.dir, "skills", "old-c"), os.path.join(self.dir, "skills", "old-d"))
+        self.assertIn("plan changed", self.assertRefused("unused_skills", plan=plan))
+        # A link planted where the backups go.
+        os.makedirs(os.path.join(self.dir, "cclevel"))
+        os.symlink(tempfile.gettempdir(), os.path.join(self.dir, "cclevel", "fixes"))
+        self.assertIn("not a plain folder", self.assertRefused("unused_skills", plan=self.plan_id("unused_skills")))
+        os.remove(os.path.join(self.dir, "cclevel", "fixes"))
+        # A settings.json that does not parse.
+        write(self.dir, "settings.json", "{not json")
+        self.assertIn("does not parse", self.assertRefused("brains_7", plan=self.plan_id("brains_7")
+                                                           if "--plan" in self.fix("--fix", "brains_7").stdout else None))
+
+    def planned_sums(self):
+        return [cclevel.tree_hash(os.path.join(self.dir, "skills", n)) for n in ("old-a", "old-b", "old-c")]
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through chmod")
+    def test_a_folder_that_refuses_writes_says_so(self):
+        # Claude Code's sandbox (or the folder's permissions) says no: not "something is in the way".
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        os.chmod(fixes, 0o500)
+        try:
+            out = self.assertRefused("unused_skills", plan=plan)
+        finally:
+            os.chmod(fixes, 0o700)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 1, out)
+        self.assertIn("sandbox or the folder's permissions stopped cclevel from writing in", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertIn("outside the sandbox", out)
+        self.assertNotIn("in the way", out)
+        self.assertEqual(self.planned_sums(), sums)
+        self.assertEqual(os.listdir(fixes), [])
+        # Undo meets the same wall once a fix is in.
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        folder = glob_one(os.path.join(fixes, "*-unused_skills"))
+        before = tree_hashes(self.dir, skip="")
+        os.chmod(folder, 0o500)
+        try:
+            out = self.fix("--fix-undo")
+        finally:
+            os.chmod(folder, 0o700)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("stopped cclevel from writing in", out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+
+    def test_a_file_where_the_fix_folder_goes_is_in_the_way(self):
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        now = time.time()
+        for s in range(15):   # the fix folder is named for the second it runs in
+            stamp = datetime.fromtimestamp(now + s, timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+            write(fixes, "%s-unused_skills" % stamp, "a plain file")
+        out = self.assertRefused("unused_skills", plan=plan)
+        self.assertIn("Something is in the way", out)
+        self.assertNotIn("sandbox", out)
+        self.assertEqual(self.planned_sums(), sums)
+
+    def test_changed_backup_blocks_undo(self):
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        backup = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*", "files", "0", "SKILL.md"))
+        write(os.path.dirname(backup), "SKILL.md", "changed")
+        before = tree_hashes(self.dir, skip="")
+        out = self.fix("--fix-undo")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("missing or changed", out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+
+    def test_advice_never_writes_and_mcp_untouched(self):
+        mcp = [os.path.join(self.dir, ".claude.json"), os.path.join(self.dir, ".mcp.json")]
+        sums = [file_sha(p) for p in mcp]
+        before = tree_hashes(self.dir, skip="")
+        for code in ("brains_2", "brains_10", "sign_in", "tool_errors", "interrupts"):
+            out = self.fix("--fix", code, "--yes")
+            self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        self.assertEqual([file_sha(p) for p in mcp], sums)
+
+    def test_fix_leaves_payload_alone(self):
+        result = cclevel.score(self.dir, machine_jobs=False, save=False, extra={})
+        self.assertEqual(sorted(cclevel.payload(result)), ["badges", "stats", "v", "xp", "xp_days"])
+        self.assertNotIn("unused_names", self.fix("--json", "--no-save").stdout)
+
+
+def file_sha(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def glob_one(pattern):
+    import glob
+    found = glob.glob(pattern)
+    assert len(found) == 1, found
+    return found[0]
+
+
 if __name__ == "__main__":
     unittest.main()
 

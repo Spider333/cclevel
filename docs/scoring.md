@@ -58,6 +58,16 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 - **Local time.** The card's days stay UTC. The timesheet uses this machine's zone, or `--tz Area/City`; each time is converted on its own, so summer time is right. Rows are split at local midnight and where the UTC offset changes. Weeks run Monday to Sunday.
 - **The CSV** (`timesheet.csv`): `date,weekday,start,end,minutes,kind,project,project_no,sessions,prompts,tz,utc_offset`, one row per block piece, for every day the logs hold. `project_no` matches P1, P2… in the printed view. Claude Code deletes logs after 30 days unless its `cleanupPeriodDays` setting says otherwise.
 
+## Which Needs `/pet fix` can fix
+
+`/pet fix` takes the top item under Needs that it can fix and shows the plan first. Nothing changes before your yes, and a backup comes first. If Claude Code's sandbox blocks the fix, nothing changes and Claude asks before running it outside the sandbox.
+
+| Kind | Needs | When the gain shows |
+|---|---|---|
+| Automatic: cclevel moves the folders after your yes | own skills unused for 90 days (never plugin skills; not when the skills folder is a git repository) | Health, now |
+| Claude makes the change and shows the diff | a deny rule (Brains check 7), a smaller model in a subagent (9), a CLAUDE.md trim (heavy start-up context), a starter CLAUDE.md (1), a new subagent (5, 6), a new skill or a script for one (3, 4), a Stop hook (8) | check 7 and the context trim now; the others once you use them, since those checks read your logs |
+| Advice only: nothing is written | connectors waiting for sign-in, failing tool calls, interrupted turns, memory (2), plan mode (10) | when your habits change |
+
 ## Leak finder: outside the score
 
 `/pet leaks` (`--leaks`) shows where your tokens went over the last 4 full ISO weeks plus this week so far. It never changes XP, level, a stat or a rank, and nothing about it is stored or sent. Claude Code keeps logs for 30 days, so that is as far back as it can see.
