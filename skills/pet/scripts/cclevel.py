@@ -16,6 +16,7 @@ code.
 """
 import argparse
 import contextlib
+import errno
 import fcntl
 import getpass
 import glob
@@ -4063,13 +4064,26 @@ def fix_command(args, cdir, result, extra, real=False):
     return fix_apply(cdir, plan, result, real)
 
 
+def write_refused(err):
+    """True when the system said no (permissions, or Claude Code's sandbox), not that something is in the way."""
+    return isinstance(err, PermissionError) or err.errno == errno.EROFS
+
+
+def fix_refused(where):
+    print("  Claude Code's sandbox or the folder's permissions stopped cclevel from writing in %s. Nothing was changed."
+          " Once you agree, you can run it again outside the sandbox." % tilde(where))
+    return 1
+
+
 def private_dir(path):
     """Makes a 700 folder for cclevel, refusing a link or a file in the way. True if it is a plain folder now."""
     try:
         os.mkdir(path, 0o700)
     except FileExistsError:
         pass
-    except OSError:
+    except OSError as err:
+        if write_refused(err):
+            raise
         return False
     st = os.lstat(path)
     return stat.S_ISDIR(st.st_mode)
@@ -4077,7 +4091,11 @@ def private_dir(path):
 
 def fix_apply(cdir, plan, result, real=False):
     base = os.path.join(cdir, "cclevel")
-    if not (private_dir(base) and private_dir(fixes_dir(cdir))):
+    try:
+        plain = private_dir(base) and private_dir(fixes_dir(cdir))
+    except OSError:
+        return fix_refused(fixes_dir(cdir))
+    if not plain:
         print("  %s is not a plain folder, so cclevel will not save a backup there. Nothing was changed." % tilde(fixes_dir(cdir)))
         return 1
     fid = "%s-%s" % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ"), plan["code"])
@@ -4085,7 +4103,9 @@ def fix_apply(cdir, plan, result, real=False):
     try:
         os.mkdir(folder, 0o700)
         os.mkdir(os.path.join(folder, "files"), 0o700)
-    except OSError:
+    except OSError as err:
+        if write_refused(err):
+            return fix_refused(fixes_dir(cdir))
         print("  Something is in the way at %s, so cclevel will not save a backup there. Nothing was changed." % tilde(folder))
         return 1
     entries = []
@@ -4114,6 +4134,8 @@ def fix_apply(cdir, plan, result, real=False):
             os.rename(os.path.join(folder, e["backup"]), e["path"])
         manifest["undone"] = True
         write_private(mpath, json.dumps(manifest, indent=1))
+        if write_refused(err):
+            return fix_refused(os.path.dirname(e["path"]))
         print("  Could not move %s (%s). Everything is back as it was." % (tilde(e["path"]), err.strerror or type(err).__name__))
         return 1
     manifest["applied"] = True
@@ -4159,6 +4181,11 @@ def fix_undo(cdir):
         os.mkdir(replaced, 0o700)
     except FileExistsError:
         pass
+    except OSError as err:
+        if write_refused(err):
+            return fix_refused(root)
+        print("  Something is in the way at %s, so cclevel will not undo from there. Nothing was changed." % tilde(replaced))
+        return 1
     back = 0
     for i, e in enumerate(m["entries"]):
         path, backup = e["path"], os.path.join(folder, e["backup"])

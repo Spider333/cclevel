@@ -49,7 +49,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 
 ## Which Needs `/pet fix` can fix
 
-`/pet fix` takes the top item under Needs that it can fix and shows the plan first. Nothing changes before your yes, and a backup comes first.
+`/pet fix` takes the top item under Needs that it can fix and shows the plan first. Nothing changes before your yes, and a backup comes first. If Claude Code's sandbox blocks the fix, nothing changes and Claude asks before running it outside the sandbox.
 
 | Kind | Needs | When the gain shows |
 |---|---|---|

@@ -4630,6 +4630,56 @@ class Fix(unittest.TestCase):
         self.assertIn("does not parse", self.assertRefused("brains_7", plan=self.plan_id("brains_7")
                                                            if "--plan" in self.fix("--fix", "brains_7").stdout else None))
 
+    def planned_sums(self):
+        return [cclevel.tree_hash(os.path.join(self.dir, "skills", n)) for n in ("old-a", "old-b", "old-c")]
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through chmod")
+    def test_a_folder_that_refuses_writes_says_so(self):
+        # Claude Code's sandbox (or the folder's permissions) says no: not "something is in the way".
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        os.chmod(fixes, 0o500)
+        try:
+            out = self.assertRefused("unused_skills", plan=plan)
+        finally:
+            os.chmod(fixes, 0o700)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 1, out)
+        self.assertIn("sandbox or the folder's permissions stopped cclevel from writing in", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertIn("outside the sandbox", out)
+        self.assertNotIn("in the way", out)
+        self.assertEqual(self.planned_sums(), sums)
+        self.assertEqual(os.listdir(fixes), [])
+        # Undo meets the same wall once a fix is in.
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        folder = glob_one(os.path.join(fixes, "*-unused_skills"))
+        before = tree_hashes(self.dir, skip="")
+        os.chmod(folder, 0o500)
+        try:
+            out = self.fix("--fix-undo")
+        finally:
+            os.chmod(folder, 0o700)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("stopped cclevel from writing in", out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+
+    def test_a_file_where_the_fix_folder_goes_is_in_the_way(self):
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        now = time.time()
+        for s in range(15):   # the fix folder is named for the second it runs in
+            stamp = datetime.fromtimestamp(now + s, timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+            write(fixes, "%s-unused_skills" % stamp, "a plain file")
+        out = self.assertRefused("unused_skills", plan=plan)
+        self.assertIn("Something is in the way", out)
+        self.assertNotIn("sandbox", out)
+        self.assertEqual(self.planned_sums(), sums)
+
     def test_changed_backup_blocks_undo(self):
         self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
         backup = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*", "files", "0", "SKILL.md"))
