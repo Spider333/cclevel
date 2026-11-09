@@ -2,7 +2,7 @@
 import type { CommandRunInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { asCreature, fromScan, progress, spinnerWord, sprite } from '../hooks/creature'
+import { asCreature, backSprite, backText, fromScan, hatchSprite, hatchText, isBack, isNewMachine, lineText, progress, spinnerWord, sprite } from '../hooks/creature'
 import type { Look } from '../hooks/creature'
 import type { Creature, Stage } from '../types'
 
@@ -44,7 +44,8 @@ const creatureCommand = (args: string) => ({ command: 'creature', args }) as unk
 
 /** The engine beneath the plugin: commands register, a session starts, tools answer, each scan is
  * recorded, and what the plugin leaves to the engine draws as "engine" (a spinner as its word). */
-function engine(on: On, scan: { exitCode: number; stdout: string } = { exitCode: 0, stdout: JSON.stringify(SCAN) }) {
+function engine(on: On, scan: { exitCode: number; stdout: string } = { exitCode: 0, stdout: JSON.stringify(SCAN) },
+  toasts: string[] = []) {
   const runs: (readonly string[])[] = []
   on('command.register', () => ({ value: { command: 'creature' } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -52,7 +53,10 @@ function engine(on: On, scan: { exitCode: number; stdout: string } = { exitCode:
     runs.push(e.argv)
     return { value: { exitCode: scan.exitCode, stdout: scan.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('ui.toast', () => ({ value: undefined }) as never)
+  on('ui.toast', (_, e) => {
+    toasts.push(JSON.stringify(e))
+    return { value: undefined } as never
+  })
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     const word = (e.props as { word?: unknown }).word
@@ -167,12 +171,16 @@ test('a level up bursts for a few seconds, then the band goes back to normal', a
 test('a new stage is an evolution, and the Egg hatches', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on, { creature: { ...STORED, level: 44, stage: 'Big Guy', at: NOW - 2 * HOUR } })
-  engine(on)
+  const toasts: string[] = []
+  engine(on, undefined, toasts)
   await $.session.start(start)
   await clock.advance(1)
   const ui = await $.ui.mount(BAND)
   expect(await bandText(ui, /EVOLVED/)).toBe('  EVOLVED into a Gigachad!  Lv 46')
   await ui.unmount()
+  // The stage-up toast says how to post it.
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toContain('Your Big Guy became a Gigachad! Lv 46. Post it: /pet evolve')
 })
 
 test('an Egg that becomes a Hatchling hatches', async ($, on) => {
@@ -343,7 +351,7 @@ test('the spinner word follows the tool, then what the turn is doing', async () 
 })
 
 test('values the mod does not control are checked before they are shown', async () => {
-  expect(fromScan(SCAN, NOW)).toEqual(STORED)
+  expect(fromScan(SCAN, NOW)).toEqual({ ...STORED, cls: 'Shipper' })
   expect(asCreature(STORED)).toEqual(STORED)
   expect(fromScan({ ...SCAN, stage: 'Dragon' }, NOW)).toBe(null)
   expect(fromScan({ ...SCAN, level: 4.5 }, NOW)).toBe(null)
@@ -359,4 +367,277 @@ test('the level bar runs from where the level began to the next one', async () =
   expect(progress({ ...STORED, xp: STORED.xpLevelStart })).toBe(0)
   expect(progress({ ...STORED, level: 99 })).toBe(1)
   expect(progress({ ...STORED, xpNextLevel: STORED.xpLevelStart })).toBe(0)
+})
+
+test('markings: the walk wears the look, every action keeps its eyes, and the width holds', async () => {
+  const looks: Look[] = ['walk', 'asleep', 'write', 'search', 'run', 'commit', 'error', 'party']
+  const stages: Stage[] = ['Egg', 'Hatchling', 'Lil Guy', 'Big Guy', 'Gigachad', 'GOAT']
+  for (const stage of stages) {
+    const width = sprite(stage, 10, 0, 'walk').length
+    for (let mark = 0; mark < 64; mark++) for (const shiny of [false, true]) for (const look of looks) {
+      for (let n = 0; n < 4; n++) expect(sprite(stage, 10, n, look, { look: mark, shiny }).length).toBe(width)
+    }
+  }
+  // Look 0 is the classic creature; look 2 has wide eyes; look 32 marks the Egg's shell.
+  expect(sprite('Gigachad', 46, 0, 'walk', { look: 0, shiny: false })).toBe(sprite('Gigachad', 46, 0, 'walk'))
+  expect(sprite('Gigachad', 46, 0, 'walk', { look: 2, shiny: false }).trimEnd()).toBe('\\( O O )/')
+  expect(sprite('Gigachad', 46, 0, 'run', { look: 2, shiny: false }).trimEnd()).toBe('o=\\( > < )/=o')
+  expect(sprite('Gigachad', 46, 0, 'write', { look: 2, shiny: false })).toBe(sprite('Gigachad', 46, 0, 'write'))
+  expect(sprite('Egg', 1, 2, 'walk', { look: 32, shiny: false }).trimEnd()).toBe('( o )')
+  expect(sprite('GOAT', 60, 0, 'walk', { look: 3, shiny: false })).toBe(sprite('GOAT', 60, 0, 'walk'))
+  // A shiny one twinkles beside itself while it walks.
+  expect(sprite('Big Guy', 30, 0, 'walk', { look: 0, shiny: true }).trimEnd()).toBe('/( o o )\\ *')
+})
+
+test('the scan\'s markings are kept only when they are in range', async () => {
+  expect(fromScan({ ...SCAN, marks: { look: 17, shiny: true } }, NOW)).toEqual({ ...STORED, cls: 'Shipper', look: 17, shiny: true })
+  expect(fromScan({ ...SCAN, marks: { look: 64, shiny: true } }, NOW)).toEqual({ ...STORED, cls: 'Shipper' })
+  expect(fromScan({ ...SCAN, marks: { look: 3, shiny: 'yes' } }, NOW)).toEqual({ ...STORED, cls: 'Shipper' })
+  expect(fromScan({ ...SCAN, marks: null }, NOW)).toEqual({ ...STORED, cls: 'Shipper' })
+  expect(asCreature({ ...STORED, look: -1, shiny: false })).toEqual(STORED)
+})
+
+const DAY = 24 * HOUR
+const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+
+test('a new machine\'s first creature hatches once: egg, crack, reveal, one toast', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  const toasts: string[] = []
+  engine(on, { exitCode: 0, stdout: JSON.stringify({ ...SCAN, hatched: dayOf(NOW - 2 * DAY) }) }, toasts)
+
+  await $.session.start(start)
+  await clock.advance(1)
+  let ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /\( \. \)|\(\.\s/)).toBeDefined()
+  await ui.unmount()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toMatch(/HATCHED! It's a Gigachad Shipper · Lv 46/)
+
+  await clock.advance(5 * 300)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /HATCHED/)).toBe("  HATCHED! It's a Gigachad Shipper · Lv 46")
+  await ui.unmount()
+
+  await clock.advance(8_100)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /HATCHED/)).toBe(undefined)
+  expect(await bandText(ui, /Lv/)).toBe('  Gigachad · Lv 46 ')
+  await ui.unmount()
+
+  // A later scan and a new session: never again.
+  await clock.advance(2 * HOUR)
+  await $.session.start(start)
+  await clock.advance(1)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /HATCHED/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(1)
+})
+
+test('an old machine never hatches after an update, even with no stored creature', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  const toasts: string[] = []
+  engine(on, { exitCode: 0, stdout: JSON.stringify({ ...SCAN, hatched: dayOf(NOW - 30 * DAY) }) }, toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /HATCHED/)).toBe(undefined)
+  expect(await bandText(ui, /Lv/)).toBe('  Gigachad · Lv 46 ')
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('a machine with a creature already stored never hatches', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR } })
+  const toasts: string[] = []
+  engine(on, { exitCode: 0, stdout: JSON.stringify({ ...SCAN, hatched: null }) }, toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /HATCHED/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('an egg on a brand-new machine says when it hatches', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  const toasts: string[] = []
+  engine(on, { exitCode: 0, stdout: JSON.stringify({ ...SCAN, level: 1, stage: 'Egg', class: 'Unhatched', xp: 0,
+    xp_level_start: 0, xp_next_level: 160, hatched: null }) }, toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /egg/)).toBe('  An egg appeared! It hatches at Lv 5.')
+  await ui.unmount()
+  expect(toasts.length).toBe(1)
+  expect(toasts[0]).toMatch(/An egg appeared! It hatches at Lv 5\./)
+})
+
+test('a hidden band plays and records nothing; turned on within the week, it hatches then', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { hidden: true })
+  const toasts: string[] = []
+  const runs = engine(on, { exitCode: 0, stdout: JSON.stringify({ ...SCAN, hatched: dayOf(NOW) }) }, toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  expect(runs.length).toBe(0)
+  expect(toasts.length).toBe(0)
+
+  await $.command.run(creatureCommand('on'))
+  await clock.advance(1)
+  expect(toasts.length).toBe(1)
+})
+
+test('the hatch: two wobbles, two cracks, then the creature, one width throughout', async () => {
+  const c = fromScan({ ...SCAN, hatched: '2026-11-01' }, Date.parse('2026-11-06T01:00:00Z'))
+  if (c === null) throw new Error('no creature')
+  const frames = [0, 1, 2, 3, 4].map(k => hatchSprite(c, k))
+  expect(frames[0]?.trim()).toBe('( . )')
+  expect(frames[2]?.trim()).toBe("(,.')")
+  expect(frames[3]?.trim()).toBe('\\(o o)/')
+  expect(frames[4]).toMatch(/\^ \^/)
+  expect(new Set(frames.map(f => f.length)).size).toBe(1)
+  expect(isNewMachine(c)).toBe(true)
+  expect(isNewMachine({ ...c, hatched: '2026-10-30' })).toBe(true)
+  expect(isNewMachine({ ...c, hatched: '2026-10-29' })).toBe(false)
+  expect(isNewMachine({ ...c, hatched: undefined })).toBe(false)
+  expect(hatchText({ ...c, stage: 'Big Guy', cls: 'AFK Farmer', level: 31 })).toBe("HATCHED! It's a Big Guy AFK Farmer · Lv 31")
+  expect(hatchText({ ...c, stage: 'Hatchling', cls: 'Unhatched', level: 7 })).toBe("HATCHED! It's a Hatchling · Lv 7")
+  expect(hatchText({ ...c, shiny: true, look: 0 })).toBe("HATCHED! It's a Gigachad Shipper · Lv 46 · ✦ Shiny!")
+  expect(fromScan({ ...SCAN, class: '<script>' }, NOW)?.cls).toBe(undefined)
+})
+
+const backScan = (away: number | null, streak = 1) =>
+  ({ exitCode: 0, stdout: JSON.stringify({ ...SCAN, raw: { away_days: away, current_streak: streak } }) })
+
+test('back after days away: dusty and asleep, shaking awake, a welcome back, once a day, no toast', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR } })
+  const toasts: string[] = []
+  engine(on, backScan(5), toasts)
+
+  await $.session.start(start)
+  await clock.advance(1)
+  let ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe('  Welcome back! Your Gigachad woke up.')
+  expect(await bandText(ui, /- -/)).toMatch(/zZ \. \./)
+  await ui.unmount()
+
+  await clock.advance(2 * 300)
+  ui = await $.ui.mount(BAND)
+  expect((await bandText(ui, /~/))?.trim()).toBe('~\\( o o )/~')
+  await ui.unmount()
+
+  await clock.advance(6_100)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  expect(await bandText(ui, /Lv/)).toBe('  Gigachad · Lv 46 ')
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+
+  // A second session the same UTC day, with a fresh scan: no welcome again.
+  await clock.advance(2 * HOUR)
+  await $.session.start(start)
+  await clock.advance(1)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: one empty day', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(1), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: no empty day', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(0), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: no days before today', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: false })
+  const toasts: string[] = []
+  engine(on, backScan(null), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('no welcome back: a hidden band, even after five empty days', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on, { creature: { ...STORED, at: NOW - 2 * HOUR }, hidden: true })
+  const toasts: string[] = []
+  engine(on, backScan(5), toasts)
+  await $.session.start(start)
+  await clock.advance(1)
+  let ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe(undefined)
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+
+  // Nothing was recorded: turned on that day, it welcomes you back then.
+  await $.command.run(creatureCommand('on'))
+  await clock.advance(1)
+  ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /Welcome back/)).toBe('  Welcome back! Your Gigachad woke up.')
+  await ui.unmount()
+  expect(toasts.length).toBe(0)
+})
+
+test('the band line shows the streak from 2 days, and nothing at 0 or 1', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.store(on)
+  engine(on, backScan(0, 4))
+  await $.session.start(start)
+  await clock.advance(1)
+  const ui = await $.ui.mount(BAND)
+  expect(await bandText(ui, /today/)).toBe(' +550 today · streak 4 · Vibing')
+  await ui.unmount()
+
+  const c = fromScan({ ...SCAN, raw: { current_streak: 1, away_days: null } }, NOW)
+  if (c === null) throw new Error('no creature')
+  expect(c.away).toBe(null)
+  expect(lineText(c)).toBe(' +550 today · Vibing')
+  expect(lineText({ ...c, streak: 0, xpToday: 0 })).toBe(' Vibing')
+  expect(lineText({ ...c, streak: 2, xpToday: 0 })).toBe(' streak 2 · Vibing')
+  expect(fromScan({ ...SCAN, raw: { current_streak: -3, away_days: 'x' } }, NOW)?.streak).toBe(undefined)
+})
+
+test('the welcome back: two dusty sleeps, a shake, then the party, one width throughout', async () => {
+  for (const stage of ['Egg', 'Hatchling', 'Lil Guy', 'Big Guy', 'Gigachad', 'GOAT'] as Stage[]) {
+    const c: Creature = { ...STORED, stage, level: 30, away: 4 }
+    const frames = [0, 1, 2, 3, 4].map(k => backSprite(c, k))
+    expect(new Set(frames.map(f => f.length)).size).toBe(1)
+    expect(frames[0]?.length).toBe(sprite(stage, 30, 0, 'walk').length)
+    expect(frames[2]?.trim().startsWith('~')).toBe(true)
+  }
+  expect(isBack({ ...STORED, away: 2 })).toBe(true)
+  expect(isBack({ ...STORED, away: 1 })).toBe(false)
+  expect(isBack({ ...STORED, away: null })).toBe(false)
+  expect(backText({ ...STORED, stage: 'Lil Guy' })).toBe('Welcome back! Your Lil Guy woke up.')
 })

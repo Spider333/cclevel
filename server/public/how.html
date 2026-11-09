@@ -61,7 +61,7 @@
 <section class="step" id="meet" aria-labelledby="meet-title">
 <span class="step-num" aria-hidden="true">02</span>
 <h2 id="meet-title">Meet your creature</h2>
-<p>Run <code>/pet</code>. It reads your Claude Code folder on your machine and prints your card. Nothing goes to the board.</p>
+<p>Run <code>/pet</code>. It reads your Claude Code folder on your machine and prints your card. Nothing goes to the board. The first time, your egg hatches: the card opens with what you got, and the creature band above your prompt plays the crack once.</p>
 <pre class="card-demo" id="card-demo" aria-label="An example card with invented numbers">    .-^-.     Lil Guy Shipper · Lv 23
    ( o o )    XP 21,480 · 1,560 to Lv 24 · today so far +310
     \ ~ /     Mood: Vibing · Health 72 · Aura 300
@@ -86,7 +86,7 @@
 <span class="step-num" aria-hidden="true">03</span>
 <h2 id="join-title">You're on the board</h2>
 <p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. Then it reads your own private group (just your key, nothing else), and again at later Claude Code starts, at most every 15 minutes, while the panel is installed and you are in a group, so the Mac menu bar panel can show your friends. You show on the lists after check-ins on two different days.</p>
-<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. Opening a share-card or invite link still loads its page from cclevel.com, so that visit (not the numbers after <code>#</code>) may be in Cloudflare's sampled visit logs. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
+<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. Opening a share-card, Wrapped or invite link still loads its page from cclevel.com, so that visit (not the numbers after <code>#</code>) may be in Cloudflare's sampled visit logs. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
 <p>The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
 </section>
 
@@ -120,9 +120,11 @@
 <tr><td><code>/pet join &lt;link&gt;</code></td><td>Join a friend's group</td></tr>
 <tr><td><code>/pet show my group</code></td><td>Your crew's leaderboard and this week's ♛</td></tr>
 <tr><td><code>/pet duel</code></td><td>Challenge one friend: seven days, most XP wins the ♛. <code>/pet duel &lt;link&gt;</code> accepts one</td></tr>
-<tr><td><code>/pet card</code></td><td>Your card as a picture to save and post; drawn in your browser, sends nothing</td></tr>
-<tr><td><code>/pet wrapped</code></td><td>Your year in review from your own ledger: XP, best day, longest streak, level gained, how your stats moved; sends nothing</td></tr>
-<tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after; a share-card or invite link you open still loads its page from cclevel.com (<code>/pet leave</code> is the same)</td></tr>
+<tr><td><code>/pet card</code></td><td>Your card as a picture to save and post, with your creature's markings (1 in 100 is shiny); drawn in your browser, sends nothing</td></tr>
+<tr><td><code>/pet wrapped</code></td><td>Your year in review from your own ledger: XP, best day, longest streak, level gained, how your stats moved, and a link to 5 story images drawn in your browser; sends nothing, in both modes</td></tr>
+<tr><td><code>/pet evolve</code></td><td>A link that opens X with a ready post about your creature: its stage, class and level, linking to your class's page. Shown on the card for 7 days after a new stage; works any day. The post is public; cclevel sends nothing, in both modes</td></tr>
+<tr><td><code>/pet readme badge</code></td><td>One line of Markdown for a "Lv 42 · Gigachad" badge on your GitHub profile or any README (example numbers). The picture comes from shields.io; it doesn't update itself, so run it again to refresh; sends nothing, in both modes</td></tr>
+<tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after; a share-card, Wrapped or invite link you open still loads its page from cclevel.com (<code>/pet leave</code> is the same)</td></tr>
 <tr><td><code>/pet privacy off</code></td><td>Back to Default mode: shows what it sends and asks first; the board joins at your next Claude Code start</td></tr>
 </tbody>
 </table>
@@ -209,6 +211,18 @@
 <details>
 <summary>The GitHub badge</summary>
 <p>Optional. <span class="gh">✓ login · 123</span> means the owner proved that GitHub account is theirs, and 123 of its public commits carry Claude Code's co-author line. It never changes a place or XP. The count sees public default branches only, counts a squash merge once, and cannot tell a hand-typed line from a real one.</p>
+</details>
+<details>
+<summary>Can it track my hours?</summary>
+<p><code>/pet timesheet</code> works out hours per project for a week from your session logs, in your local time: minutes with you, minutes Claude worked alone, and each project. In a background job, only what you type counts as with you. A block ends after 15 minutes without activity. It is activity time, not proof you were at the desk. The chat sees numbered projects only; the names and every block go into <code>timesheet.csv</code> on your machine, ready for a spreadsheet. Nothing is sent, in Default mode and in Privacy mode, and it never changes your score.</p>
+</details>
+<details>
+<summary>Where do my tokens go?</summary>
+<p><code>/pet leaks</code> works it out on your machine from the last 4 weeks of logs: tokens per week, cache written again after pauses, your start-up context, auto-compactions and connectors you never call. Dollars are API list prices, a yardstick and not a charge. Nothing is sent or stored, in Default mode and in Privacy mode, and it never changes your score. <code>/context</code> is the exact view of the session you are in.</p>
+</details>
+<details>
+<summary>Can it fix my setup?</summary>
+<p>Ask Claude <code>/pet fix</code>. It shows a plan for the top item under Needs: what is wrong, every file it would touch, the exact change and how to undo. Nothing changes until you say yes, and a backup comes first. Moving skills you have not used in 90 days is automatic after your yes; other fixes Claude makes in your session and shows you the diff first. Habits, like plan mode or signing in to a connector, stay advice. <code>/pet fix undo</code> puts the last fix back. If Claude Code's sandbox blocks the fix, nothing changes and Claude asks before running it outside the sandbox. It works the same in Default mode and in Privacy mode: cclevel sends nothing.</p>
 </details>
 <details>
 <summary>Privacy</summary>

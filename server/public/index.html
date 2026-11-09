@@ -67,7 +67,7 @@
 <div class="term-line"><code data-copy><span>claude plugin install cclevel</span> <span>--marketplace Spider333/cclevel</span></code></div>
 </div>
 <p class="note">Then open Claude Code and type <code>/pet</code>. Needs Python 3.9 or newer. <a href="/how#install">Other ways to install</a></p>
-<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing (opening a share-card or invite link in a browser still loads its page from cclevel.com), while the card and creature keep working.</p>
+<p class="note">Two modes. In Default mode, from your next Claude Code start, your creature is on the world board under a made-up name, with one quiet check-in a day. Rather not? Privacy mode is one command, <code>/pet privacy on</code>: your row is deleted and cclevel sends nothing (opening a share-card, Wrapped or invite link in a browser still loads its page from cclevel.com), while the card and creature keep working.</p>
 <p class="note">Already have it? Update: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. Pick Enable auto-update there too, and new features arrive on their own.</p>
 </section>
 
@@ -101,7 +101,25 @@
 <article>
 <span class="tile-num">05</span>
 <h3>Share card</h3>
-<p>Your card as a picture to post, drawn in your browser. No creature name on it. Type <code>/pet card</code>.</p>
+<p>Your card as a picture to post, drawn in your browser, with your creature's own markings. No creature name on it. Type <code>/pet card</code>.</p>
+<span class="tag">sends nothing</span>
+</article>
+<article>
+<span class="tile-num">06</span>
+<h3>Your year and your story</h3>
+<p>Your year as five story images to post, drawn in your browser, and your creature's timeline from the day you met. Type <code>/pet wrapped</code> or <code>/pet story</code>.</p>
+<span class="tag">sends nothing</span>
+</article>
+<article>
+<span class="tile-num">07</span>
+<h3>Where your tokens and hours go</h3>
+<p>Where tokens leaked over four weeks and how to stop it, and your hours per project, with you and with Claude alone. Type <code>/pet leaks</code> or <code>/pet timesheet</code>.</p>
+<span class="tag">sends nothing</span>
+</article>
+<article>
+<span class="tile-num">08</span>
+<h3>Fix it for me</h3>
+<p>Plans the top fix: every file, the exact change, the gain. Nothing changes until you say yes, and a backup comes first. Type <code>/pet fix</code>, and <code>/pet fix undo</code> puts it back.</p>
 <span class="tag">sends nothing</span>
 </article>
 </div>
@@ -212,7 +230,39 @@
 </details>
 <details>
 <summary>What is Privacy mode?</summary>
-<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all; a share-card or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after <code>#</code>, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
+<p>cclevel has two modes. Default mode has the board on: your creature is ranked, and groups, duels and the GitHub badge work. Privacy mode, <code>/pet privacy on</code>, deletes your row, and from then on cclevel sends nothing at all; a share-card, Wrapped or invite link you open in a browser still loads its page from cclevel.com, and that visit (not the numbers after <code>#</code>, which stay in your browser) may be in Cloudflare's sampled visit logs, with your IP address, for at least 31 days. You keep the card, the creature above your prompt, the menu bar panel, tips, lessons and Wrapped; you give up the board, groups, duels and the badge. <code>/pet privacy off</code> shows what Default mode sends and asks before switching back.</p>
+</details>
+<details>
+<summary>What is Wrapped?</summary>
+<p>Your year with Claude Code, from your own ledger. Type <code>/pet wrapped</code>. It prints your year as text, then a link to five story images (1080×1920): your creature, your XP and streak, your best day and month, who you became, and your badges. Your browser draws them from the numbers after <code>#</code>; save, copy or share them from there. It sends nothing, in Default mode and in Privacy mode. Opening the link loads the page from cclevel.com, like the share card.</p>
+</details>
+<details>
+<summary>What happens the first time?</summary>
+<p>Your egg hatches. Your first <code>/pet</code> card opens with what you got, like "It's a Lil Guy Shipper · Lv 18", or "An egg appeared!" if you are new to Claude Code. The creature band above your prompt plays the crack once too. It all runs on your machine and sends nothing, in Default mode and in Privacy mode. A machine that has had cclevel for more than a week never sees it again after an update.</p>
+</details>
+<details>
+<summary>Is my creature one of a kind?</summary>
+<p>Yes. The first time the card saves, cclevel makes a random number on your machine and keeps it in <code>~/.claude/cclevel/seed</code>. It picks your creature's eyes, mouth and crest, and 1 in 100 creatures are shiny. The number never leaves your machine, in Default mode and in Privacy mode, and <code>/pet privacy on</code> keeps it. A share-card link carries the look, so two of your posted cards can be matched to each other. It changes no score.</p>
+</details>
+<details>
+<summary>How do I post that my creature evolved?</summary>
+<p>Type <code>/pet evolve</code>. For 7 days after your creature reaches a new stage, the card reminds you. It prints a link that opens X with a ready post you can edit, such as "My Claude Code just evolved into a Big Guy Shipper, Lv 30. What's yours?" (example numbers). The post links to your class's page, like <a href="/class/shipper">Shipper</a>, which is the same for everyone. It works the same in Default mode and in Privacy mode: cclevel sends nothing. Opening the link is your own visit to x.com, and the post is public, with your level, stage and class.</p>
+</details>
+<details>
+<summary>Can it track my hours?</summary>
+<p><code>/pet timesheet</code> works out hours per project for a week from your session logs, in your local time: minutes with you, minutes Claude worked alone, and each project. In a background job, only what you type counts as with you. A block ends after 15 minutes without activity. It is activity time, not proof you were at the desk. The chat sees numbered projects only; the names and every block go into <code>timesheet.csv</code> on your machine, ready for a spreadsheet. Nothing is sent, in Default mode and in Privacy mode, and it never changes your score.</p>
+</details>
+<details>
+<summary>Where do my tokens go?</summary>
+<p>Type <code>/pet leaks</code>. It reads your last 4 weeks of Claude Code logs on your machine and shows tokens per week, then the biggest leaks: cache written again after pauses, your start-up context, auto-compactions, and connectors you set up but never call. Dollars use API list prices as a yardstick, not a charge. It works the same in Default mode and in Privacy mode: cclevel sends and stores nothing. For the exact view of the session you are in, use <code>/context</code>.</p>
+</details>
+<details>
+<summary>Can it fix my setup?</summary>
+<p>Ask Claude <code>/pet fix</code>. It shows a plan for the top item under Needs: what is wrong, every file it would touch, the exact change and how to undo. Nothing changes until you say yes, and a backup comes first. Moving skills you have not used in 90 days is automatic after your yes; other fixes Claude makes in your session and shows you the diff first. Habits, like plan mode or signing in to a connector, stay advice. <code>/pet fix undo</code> puts the last fix back. If Claude Code's sandbox blocks the fix, nothing changes and Claude asks before running it outside the sandbox. It works the same in Default mode and in Privacy mode: cclevel sends nothing.</p>
+</details>
+<details>
+<summary>Can I put my level on my GitHub profile?</summary>
+<p>Yes. Type <code>/pet readme badge</code>. It prints one line of Markdown for a "Lv 42 · Gigachad" badge (example numbers) to paste into your profile README. It works the same in Default mode and in Privacy mode: cclevel sends nothing, and the picture comes from shields.io, a free badge service, when someone views the page. It doesn't update itself; run it again to refresh. Anyone who sees it sees your level next to your name. If your creature is on the world lists, <code>/pet world off</code> keeps people from matching the two. This is not the verified GitHub badge on the board.</p>
 </details>
 <details>
 <summary>How do I opt out?</summary>

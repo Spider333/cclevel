@@ -16,11 +16,14 @@ code.
 """
 import argparse
 import contextlib
+import csv
+import errno
 import fcntl
 import getpass
 import glob
 import hashlib
 import http.client
+import io
 import json
 import math
 import os
@@ -289,6 +292,86 @@ ART = {
     "GOAT": [r"*\.-^-./*", r" ( @ @ ) ", r"</\ = /\>", r" _/| |\_ "],
 }
 
+# Markings: each creature's own look, from a number made on this machine the first time a run saves (the seed file).
+# look = seed mod 64 picks an eye style, a mouth and a crest (the Egg's shell mark); (seed / 64) mod 100 == 0 is shiny,
+# 1 in 100. Look 0, not shiny, is the classic art above. Every slot swaps one character, so each line stays 9 wide.
+# These must match server/public/card.js; a test checks them.
+LOOKS = 64
+SHINY_ODDS = 100
+SEED_RE = re.compile(r"[0-9a-f]{16}")
+EYES = "o.O0"                      # GOAT keeps its @ eyes
+MOUTHS = "wv-"                     # after the stage's own mouth (^, ~ or =)
+CRESTS = {"Egg": ".:o~", "Hatchling": "_^.~"}   # the rest: "^~='"
+MARK_SLOTS = {                     # (line, column) of the eyes, the mouth and the crest
+    "Egg": {"crest": (2, 4)},
+    "Hatchling": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Lil Guy": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Big Guy": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "Gigachad": {"eyes": [(1, 3), (1, 5)], "mouth": (2, 4), "crest": (0, 4)},
+    "GOAT": {"mouth": (2, 4), "crest": (0, 4)},
+}
+SHINY_MARK = "\u2726 Shiny"
+
+
+def marks_of(seed):
+    """The look (0-63) and whether it is shiny, from the seed as a number, or the classic look for None."""
+    if seed is None:
+        return {"look": 0, "shiny": False}
+    return {"look": seed % LOOKS, "shiny": (seed // LOOKS) % SHINY_ODDS == 0}
+
+
+def marked_art(stage, look=0, shiny=False):
+    """The stage's art with its markings. Shiny adds two twinkles: "*" corners, or "+" for the GOAT, which has "*" already."""
+    lines = [list(line) for line in ART[stage]]
+    slots = MARK_SLOTS[stage]
+    eye, mouth, crest = look % 4, look // 4 % 4, look // 16 % 4
+    if eye and "eyes" in slots:
+        for row, col in slots["eyes"]:
+            lines[row][col] = EYES[eye]
+    if mouth and "mouth" in slots:
+        row, col = slots["mouth"]
+        lines[row][col] = MOUTHS[mouth - 1]
+    if crest:
+        row, col = slots["crest"]
+        lines[row][col] = CRESTS.get(stage, "^~='")[crest]
+    if shiny:
+        for row, col in ([(3, 0), (3, 8)] if stage == "GOAT" else [(0, 8), (3, 0)]):
+            lines[row][col] = "+" if stage == "GOAT" else "*"
+    return ["".join(line) for line in lines]
+
+
+def seed_path(cdir):
+    return os.path.join(cdir, "cclevel", "seed")
+
+
+def read_seed(cdir):
+    """The seed as a number, or None: no file, a link, a folder or anything but 16 hex digits all mean the classic look."""
+    path = seed_path(cdir)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        with open(path, encoding="ascii") as f:
+            text = f.read(64).strip()
+    except (OSError, ValueError):
+        return None
+    return int(text, 16) if SEED_RE.fullmatch(text) else None
+
+
+def creature_marks(cdir, save):
+    """This creature's markings. A run that saves makes the seed once, if nothing is at its place yet; it is never
+    rewritten, and a run that does not save only reads it. Kept apart from identity.json, which Privacy mode deletes."""
+    seed = read_seed(cdir)
+    if seed is None and save and not os.path.lexists(seed_path(cdir)):
+        try:
+            os.makedirs(os.path.dirname(seed_path(cdir)), exist_ok=True)
+            text = secrets.token_hex(8)
+            write_private(seed_path(cdir), text + "\n")
+            seed = int(text, 16)
+        except OSError:
+            seed = None
+    return marks_of(seed)
+
+
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 FIRST_YEAR = 2025            # Claude Code's first public release: no Wrapped before it
 THIS_YEAR = object()         # what --wrapped means without a YEAR (not a string, so argparse leaves it as it is)
@@ -412,10 +495,13 @@ def scan_history(cdir):
     return per_day
 
 
-def scan_logs(cdir, skill_names):
-    """Per-day activity from session logs. Returns (days, longest unattended run)."""
+def scan_logs(cdir, skill_names, extra=None):
+    """Per-day activity from session logs. Returns (days, longest unattended run). Given a dict, `extra` also gets what
+    the leak finder needs, from the same pass: each reply's usage with its time and log file, every compaction and
+    Claude Code's own cost figure per log. The card's numbers do not depend on it."""
     days = defaultdict(new_day)
     best = {}            # (message id, request id) -> (output tokens, day, usage)
+    when = {}            # the same key -> (time, log file), for the leak finder only
     seen_tools = set()
     longest = 0
     root = os.path.join(cdir, "projects")
@@ -451,6 +537,8 @@ def scan_logs(cdir, skill_names):
                         out = num(u.get("output_tokens"))
                         if key not in best or out > best[key][0]:
                             best[key] = (out, day, u, m.get("model"))
+                            if extra is not None:
+                                when[key] = (str(o.get("timestamp") or ""), path)
                     session = str(o.get("sessionId"))
                     if not sub:
                         run.add(str(m.get("id")))
@@ -526,7 +614,12 @@ def scan_logs(cdir, skill_names):
                     days[day]["commands"].update(COMMAND_RE.findall(line))   # some commands are logged only here
                 elif day and '"subtype":"compact_boundary"' in line:
                     days[day]["compacts"] += '"trigger":"manual"' in line   # /compact typed, not the automatic one
+                if extra is not None and ('"subtype":"compact_boundary"' in line or '"type":"cost-state"' in line):
+                    leak_line(extra, line, path)
         longest = max(longest, len(run))
+    if extra is not None:
+        extra["requests"] = [{"day": day, "time": when[k][0], "file": when[k][1], "model": str(model), "usage": u}
+                             for k, (_, day, u, model) in best.items()]
     for _, day, u, model in best.values():
         days[day]["models"][str(model)] += 1
         for k in TOKEN_WEIGHT:
@@ -534,8 +627,9 @@ def scan_logs(cdir, skill_names):
     return dict(days), longest
 
 
-def scan_setup(cdir, cfg, settings):
-    """What is installed and how it is wired. Names stay in memory; only counts leave."""
+def scan_setup(cdir, cfg, settings, leak=None):
+    """What is installed and how it is wired. Names stay in memory; only counts leave, except into `leak`, the leak
+    finder's own dict, which gets the connector names and the parts of the start-up context."""
     skills = {}
     for base in ("commands", "skills"):
         for path in glob.glob(os.path.join(cdir, base, "*", "SKILL.md")):
@@ -578,6 +672,19 @@ def scan_setup(cdir, cfg, settings):
     index_size = max([os.path.getsize(p) for p in memory if os.path.basename(p) == "MEMORY.md"] or [0])
     claude_md = os.path.join(cdir, "CLAUDE.md")
     claude_md_size = os.path.getsize(claude_md) if os.path.isfile(claude_md) else 0
+    if leak is not None:
+        here = [os.path.join(os.getcwd(), n) for n in ("CLAUDE.md", os.path.join(".claude", "CLAUDE.md"))]
+        leak["context"] = {"claude_md": claude_md_size // 4, "memory_index": index_size // 4,
+                            "skill_descriptions": sum(s["desc"] for s in skills.values()) // 4,
+                            "project_claude_md": sum(os.path.getsize(p) for p in here if os.path.isfile(p)) // 4}
+        leak["connectors"] = {c: c for c in connectors}
+        for key, installs in plugins.items():
+            for inst in installs if isinstance(installs, list) else [installs]:
+                root = as_dict(inst).get("installPath")
+                if isinstance(root, str):
+                    mcp = load_dict(os.path.join(root, ".mcp.json"))
+                    for server in as_dict(mcp.get("mcpServers", mcp)):
+                        leak["connectors"]["plugin_%s_%s" % (str(key).split("@")[0], server)] = server
     return {
         "skills": skills,
         "commands_flat": len(glob.glob(os.path.join(cdir, "commands", "*.md"))),
@@ -594,6 +701,7 @@ def scan_setup(cdir, cfg, settings):
         "project_md": any(os.path.isfile(os.path.join(p, "CLAUDE.md")) or
                           os.path.isfile(os.path.join(p, ".claude", "CLAUDE.md")) for p in projects),
         "context_tokens": (claude_md_size + index_size + sum(s["desc"] for s in skills.values())) // 4,
+        "context_chars": claude_md_size + index_size + sum(s["desc"] for s in skills.values()),
     }
 
 
@@ -692,6 +800,13 @@ def streaks(active, today):
     return longest, current, gap
 
 
+def away_days(active, today):
+    """The empty UTC days just before today: 0 when yesterday was active, None with no activity before today.
+    It stays the same all day, so the band welcomes you back at most once a day."""
+    before = [d for d in active if d < today.isoformat()]
+    return (today - date.fromisoformat(max(before))).days - 1 if before else None
+
+
 def mood_of(health, idle, current_streak=0, gap=0):
     if idle is None:
         return MOODS["none"]
@@ -765,7 +880,7 @@ def read_ledger(cdir, today):
     return ledger, banked, badges, estimated, weeks
 
 
-def score(cdir, machine_jobs, save):
+def score(cdir, machine_jobs, save, extra=None):
     today = datetime.now(timezone.utc).date()
     today_s = today.isoformat()
     home_cfg = os.path.join(os.path.expanduser("~"), ".claude.json")
@@ -775,9 +890,11 @@ def score(cdir, machine_jobs, save):
     for key in ("hooks", "permissions"):       # count both files together
         settings[key] = merged_lists(settings.get(key), local.get(key))
 
-    setup = scan_setup(cdir, cfg, settings)
+    setup = scan_setup(cdir, cfg, settings, extra)
     prompts = scan_history(cdir)
-    days, longest_run = scan_logs(cdir, set(setup["skills"]))
+    days, longest_run = scan_logs(cdir, set(setup["skills"]), extra)
+    if extra is not None:
+        extra["days"] = days
     jobs = scheduled_jobs() if machine_jobs else 0
 
     recent_since = (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
@@ -878,9 +995,15 @@ def score(cdir, machine_jobs, save):
         "interrupts": (min(PENALTY_INTERRUPTS_MAX, INTERRUPT_POINTS * interrupt_rate), round(100 * interrupt_rate)),
     }
     health = round(100 - sum(p for p, _ in penalties.values()))
+    # What Health would be without the unused skills: their descriptions leave the start-up context too.
+    ctx_after = (setup["context_chars"] - sum(own[n]["desc"] for n in unused)) // 4
+    over_after = min(1.0, max(0.0, (ctx_after - CONTEXT_OK) / (CONTEXT_HEAVY - CONTEXT_OK)))
+    rest = sum(p for c, (p, _) in penalties.items() if c not in ("unused_skills", "heavy_context"))
+    health_without_unused = round(100 - rest - PENALTY_CONTEXT_MAX * over_after)
     for code, (points, count) in penalties.items():
         if round(points) >= 1:
-            needs.append({"code": code, "count": count, "stat": "health", "gain": round(points)})
+            gain = health_without_unused - health if code == "unused_skills" else round(points)
+            needs.append({"code": code, "count": count, "stat": "health", "gain": gain})
             if code == "sign_in":
                 needs[-1]["from_plugins"] = sum(1 for name in waiting if name.startswith("plugin:"))
     per_check = round(100 / len(checks))
@@ -888,6 +1011,9 @@ def score(cdir, machine_jobs, save):
         if not ok:
             needs.append({"code": "brains_%d" % (i + 1), "count": 0, "stat": "brains", "gain": per_check})
     needs.sort(key=lambda n: -n["gain"])
+    if extra is not None:   # for /pet fix only: the names it may move, never in the --json or a check-in
+        extra["unused_names"], extra["own_used"] = sorted(unused), sorted(own_used)
+        extra["health_without_unused"] = health_without_unused
 
     earned = {
         "first_hook": w30["hooks_ran"] > 0, "first_skill": bool(own_used),
@@ -921,18 +1047,23 @@ def score(cdir, machine_jobs, save):
     # One snapshot a week, from the week's latest run, so a year in review can show how the stats moved.
     weeks[iso_week(today)] = {"xp": xp, "stats": [stats[s] for s in STAT_ORDER], "health": health}
 
+    seen = ledger.get("first_seen")
+    hatched = seen if is_day(seen) and len(seen) == 10 and seen <= today_s else today_s if active or badges else None
     kept = {"days": banked, "estimated": sorted(estimated), "badges": badges, "weeks": weeks}
+    # The day the card first showed the hatch, kept so it shows once (see hatch_due).
+    hatch_seen = ledger.get("hatch_seen") if is_day(ledger.get("hatch_seen")) else None
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
         try:
             os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
             # Written to a fresh private file and swapped in: never through a link, never half written.
-            write_private(ledger_path, json.dumps(dict(kept, version=4, first_seen=ledger.get("first_seen") or today_s),
+            write_private(ledger_path, json.dumps(dict(kept, version=4, first_seen=ledger.get("first_seen") or today_s,
+                                                       **({"hatch_seen": hatch_seen} if hatch_seen else {})),
                                                   indent=1, sort_keys=True))
         except OSError:
             pass   # the card still shows; the day is banked at the next run
 
     raw.update({
-        "idle_days": idle, "skills_own": len(own), "skills_plugin": setup["plugin_skills"],
+        "idle_days": idle, "away_days": away_days(active, today), "skills_own": len(own), "skills_plugin": setup["plugin_skills"],
         "commands_flat": setup["commands_flat"], "skills_unused": len(unused),
         "connectors_need_sign_in": need_sign_in, "hooks": sum(setup["hook_events"].values()),
         "hook_event_types": len(setup["hook_events"]), "memory_files": setup["memory_files"],
@@ -956,6 +1087,16 @@ def score(cdir, machine_jobs, save):
         "power": sum(stats.values()), "stats": stats,
         "badges": [b for b in BADGES if b in badges], "needs": needs, "raw": raw,
         "lessons": [lesson[0] for stat in STAT_ORDER for lesson in LESSONS[stat] if done[lesson[0]]],
+        # Our story in short, for the panel: the day you met Claude Code, the day cclevel hatched your creature, and
+        # the days in between and since (the card's "days old").
+        "story": {"met": first, "hatched": hatched, "together_days": age_days},
+        # The ledger's first day (null before there is a ledger), so the creature band can tell a new machine from an old one.
+        "hatched": seen if is_day(seen) and len(seen) == 10 and seen <= today_s else None,
+        # Card only, never in --json: the hatch block shows on a new machine's first card (see hatch_lines).
+        # The newest stage reached in the last EVOLVED_DAYS days, {from, to, day}: the card's line and /pet evolve's post.
+        "evolved": evolved_of(banked, badges, today),
+        "hatch_due": bool(active) and not hatch_seen and not (is_day(seen) and len(seen) == 10
+                                                               and seen < (today - timedelta(days=HATCH_DAYS)).isoformat()),
     }
 
 
@@ -982,25 +1123,56 @@ def need_text(n):
     return "missing: %s (Brains +%d)" % (BRAINS[int(n["code"].split("_")[1]) - 1], g)
 
 
-def render(r, board="on", how=False, tip=None, creature=None):
+HATCH_DAYS = 7   # how new a ledger may be for the hatch to show: an update never replays it for older machines
+
+
+def hatch_lines(r):
+    """The two lines on top of a new machine's first card: what hatched, or the egg and when it hatches."""
+    if r["stage"] == "Egg":
+        return ["An egg appeared!", "It hatches at Lv %d." % STAGES[-2][0]]
+    who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
+    shiny = (r.get("marks") or marks_of(None))["shiny"]
+    return ["Your egg hatched!", "It's %s · Lv %d%s" % (a_or_an(who), r["level"], " · %s!" % SHINY_MARK if shiny else "")]
+
+
+def record_hatch(cdir):
+    """Notes in the ledger that the card showed the hatch, so it shows once. Every other key stays as it is."""
+    today_s = datetime.now(timezone.utc).date().isoformat()
+    path = ledger_file(cdir)
+    ledger = load_dict(path) if os.path.isfile(path) and not os.path.islink(path) else {}
+    ledger.setdefault("version", 4)
+    if not is_day(ledger.get("first_seen")):
+        ledger["first_seen"] = today_s
+    ledger["hatch_seen"] = today_s
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_private(path, json.dumps(ledger, indent=1, sort_keys=True))
+    except OSError:
+        pass   # the block shows once more at the next run
+
+
+def render(r, board="on", how=False, tip=None, creature=None, leak=None):
     """The card. `board` is "on" (this machine is on the board, as `creature`), "soon" (Default mode: the session-start
     hook joins it next time), "privacy" (Privacy mode: the opted-out note and no token, so cclevel sends nothing), "leaving"
     (the note, but the row is still on the board: a delete that did not go through) or "off" (a folder the hook never
     joins). Off, with XP banked in the last 7 days, the last lines say how much of it will never rank: the board counts only
     XP it sees after joining. Privacy mode never gets that nudge. Worked out here; nothing is sent.
-    With tips on, `how` adds a how-to line under each Need and `tip` is the tip of the day, (stat, tip)."""
+    With tips on, `how` adds a how-to line under each Need, `tip` is the tip of the day, (stat, tip), and `leak` the
+    leak finder's line when the biggest leak is large."""
     raw, level = r["raw"], r["level"]
     who = r["stage"] if r["class"] == UNHATCHED else "%s %s" % (r["stage"], r["class"])
+    marks = r.get("marks") or marks_of(None)
     to_next = "top level" if level >= LEVEL_MAX else "{:,} to Lv {}".format(r["xp_next_level"] - r["xp"], level + 1)
     guessed = " (%d estimated)" % raw["xp_days_estimated"] if raw["xp_days_estimated"] else ""
     side = [
-        "%s · Lv %d" % (who, level),
+        "%s · Lv %d%s" % (who, level, " · " + SHINY_MARK if marks["shiny"] else ""),
         "XP {:,} · {} · today so far +{}".format(r["xp"], to_next, r["xp_today_pending"]),
         "Mood: %s · Health %d · %s %d" % (r["mood"], r["health"], AURA, r["power"]),
         "%s old · %s%s · streak %d" % (count(raw["age_days"], "day"), count(raw["active_days"], "active day"), guessed,
                                        raw["current_streak"]),
     ]
-    out = ["", *("  %s   %s" % (art, text) for art, text in zip(ART[r["stage"]], side)), ""]
+    out = ["", *("  " + line for line in hatch_lines(r))] if r.get("hatch_due") else []
+    out += ["", *("  %s   %s" % (art, text) for art, text in zip(marked_art(r["stage"], marks["look"], marks["shiny"]), side)), ""]
     for name in STAT_ORDER:
         v = r["stats"][name]
         filled = round(v / 5)
@@ -1017,13 +1189,18 @@ def render(r, board="on", how=False, tip=None, creature=None):
             if how:
                 text, page = HOWTO[n["code"]]
                 out.append("      How: %s  %s%s" % (text, DOCS, page))
+        out.append("  Ask Claude: /pet fix")
     else:
         out.append("  Needs: nothing right now. %s." % QUIPS["no_needs"])
     if r["badges"]:
         out += ["", "  Badges: " + ", ".join(BADGE_NAMES[b] for b in r["badges"])]
+    if r.get("evolved"):
+        out += ["", "  Evolved into %s on %s! Post it: /pet evolve" % (a_or_an(r["evolved"]["to"]), short_day(r["evolved"]["day"]))]
     if tip:
         stat, (_, text, page) = tip
         out += ["", "  Tip of the day (%s): %s" % (stat.capitalize(), text), "  %s%s" % (DOCS, page)]
+    if leak:
+        out += ["", "  " + leak]
     out += ["", "  This machine only, self-reported. Deep check-up: /doctor and /skill-doctor."]
     if board == "on" and creature:
         out.append("  On the board as %s. Privacy mode: /pet privacy on deletes your row and sends nothing after." % creature)
@@ -1049,36 +1226,147 @@ def short_day(day):
     return "%d %s" % (int(day[8:]), MONTHS[int(day[5:7]) - 1])
 
 
-def wrapped(cdir, year, today):
-    """A year in review from this machine's ledger: its banked days, badges and weekly snapshots. Offline."""
+def xp_until(banked, badges, day):
+    """XP banked up to and including a day: its banked days plus the XP of the badges earned by then."""
+    return sum(x for d, x in banked.items() if d <= day) + sum(BADGES[b] for b, when in badges.items() if when <= day)
+
+
+def milestones(banked, badges):
+    """The first banked day and the day each stage from Hatchling up was reached, from the same XP sum as xp_until()."""
+    marks = {"first": min(banked) if banked else None}
+    days = sorted(set(banked) | {w for w in badges.values() if is_day(w)})
+    for floor, name in sorted(STAGES[:-1]):   # Egg is where every creature starts
+        marks[name] = next((d for d in days if level_of(xp_until(banked, badges, d)) >= floor), None)
+    return marks
+
+
+EVOLVED_DAYS = 7   # how long after the day a new stage was reached the card says so
+
+
+def evolved_of(banked, badges, today):
+    """The newest stage reached, {from, to, day}, if that day is one of the last EVOLVED_DAYS. From the ledger alone,
+    so a stage reached while you were away still shows. None otherwise."""
+    marks = milestones(banked, badges)
+    for i, (_, name) in enumerate(STAGES[:-1]):   # GOAT first: only the newest stage counts
+        if marks[name]:
+            ago = (today - date.fromisoformat(marks[name])).days
+            return {"from": STAGES[i + 1][1], "to": name, "day": marks[name]} if 0 <= ago < EVOLVED_DAYS else None
+    return None
+
+
+def class_slug(cls):
+    """The class page's name in its address, /class/<slug>; None for Unhatched, which has no page."""
+    return None if cls == UNHATCHED else cls.lower().replace(" ", "-")
+
+
+def evolve_link(server, result):
+    """An X post link. Only its text and the class page's address go in it: stage, class and level, no name or token."""
+    who = result["stage"] if result["class"] == UNHATCHED else "%s %s" % (result["stage"], result["class"])
+    ev = result.get("evolved")
+    if ev and ev["from"] == "Egg":
+        text = "My Claude Code just hatched: Lv %d %s. What's yours?" % (result["level"], who)
+    elif ev:
+        text = "My Claude Code just evolved into %s, Lv %d. What's yours?" % (a_or_an(who), result["level"])
+    else:
+        text = "My Claude Code is %s, Lv %d. What's yours?" % (a_or_an(who), result["level"])
+    slug = class_slug(result["class"])
+    page = "%s/class/%s" % (site(server), slug) if slug else site(server)
+    return "https://x.com/intent/post?" + urllib.parse.urlencode({"text": text, "url": page}, quote_via=urllib.parse.quote)
+
+
+def evolve_text(server, result, today):
+    ev = result.get("evolved")
+    who = result["stage"] if result["class"] == UNHATCHED else "%s %s" % (result["stage"], result["class"])
+    if ev and ev["from"] == "Egg":
+        first = "Your egg hatched into a Hatchling on %s (Lv %d)." % (story_day(ev["day"], today), result["level"])
+    elif ev:
+        first = "Your %s became %s on %s (Lv %d)." % (ev["from"], a_or_an(ev["to"]), story_day(ev["day"], today), result["level"])
+    else:
+        first = "Your creature is %s, Lv %d. No new stage in the last %d days, so the post says what it is now." % (
+            a_or_an(who), result["level"], EVOLVED_DAYS)
+    return "\n".join([
+        "", "  " + first,
+        "  Post it on X (opens a ready post you can edit): " + evolve_link(server, result),
+        "  The post is public and shows your level, stage and class, nothing else. cclevel sends nothing: opening the link",
+        "  is your own visit to x.com, and the link in the post opens %s%s." % (
+            "your class's page on " if class_slug(result["class"]) else "",
+            urllib.parse.urlsplit(site(server)).netloc or site(server)), ""])
+
+
+WRAPPED_VERSION = 1          # must match the Wrapped page, server/public/wrapped.js
+WRAPPED_CLASSES = (*CLASSES.values(), BALANCED, NOOB, UNHATCHED)   # a class's number in the link; one past the end is none
+WRAPPED_STAGES = tuple(name for _, name in reversed(STAGES[:-1]))  # Hatchling to GOAT, the link's last five numbers
+
+
+def wrapped_numbers(cdir, year, today):
+    """A year in review from this machine's ledger: its banked days, badges and weekly snapshots. Offline.
+    None for a year with no banked days."""
     _, banked, badges, estimated, weeks = read_ledger(cdir, today)
     start, end = "%d-01-01" % year, "%d-12-31" % year
     days = {d: x for d, x in banked.items() if start <= d <= end}
-    out = ["", "  CC level Wrapped %d%s · this machine only, self-reported" % (year, " so far" if year == today.year else ""), ""]
     if not days:
-        return "\n".join(out + ["  No finished days banked in %d on this machine." % year, ""])
-
-    def xp_until(day):
-        return sum(x for d, x in banked.items() if d <= day) + sum(BADGES[b] for b, when in badges.items() if when <= day)
-    first, last = level_of(xp_until(str(year - 1) + "-12-31")), level_of(xp_until(end))
-    guessed = sum(1 for d in days if d in estimated)
-    out.append("  {:,} XP over {}{}".format(sum(days.values()), count(len(days), "active day"),
-                                           " (%d estimated from prompt counts)" % guessed if guessed else ""))
-    out.append("  Lv %d %s → Lv %d %s" % (first, stage_of(first), last, stage_of(last)))
+        return None
     months = [0] * 12
     for d, x in days.items():
         months[int(d[5:7]) - 1] += x
-    best_day = max(sorted(days), key=lambda d: days[d])   # the earliest of equal days
-    best_month = max(range(12), key=lambda m: months[m])
     longest = run = 0
     prev = None
     for d in sorted(days):
         dt = date.fromisoformat(d)
         run = run + 1 if prev and (dt - prev).days == 1 else 1
         longest, prev = max(longest, run), dt
+    weeks_in = [w for w in sorted(weeks) if w.startswith(str(year))]
+    snaps = [weeks[w]["stats"] for w in weeks_in]
+    averages = {name: sum(s[i] for s in snaps) / len(snaps) for i, name in enumerate(STAT_ORDER)} if snaps else {}
+    marks = milestones(banked, badges)
+    return {
+        "year": year, "so_far": year == today.year,
+        "until": (today - timedelta(days=1)) if year == today.year else date(year, 12, 31),
+        "xp": sum(days.values()), "active": len(days), "estimated": sum(1 for d in days if d in estimated),
+        "first": level_of(xp_until(banked, badges, str(year - 1) + "-12-31")), "last": level_of(xp_until(banked, badges, end)),
+        "best_day": max(sorted(days), key=lambda d: days[d]),   # the earliest of equal days
+        "best_month": max(range(12), key=lambda m: months[m]), "months": months, "longest": longest, "days": days,
+        "badges": [b for b in BADGES if start <= badges.get(b, "") <= end],
+        "weeks": weeks_in, "snaps": snaps,
+        "class": Counter(class_of(dict(zip(STAT_ORDER, s))) for s in snaps).most_common(1)[0][0] if snaps else None,
+        "strongest": max(STAT_ORDER, key=lambda n: averages[n]) if snaps else None, "averages": averages,
+        "moves": [snaps[-1][i] - snaps[0][i] for i in range(len(STAT_ORDER))] if len(snaps) > 1 else None,
+        "stages": {name: marks[name] for name in WRAPPED_STAGES if marks[name] and start <= marks[name] <= end},
+    }
+
+
+def day_of_year(day):
+    return date.fromisoformat(day).timetuple().tm_yday
+
+
+def wrapped_link(server, w):
+    """The Wrapped page's address. Its 41 numbers sit after "#", which browsers never send: the page draws the five
+    story images from them. Every number is a whole number of 0 or more."""
+    numbers = [WRAPPED_VERSION, w["year"], int(w["so_far"]), w["until"].timetuple().tm_yday, w["xp"], w["active"],
+               w["estimated"], w["first"], w["last"], day_of_year(w["best_day"]), w["days"][w["best_day"]],
+               w["best_month"], w["longest"], *w["months"], sum(1 << i for i, b in enumerate(BADGES) if b in w["badges"]),
+               len(w["snaps"]), WRAPPED_CLASSES.index(w["class"]) if w["class"] else len(WRAPPED_CLASSES),
+               STAT_ORDER.index(w["strongest"]) if w["strongest"] else len(STAT_ORDER),
+               round(w["averages"][w["strongest"]]) if w["strongest"] else 0,
+               *(100 + m for m in (w["moves"] or [0] * len(STAT_ORDER))),
+               *(day_of_year(w["stages"][s]) if s in w["stages"] else 0 for s in WRAPPED_STAGES)]
+    return "%s/wrapped#%s" % (site(server), "-".join(str(n) for n in numbers))
+
+
+def wrapped(cdir, year, today, server=None):
+    """The year in review as text. With a server, its last line is the link to the five story images."""
+    w = wrapped_numbers(cdir, year, today)
+    out = ["", "  CC level Wrapped %d%s · this machine only, self-reported" % (year, " so far" if year == today.year else ""), ""]
+    if not w:
+        return "\n".join(out + ["  No finished days banked in %d on this machine." % year, ""])
+    first, last, months = w["first"], w["last"], w["months"]
+    out.append("  {:,} XP over {}{}".format(w["xp"], count(w["active"], "active day"),
+                                           " (%d estimated from prompt counts)" % w["estimated"] if w["estimated"] else ""))
+    out.append("  Lv %d %s → Lv %d %s" % (first, stage_of(first), last, stage_of(last)))
     out.append("  Best day: {}, {:,} XP · Best month: {}, {:,} XP · Longest streak: {}".format(
-        short_day(best_day), days[best_day], MONTHS[best_month], months[best_month], count(longest, "day")))
-    earned = [BADGE_NAMES[b] for b in BADGES if start <= badges.get(b, "") <= end]
+        short_day(w["best_day"]), w["days"][w["best_day"]], MONTHS[w["best_month"]], months[w["best_month"]],
+        count(w["longest"], "day")))
+    earned = [BADGE_NAMES[b] for b in w["badges"]]
     out.append("  Badges earned: " + ", ".join(earned) if earned else "  No new badges this year.")
     out.append("")
     top = max(months)
@@ -1086,21 +1374,169 @@ def wrapped(cdir, year, today):
         filled = round(20 * months[m] / top)
         out.append("  %s  %s%s  %s" % (MONTHS[m], "#" * filled, "-" * (20 - filled), "{:,}".format(months[m]).rjust(6)))
     out.append("")
-    snaps = [weeks[w]["stats"] for w in sorted(weeks) if w.startswith(str(year))]
-    if not snaps:
+    if not w["snaps"]:
         out.append("  Weekly snapshots of your stats start with this version, so a later Wrapped shows how they moved.")
     else:
-        weeks_in = [w for w in sorted(weeks) if w.startswith(str(year))]
-        classes = Counter(class_of(dict(zip(STAT_ORDER, s))) for s in snaps)
-        averages = {name: sum(s[i] for s in snaps) / len(snaps) for i, name in enumerate(STAT_ORDER)}
-        strongest = max(STAT_ORDER, key=lambda n: averages[n])
         out.append("  %s, from %s · Most weeks as: %s · Strongest stat: %s, %d on average" % (
-            count(len(snaps), "weekly snapshot"), weeks_in[0], classes.most_common(1)[0][0], strongest.capitalize(),
-            round(averages[strongest])))
-        if len(snaps) > 1:
-            out.append("  Since then: " + " · ".join("%s %+d" % (name.capitalize(), snaps[-1][i] - snaps[0][i])
+            count(len(w["snaps"]), "weekly snapshot"), w["weeks"][0], w["class"], w["strongest"].capitalize(),
+            round(w["averages"][w["strongest"]])))
+        if w["moves"]:
+            out.append("  Since then: " + " · ".join("%s %+d" % (name.capitalize(), w["moves"][i])
                                                        for i, name in enumerate(STAT_ORDER)))
-    out += ["", "  Post your card: /pet card.", ""]
+    out += ["", "  Post your card: /pet card."]
+    if server:
+        out.append("  Story images to post: " + wrapped_link(server, w))
+    return "\n".join(out + [""])
+
+
+STORY_VERSION = 1            # a field is only ever added; a change of meaning bumps this
+STORY_KINDS = ("met", "hatched", "level", "stage", "badge", "class", "best_day")   # the order of events on one day
+STORY_LINES = 25             # the most event lines --story prints
+
+
+def story(cdir, result, today, year=None):
+    """You and your creature as a timeline, worked out from this machine's ledger and the score. Offline, stores nothing.
+    Levels come from the same XP sum as Wrapped, classes from the weekly snapshots, badges from their dates. Everything
+    dated before cclevel first saved the ledger (and every badge dated that day) is marked "about". With a year, the
+    records are that year's."""
+    _, banked, badges, estimated, weeks = read_ledger(cdir, today)
+    today_s = today.isoformat()
+    met, hatched = result["story"]["met"], result["story"]["hatched"]
+    badges = {b: when for b, when in badges.items() if is_day(when) and len(when) == 10 and when <= today_s}
+    events = []
+    if met:
+        events.append({"day": met, "kind": "met"})
+    level = level_of(xp_until(banked, badges, hatched)) if hatched else 1
+    if hatched:
+        snaps = [weeks[w] for w in sorted(weeks)]
+        first_class = class_of(dict(zip(STAT_ORDER, snaps[0]["stats"]))) if snaps else result["class"]
+        events.append({"day": hatched, "kind": "hatched", "level": level, "stage": stage_of(level), "class": first_class})
+        before = None
+        for w in sorted(weeks):
+            now = class_of(dict(zip(STAT_ORDER, weeks[w]["stats"])))
+            if before is not None and now != before:
+                try:
+                    monday = date.fromisocalendar(int(w[:4]), int(w[6:]), 1).isoformat()
+                except ValueError:
+                    continue
+                events.append({"day": max(monday, hatched), "kind": "class", "class": now, "week": w})
+            before = now
+    # A level event on each day the level went up, a stage event on each day a stage was reached.
+    level = 1
+    for d in sorted(set(banked) | set(badges.values())):
+        now = level_of(xp_until(banked, badges, d))
+        if now > level:
+            events.append({"day": d, "kind": "level", "level": now})
+            for floor, name in sorted(STAGES[:-1]):
+                if level < floor <= now:
+                    events.append({"day": d, "kind": "stage", "stage": name, "level": floor})
+            level = now
+    for b in BADGES:
+        if b in badges:
+            events.append({"day": badges[b], "kind": "badge", "badge": b})
+    best = max(sorted(banked), key=lambda d: banked[d]) if banked else None   # the earliest of equal days
+    if best:
+        events.append({"day": best, "kind": "best_day", "xp": banked[best]})
+    for e in events:
+        if hatched and (e["day"] < hatched or (e["kind"] == "badge" and e["day"] == hatched)):
+            e["about"] = True
+    events.sort(key=lambda e: (e["day"], STORY_KINDS.index(e["kind"])))
+
+    days = {d: x for d, x in banked.items() if year is None or d.startswith("%d-" % year)}
+    by_week = Counter()
+    for d, x in days.items():
+        by_week[iso_week(date.fromisoformat(d))] += x
+    longest = run = 0
+    span = start = None
+    prev = None
+    for d in sorted(days):
+        dt = date.fromisoformat(d)
+        if prev and (dt - prev).days == 1:
+            run += 1
+        else:
+            run, start = 1, d
+        if run > longest:
+            longest, span = run, (start, d)
+        prev = dt
+    top = max(sorted(days), key=lambda d: days[d]) if days else None
+    records = {
+        "best_day": {"day": top, "xp": days[top]} if top else None,
+        "best_week": {"week": w, "xp": by_week[w]} if (w := max(sorted(by_week), key=lambda k: by_week[k], default=None)) else None,
+        "longest_streak": {"days": longest, "from": span[0], "to": span[1]} if span else None,
+    }
+    if year is not None:   # the levels a year began and ended with, as Wrapped shows them
+        records["levels"] = {"from": level_of(xp_until(banked, badges, "%d-12-31" % (year - 1))),
+                             "to": level_of(xp_until(banked, badges, "%d-12-31" % year))}
+    early = {d: x for d, x in banked.items() if hatched and d < hatched}
+    last_before = max(early, default=None)
+    level_before = level_of(xp_until(banked, badges, last_before)) if last_before else 1
+    return {
+        "version": STORY_VERSION, "scope": "one machine, self-reported", "today": today_s,
+        "met": met, "hatched": hatched, "together_days": result["story"]["together_days"],
+        "active_days": result["raw"]["active_days"], "estimated_days": len(estimated),
+        "before_hatch": {"days": len(early), "xp": sum(early.values()), "estimated_days": sum(1 for d in early if d in estimated),
+                         "level": level_before, "stage": stage_of(level_before)} if early else None,
+        "events": events, "records": records,
+    }
+
+
+def a_or_an(word):
+    return ("an " if word[0] in "AEIOU" else "a ") + word
+
+
+def story_day(day, today):
+    """ "14 Oct", with the year when it is not this year."""
+    return short_day(day) + ("" if day.startswith(str(today.year)) else " " + day[:4])
+
+
+def story_text(s, today):
+    """The story as text: at most STORY_LINES event lines, with the other level-ups folded into one line."""
+    out = ["", "  Our story · this machine only, self-reported", ""]
+    if not s["before_hatch"] and not any(e["kind"] in ("level", "badge", "best_day") for e in s["events"]) \
+            and s["hatched"] in (None, s["today"]):
+        out.append("  Your story starts today.")
+    shown = [e for e in s["events"] if e["kind"] != "level" or e["level"] % 10 == 0]
+    stage_days = {(e["day"], e["level"]) for e in s["events"] if e["kind"] == "stage"}
+    shown = [e for e in shown if not (e["kind"] == "level" and (e["day"], e["level"]) in stage_days)]
+    # Over the limit: drop level lines first, then class changes and badges, the oldest first.
+    for kind in ("level", "class", "badge"):
+        while len(shown) > STORY_LINES and any(e["kind"] == kind for e in shown):
+            shown.remove(next(e for e in shown if e["kind"] == kind))
+    folded = sum(1 for e in s["events"] if e["kind"] == "level") - sum(1 for e in shown if e["kind"] == "level")
+    dated = []
+    for e in shown:
+        dated.append(("about " if e.get("about") else "") + story_day(e["day"], today))
+    width = max((len(d) for d in dated), default=0)
+    for e, when in zip(shown, dated):
+        k = e["kind"]
+        text = {
+            "met": lambda: "You met Claude Code",
+            "hatched": lambda: "cclevel hatched your creature: %s %s, Lv %d" % (e["stage"], e["class"], e["level"]),
+            "level": lambda: "Lv %d" % e["level"],
+            "stage": lambda: "Evolved into %s (Lv %d)" % (a_or_an(e["stage"]), e["level"]),
+            "badge": lambda: "Badge: " + BADGE_NAMES[e["badge"]],
+            "class": lambda: "Became %s" % a_or_an(e["class"]),
+            "best_day": lambda: "Biggest day yet: {:,} XP".format(e["xp"]),
+        }[k]()
+        out.append("  %s  %s" % (when.ljust(width), text))
+        if k == "hatched" and s["before_hatch"]:
+            b = s["before_hatch"]
+            out.append("  %s  Before that: %s, {:,} XP%s".format(b["xp"]) % (
+                " " * width, count(b["days"], "active day"),
+                " (%d estimated from prompt counts)" % b["estimated_days"] if b["estimated_days"] else ""))
+    if folded:
+        out.append("  %s  +%s" % (" " * width, count(folded, "other level-up")))
+    if any(e.get("about") for e in shown):
+        out += ["", "  \"about\": worked out from older days, some estimated from prompt counts."]
+    out.append("")
+    streak = s["records"]["longest_streak"]
+    tail = ["Together %s" % count(s["together_days"], "day"), count(s["active_days"], "active day")]
+    if streak:
+        a, b = streak["from"], streak["to"]
+        span = story_day(a, today) if a == b else "%d–%s" % (int(a[8:]), story_day(b, today)) if a[:7] == b[:7] \
+            else "%s–%s" % (story_day(a, today) if a[:4] != b[:4] else short_day(a), story_day(b, today))
+        tail.append("longest streak %s (%s)" % (count(streak["days"], "day"), span))
+    out += ["  " + " · ".join(tail), "  Your year so far: /pet wrapped.", ""]
     return "\n".join(out)
 
 
@@ -1385,6 +1821,594 @@ def learn_command(cdir, result, save):
 
 
 # ------------------------------------------------------------ leaderboard
+# ------------------------------------------------------------------ leak finder
+# Where the tokens went over the last weeks, priced with API list prices as a yardstick: never a charge, since most
+# people pay a subscription. Outside the score. Reads only this machine's logs and prints; nothing is stored or sent.
+PRICES_CHECKED = "2026-10-06"
+PRICES_PAGE = "https://platform.claude.com/docs/en/about-claude/pricing"
+# Dollars per million tokens: (input, output, cache read). A cache write is 1.25x input (5 minutes) or 2x (1 hour).
+PRICES = {
+    "claude-opus-5-5": (4, 20, 0.20), "claude-opus-5": (5, 25, 0.5), "claude-opus-4-8": (5, 25, 0.5),
+    "claude-opus-4-7": (5, 25, 0.5), "claude-opus-4-6": (5, 25, 0.5),
+    "claude-sonnet-5-5": (2, 10, 0.20), "claude-sonnet-5": (2, 10, 0.2), "claude-sonnet-4-6": (3, 15, 0.3),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-haiku-4-5": (1, 5, 0.1),
+    "claude-fable-5-1": (10, 50, 0.25), "claude-fable-5": (10, 50, 1),
+}
+FAST_PRICES = {"claude-opus-5-5": (8, 40, 0.40)}      # fast mode; any other model in fast mode has no price here
+HAIKU_LONG = ("claude-haiku-5-5", 100000, (0.50, 2.50, 0.05))   # its price above 100K prompt tokens
+CACHE_5M, CACHE_1H = 1.25, 2
+PAUSE_5M, PAUSE_1H = 300, 3600     # seconds: a reply this long after the one before usually writes the cache again
+LEAK_WEEKS = 4                     # full ISO weeks before this one; logs live 30 days
+LEAK_GAP = 0.15                    # how far the yardstick may sit from Claude Code's own cost figure for a session
+LEAK_NUDGE = 5                     # dollars a week (yardstick) from which the card names the biggest leak, tips on
+LEAK_KINDS = (("input_tokens", "fresh input"), ("cache_creation_input_tokens", "cache writes"),
+              ("cache_read_input_tokens", "cache reads"), ("output_tokens", "output"))
+LEAK_HOW = {
+    "pauses": "before a long break, /compact or start a new session; short pauses keep the cache.",
+    "startup": "keep CLAUDE.md to the rules; move long how-tos into skills.",
+    "compaction": "/compact on your own terms with what to keep, or split long jobs into sessions.",
+    "connectors": "remove the ones you no longer need. /mcp shows them.",
+}
+LEAK_NAMES = {"pauses": "cache lost to pauses", "startup": "start-up context", "compaction": "auto-compaction"}
+LOG_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")   # how Claude Code turns a server name into its mcp__<name>__ prefix
+
+
+def leak_line(extra, line, path):
+    """A compaction or a cost-state line, kept for the leak finder."""
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(o, dict):
+        return
+    if o.get("subtype") == "compact_boundary":
+        meta = as_dict(o.get("compactMetadata"))
+        extra.setdefault("compactions", []).append({
+            "day": day_of(o.get("timestamp")), "time": str(o.get("timestamp") or ""), "file": path,
+            "trigger": str(meta.get("trigger") or "unknown"), "pre": meta.get("preTokens"), "post": meta.get("postTokens")})
+    elif o.get("type") == "cost-state" and isinstance(o.get("totalCostUSD"), (int, float)):
+        extra.setdefault("cost_state", {})[path] = o["totalCostUSD"]
+
+
+def price_of(model, usage):
+    """(input, output, cache read) per million tokens for one reply, or None when this model has no price here."""
+    model = re.sub(r"\[.*\]$", "", str(model))
+    table = FAST_PRICES if usage.get("speed") == "fast" else PRICES
+    for key in sorted(table, key=len, reverse=True):
+        if model == key or model.startswith(key + "-") and model[len(key) + 1:len(key) + 2].isdigit() \
+                and len(model) - len(key) > 2:
+            if key == HAIKU_LONG[0] and sum(num(usage.get(k)) for k, _ in LEAK_KINDS[:3]) > HAIKU_LONG[1]:
+                return HAIKU_LONG[2]
+            return table[key]
+    return None
+
+
+def cache_split(u):
+    """(5-minute, 1-hour) cache write tokens. Without the split, every write counts as a 5-minute one."""
+    c = as_dict(u.get("cache_creation"))
+    if "ephemeral_5m_input_tokens" in c or "ephemeral_1h_input_tokens" in c:
+        return num(c.get("ephemeral_5m_input_tokens")), num(c.get("ephemeral_1h_input_tokens"))
+    return num(u.get("cache_creation_input_tokens")), 0
+
+
+def dollars(model, u):
+    p = price_of(model, u)
+    if p is None:
+        return None
+    w5, w1 = cache_split(u)
+    return (num(u.get("input_tokens")) * p[0] + num(u.get("output_tokens")) * p[1]
+            + num(u.get("cache_read_input_tokens")) * p[2] + w5 * p[0] * CACHE_5M + w1 * p[0] * CACHE_1H) / 1e6
+
+
+def write_dollars(model, u, w5, w1):
+    p = price_of(model, u)
+    return None if p is None else (w5 * p[0] * CACHE_5M + w1 * p[0] * CACHE_1H) / 1e6
+
+
+def seconds(ts):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def session_of(path):
+    """The session a log belongs to: a subagent's log counts with the session that started it."""
+    parts = path.split(os.sep)
+    if "subagents" in parts:
+        return os.sep.join(parts[:parts.index("subagents")]) + ".jsonl"
+    return path
+
+
+def leaks(extra, result, today):
+    """The leak report's numbers and names. Never part of the card's --json or the check-in."""
+    monday = today - timedelta(days=today.weekday())
+    since = monday - timedelta(weeks=LEAK_WEEKS)
+    since_s, until_s, d30 = since.isoformat(), today.isoformat(), (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
+    reqs = [r for r in extra.get("requests", []) if r["day"] and since_s <= r["day"] <= until_s]
+    weeks = []
+    for i in range(LEAK_WEEKS + 1):
+        start = since + timedelta(weeks=i)
+        y, w, _ = start.isocalendar()
+        weeks.append({"week": "%d-W%02d" % (y, w), "since": start.isoformat(), "so_far": i == LEAK_WEEKS,
+                      "tokens": {k: 0 for k, _ in LEAK_KINDS}, "dollars": 0.0})
+    totals, totals_30 = Counter(), Counter()
+    unpriced = defaultdict(int)
+    by_file = defaultdict(list)
+    per_session = defaultdict(float)
+    for r in extra.get("requests", []):
+        if r["day"] and d30 <= r["day"] <= until_s:
+            for k, _ in LEAK_KINDS:
+                totals_30[k] += num(r["usage"].get(k))
+    for r in reqs:
+        u = r["usage"]
+        wk = weeks[min(LEAK_WEEKS, (date.fromisoformat(r["day"]) - since).days // 7)]
+        for k, _ in LEAK_KINDS:
+            wk["tokens"][k] += num(u.get(k))
+            totals[k] += num(u.get(k))
+        cost = dollars(r["model"], u)
+        if cost is None:
+            unpriced[r["model"]] += sum(num(u.get(k)) for k, _ in LEAK_KINDS)
+        else:
+            wk["dollars"] += cost
+            per_session[session_of(r["file"])] += cost
+        r["sec"] = seconds(r["time"])
+        if r["sec"] is not None:
+            by_file[r["file"]].append(r)
+    for rs in by_file.values():
+        rs.sort(key=lambda r: r["sec"])
+    n_weeks = max(1.0, ((today - since).days + 1) / 7)
+    found = []
+
+    # Cache written again after a pause.
+    times, tokens, cost = 0, 0, 0.0
+    for rs in by_file.values():
+        for before, r in zip(rs, rs[1:]):
+            gap = r["sec"] - before["sec"]
+            w5, w1 = cache_split(r["usage"])
+            w5, w1 = (w5 if gap > PAUSE_5M else 0), (w1 if gap > PAUSE_1H else 0)
+            if w5 + w1:
+                times += 1
+                tokens += w5 + w1
+                cost += write_dollars(r["model"], r["usage"], w5, w1) or 0
+    found.append({"code": "pauses", "times": times, "tokens": tokens, "per_week": cost / n_weeks})
+
+    # The start-up context, read by every request: a lower bound, priced as cache reads.
+    ctx = dict(extra.get("context") or {})
+    ctx_tokens = sum(ctx.values())
+    cost = sum((price_of(r["model"], r["usage"]) or (0, 0, 0))[2] for r in reqs) * ctx_tokens / 1e6
+    found.append({"code": "startup", "tokens": ctx_tokens, "parts": ctx, "requests_per_week": round(len(reqs) / n_weeks),
+                  "per_week": cost / n_weeks})
+
+    # Auto-compaction, and the cache the next reply in that log writes again.
+    comps = [c for c in extra.get("compactions", []) if c["day"] and since_s <= c["day"] <= until_s]
+    auto = [c for c in comps if c["trigger"] == "auto"]
+    rewrite, cost = 0, 0.0
+    for c in auto:
+        t = seconds(c["time"])
+        nxt = next((r for r in by_file.get(c["file"], []) if t is not None and r["sec"] > t), None)
+        if nxt:
+            w5, w1 = cache_split(nxt["usage"])
+            rewrite += w5 + w1
+            cost += write_dollars(nxt["model"], nxt["usage"], w5, w1) or 0
+    sizes = [c["pre"] for c in auto if isinstance(c["pre"], (int, float))]
+    sessions = {session_of(r["file"]) for r in reqs}
+    found.append({"code": "compaction", "times": len(auto), "manual": len(comps) - len(auto),
+                  "sessions": len({session_of(c["file"]) for c in auto}), "of_sessions": len(sessions),
+                  "average_before": round(sum(sizes) / len(sizes)) if sizes else None,
+                  "tokens_written_again": rewrite, "per_week": cost / n_weeks})
+
+    # Connectors set up but not called in 30 days: no dollar figure, since tool search keeps idle ones small.
+    called = set()
+    for day, d in (extra.get("days") or {}).items():
+        if d30 <= day <= until_s:
+            called |= {LOG_NAME_RE.sub("_", s) for s in d["servers"]}
+    idle = sorted({shown for name, shown in (extra.get("connectors") or {}).items()
+                   if LOG_NAME_RE.sub("_", name) not in called}, key=str.lower)
+    found.sort(key=lambda f: -f["per_week"])
+    checks = [{"session": os.path.basename(f)[:-6], "yardstick": round(per_session[f], 4), "claude_code": c,
+               "close": abs(per_session[f] - c) <= LEAK_GAP * c}
+              for f, c in sorted((extra.get("cost_state") or {}).items()) if f in per_session]
+    return {"since": since_s, "until": until_s, "prices_checked": PRICES_CHECKED, "prices_page": PRICES_PAGE,
+            "weeks": weeks, "totals": dict(totals), "totals_30d": {k: totals_30[k] for k, _ in LEAK_KINDS},
+            "cache_read_share": (totals["cache_read_input_tokens"] / sum(totals[k] for k, _ in LEAK_KINDS[:3])
+                                 if sum(totals[k] for k, _ in LEAK_KINDS[:3]) else None),
+            "unpriced": dict(unpriced), "leaks": found,
+            "compactions": {"auto": len(auto), "manual": len(comps) - len(auto)},
+            "unused_connectors": idle, "unused_skills": result["raw"].get("skills_unused", 0),
+            "cost_state": checks, "requests": len(reqs)}
+
+
+def tok_short(n):
+    return "%.1fM" % (n / 1e6) if n >= 100000 else "%dk" % round(n / 1000) if n >= 1000 else str(int(n))
+
+
+def money(x):
+    return "$%d" % round(x) if x >= 10 else "$%.2f" % x
+
+
+def leak_card_line(report):
+    """The card's one line about the biggest leak, or None while every leak is small."""
+    top = report["leaks"][0] if report["leaks"] else None
+    if not top or top["per_week"] < LEAK_NUDGE:
+        return None
+    return "Leaks: about %s a week in %s (yardstick). /pet leaks" % (money(top["per_week"]), LEAK_NAMES[top["code"]])
+
+
+def leaks_text(report):
+    if not report["requests"] and not report["compactions"]["auto"] + report["compactions"]["manual"]:
+        return "\n  No session logs in the last 30 days, so no leaks to measure.\n"
+    out = ["", "  Leaks · last %d weeks · this machine only" % LEAK_WEEKS,
+           "  API-price yardstick, not a charge. Prices of %s." % PRICES_CHECKED, ""]
+    labels = [w["week"][-3:] + (" so far" if w["so_far"] else "") for w in report["weeks"]]
+    out.append("  %-18s" % "Where tokens went" + "".join("%12s" % l for l in labels))
+    for k, name in LEAK_KINDS:
+        out.append("   %-17s" % name + "".join("%12s" % tok_short(w["tokens"][k]) for w in report["weeks"]))
+    out.append("   %-17s" % "yardstick" + "".join("%12s" % money(w["dollars"]) for w in report["weeks"]))
+    if report["cache_read_share"] is not None:
+        out.append("  Cache reads: %d%% of all input." % round(100 * report["cache_read_share"]))
+    for model, n in sorted(report["unpriced"].items()):
+        out.append("  %s: %s tokens, no price for this model." % (model, tok_short(n)))
+    out.append("")
+    i = 0
+    for f in report["leaks"]:
+        i += 1
+        if f["code"] == "pauses":
+            if not f["times"]:
+                i -= 1
+                continue
+            out.append("   %d. Cache written again after pauses: %s, %s tokens, about %s a week (yardstick)."
+                       % (i, count(f["times"], "time"), tok_short(f["tokens"]), money(f["per_week"])))
+        elif f["code"] == "startup":
+            p = f["parts"]
+            parts = ", ".join("%s %s" % (name, tok_short(p.get(k, 0))) for k, name in (
+                ("claude_md", "CLAUDE.md"), ("memory_index", "memory index"), ("skill_descriptions", "skill descriptions"),
+                ("project_claude_md", "this folder's CLAUDE.md")) if p.get(k))
+            out.append("   %d. Start-up context about %s tokens (estimate%s)," % (i, tok_short(f["tokens"]),
+                                                                              ": " + parts if parts else ""))
+            out.append("      read by about {:,} requests a week: at least {} a week (yardstick).".format(
+                f["requests_per_week"], money(f["per_week"])))
+        else:
+            if not f["times"]:
+                out.append("   %d. Auto-compaction: none seen in %d weeks%s." % (
+                    i, LEAK_WEEKS, " (%s typed)" % count(f["manual"], "/compact") if f["manual"] else ""))
+            else:
+                size = ", average %s tokens before" % tok_short(f["average_before"]) if f["average_before"] else ""
+                typed = " (and %s typed)" % count(f["manual"], "/compact") if f["manual"] else ""
+                out.append("   %d. Auto-compaction: %s in %d weeks%s, in %d of %s%s." % (
+                    i, count(f["times"], "time"), LEAK_WEEKS, typed, f["sessions"], count(f["of_sessions"], "session"), size))
+                out.append("      The next reply wrote %s tokens of cache again: about %s a week (yardstick)." % (
+                    tok_short(f["tokens_written_again"]), money(f["per_week"])))
+        out.append("      How: " + LEAK_HOW[f["code"]])
+    idle = report["unused_connectors"]
+    i += 1
+    if idle:
+        shown = ", ".join(idle[:10]) + (", and %d more" % (len(idle) - 10) if len(idle) > 10 else "")
+        out += ["   %d. Connectors set up but not called in %d days: %d:" % (i, RECENT_WINDOW_DAYS, len(idle)),
+                "      %s." % shown,
+                "      No dollar figure: with tool search (the default) an idle connector costs little context.",
+                "      Still worth removing: slower start-up and sign-in prompts. /mcp shows them."]
+    else:
+        out.append("   %d. Connectors: every one set up was called in the last %d days." % (i, RECENT_WINDOW_DAYS))
+    if report["unused_skills"]:
+        i += 1
+        out.append("   %d. Own skills unused for %d days: %d (also under Needs on the card)." % (
+            i, USED_WINDOW_DAYS, report["unused_skills"]))
+    checks = report["cost_state"]
+    if checks:
+        off = [c for c in checks if not c["close"]]
+        out += ["", "  Checked against Claude Code's own cost figure in %s: %d within %d%%." % (
+            count(len(checks), "session"), len(checks) - len(off), round(100 * LEAK_GAP))]
+        out += ["   %s: yardstick %s, Claude Code %s." % (c["session"][:8], money(c["yardstick"]), money(c["claude_code"]))
+                for c in off[:5]]
+    out += ["", "  Exact view of this session: /context. Plan use: /usage.", ""]
+    return "\n".join(out)
+
+
+# ------------------------------------------------------------------ timesheet
+# Hours per project from the session logs, in local time. Outside the score. Reads only this machine's logs; the
+# printed view numbers the projects, so names stay out of the conversation. Names and every block go only into
+# timesheet.csv on this machine. Nothing is sent.
+TS_IDLE = 15                       # minutes without activity that end a block (--idle changes it)
+TS_COLUMNS = 5                     # numbered project columns in the printed view; the rest share "others"
+TS_HOME = "(home)"
+TS_HEADER = ["date", "weekday", "start", "end", "minutes", "kind", "project", "project_no", "sessions", "prompts",
+             "tz", "utc_offset"]
+
+
+def idle_minutes(v):
+    try:
+        n = int(v)
+    except ValueError:
+        n = 0
+    if not 1 <= n <= 240:
+        raise argparse.ArgumentTypeError("takes whole minutes from 1 to 240")
+    return n
+
+
+def ts_zone(name):
+    """(tzinfo or None for this machine's zone, the zone's name, a warning or None)."""
+    def machine():
+        tz = os.environ.get("TZ", "")
+        if "/" in tz:
+            return tz.lstrip(":")
+        try:
+            link = os.path.realpath("/etc/localtime")
+            if "zoneinfo" + os.sep in link:
+                return link.split("zoneinfo" + os.sep, 1)[1]
+        except OSError:
+            pass
+        return datetime.now().astimezone().tzname() or "local time"
+    if not name:
+        return None, machine(), None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name), name, None
+    except Exception:   # an unknown name, or no zone database on this machine
+        here = machine()
+        return None, here, "Unknown time zone '%s'. Using this machine's zone (%s)." % (name, here)
+
+
+def ts_local(t, tz):
+    return datetime.fromtimestamp(t, tz) if tz else datetime.fromtimestamp(t).astimezone()
+
+
+def ts_root(cwd, cache, home):
+    """The project a working folder belongs to: the nearest folder at or above it that holds .git, or the folder
+    itself. A worktree under <repo>/.claude/worktrees/<name> counts as <repo>. The home folder and / are (home)."""
+    if cwd in cache:
+        return cache[cwd]
+    path = os.path.normpath(cwd)
+    parts = path.split(os.sep)
+    if ".claude" in parts and parts.index(".claude") + 1 < len(parts) and parts[parts.index(".claude") + 1] == "worktrees":
+        path = os.sep.join(parts[:parts.index(".claude")]) or os.sep
+    if path in (home, os.sep) or re.fullmatch(r"/(Users|home)/[^/]+", path):
+        cache[cwd] = TS_HOME
+        return TS_HOME
+    root, probe = path, path
+    while probe not in (home, os.sep, ""):
+        if os.path.exists(os.path.join(probe, ".git")):
+            root = probe
+            break
+        probe = os.path.dirname(probe)
+    cache[cwd] = root
+    return root
+
+
+def ts_scan(cdir):
+    """Every log line's time, working folder and whether a person typed it, grouped by session (a subagent's log
+    counts with the session that started it). Returns ({session: {"events", "alone"}}, earliest time)."""
+    root = os.path.join(cdir, "projects")
+    files = glob.glob(os.path.join(root, "*", "*.jsonl")) + \
+        glob.glob(os.path.join(root, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
+    sessions = defaultdict(lambda: {"events": [], "alone": False})
+    first = None
+    for path in files:
+        sub = os.sep + "subagents" + os.sep in path
+        s = sessions[session_of(path)]
+        rows, cwd0 = [], None
+        try:
+            fh = open(path, encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"timestamp"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(o, dict) or o.get("type") not in ("user", "assistant", "system", "attachment"):
+                    continue
+                t = seconds(o.get("timestamp"))
+                if t is None:
+                    continue
+                if str(o.get("entrypoint") or "").startswith("sdk"):
+                    s["alone"] = True
+                cwd = o.get("cwd") if isinstance(o.get("cwd"), str) and o.get("cwd") else None
+                cwd0 = cwd0 or cwd
+                prompt = False
+                if o.get("type") == "user" and not sub and not o.get("isMeta") and not o.get("isSidechain"):
+                    c = as_dict(o.get("message")).get("content")
+                    prompt = not (isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                                              for b in c))
+                    if o.get("sessionKind") == "bg":   # a background job: only what a person typed, not notices or peers
+                        prompt = prompt and as_dict(o.get("origin")).get("kind") == "human"
+                rows.append([t, cwd, prompt])
+        for r in rows:
+            if r[1] is None:
+                r[1] = cwd0   # a line without its folder belongs where the log started
+            if r[1] is not None:
+                s["events"].append(tuple(r))
+                first = r[0] if first is None else min(first, r[0])
+    return {k: v for k, v in sessions.items() if v["events"]}, first
+
+
+def ts_blocks(sessions, idle, tz, home):
+    """The CSV rows: one per block, per session and project. A block runs from its first event to its last, start
+    rounded down and end up to the minute, at least 1 minute; a gap longer than `idle` minutes ends it. Each block is
+    split at local midnight and where the UTC offset changes, so every row has one date and one offset."""
+    cache, rows = {}, []
+    for key in sorted(sessions):
+        s = sessions[key]
+        by_project = defaultdict(list)
+        for t, cwd, prompt in s["events"]:
+            by_project[ts_root(cwd, cache, home)].append((t, prompt))
+        for project, evs in by_project.items():
+            evs.sort()
+            blocks = [[evs[0][0], evs[0][0], int(evs[0][1])]]
+            for t, prompt in evs[1:]:
+                if t - blocks[-1][1] > idle * 60:
+                    blocks.append([t, t, 0])
+                blocks[-1][1] = t
+                blocks[-1][2] += prompt
+            for start, end, prompts in blocks:
+                a = int(start // 60)
+                b = max(a + 1, int(-(-end // 60)))
+                kind = "you" if prompts and not s["alone"] else "alone"
+                pieces = []
+                for m in range(a, b):
+                    loc = ts_local(m * 60, tz)
+                    tag = (loc.date(), loc.utcoffset())
+                    if pieces and pieces[-1]["tag"] == tag:
+                        pieces[-1]["b"] = m + 1
+                    else:
+                        pieces.append({"tag": tag, "a": m, "b": m + 1, "project": project, "kind": kind,
+                                       "session": key, "prompts": 0})
+                pieces[0]["prompts"] = prompts   # a block's prompt count sits on its first row
+                rows += pieces
+    return rows
+
+
+def ts_union(spans):
+    """Minutes covered by a set of (start, end) minute spans."""
+    total, reach = 0, None
+    for a, b in sorted(spans):
+        if reach is None or a > reach:
+            total += b - a
+            reach = b
+        elif b > reach:
+            total += b - reach
+            reach = b
+    return total
+
+
+def ts_week(arg, today):
+    """The Monday of the week asked for: this, last or YYYY-Www."""
+    if arg in (None, "this"):
+        return today - timedelta(days=today.weekday())
+    if arg == "last":
+        return today - timedelta(days=today.weekday() + 7)
+    m = re.fullmatch(r"(\d{4})-W(\d{1,2})", arg or "")
+    if m:
+        try:
+            return date.fromisocalendar(int(m.group(1)), int(m.group(2)), 1)
+        except ValueError:
+            pass
+    return None
+
+
+def hm(minutes):
+    if not minutes:
+        return "-"
+    h, m = divmod(int(minutes), 60)
+    return "%dh %02dm" % (h, m) if h else "%dm" % m
+
+
+def ts_offset(delta):
+    mins = int(delta.total_seconds() // 60)
+    return "%s%02d:%02d" % ("-" if mins < 0 else "+", abs(mins) // 60, abs(mins) % 60)
+
+
+def ts_hhmm(m, off, day):
+    """A row's start or end as local HH:MM, in the row's own UTC offset; a row ending at midnight ends at 24:00."""
+    loc = datetime.fromtimestamp(m * 60, timezone(off))
+    return "24:00" if loc.date() > day else loc.strftime("%H:%M")
+
+
+def timesheet(cdir, week=None, idle=TS_IDLE, tz_name=None, names=False, now=None):
+    """The printed view, and timesheet.csv beside the ledger. Returns the text to print."""
+    tz, zone, warning = ts_zone(tz_name)
+    now = now if now is not None else time.time()
+    today = ts_local(now, tz).date()
+    monday = ts_week(week, today)
+    if monday is None:
+        return "cclevel: --timesheet takes this, last or a week like 2026-W45."
+    head = [warning] if warning else []
+    sessions, first = ts_scan(cdir)
+    if not sessions:
+        return "\n".join(head + ["", "  No session logs in the last 30 days, so no timesheet.", ""])
+    home = os.path.normpath(os.path.expanduser("~"))
+    rows = ts_blocks(sessions, idle, tz, home)
+    # Numbers: projects with the most time in the week shown first, then the rest by all their time.
+    days = [monday + timedelta(days=i) for i in range(7)]
+    in_week = [r for r in rows if monday <= r["tag"][0] <= days[-1]]
+    def time_of(rs, p):
+        return ts_union((r["a"], r["b"]) for r in rs if r["project"] == p)
+    projects = sorted({r["project"] for r in rows if r["project"] != TS_HOME},
+                      key=lambda p: (-time_of(in_week, p), -time_of(rows, p), p))
+    number = {p: i + 1 for i, p in enumerate(projects)}
+    base = defaultdict(set)
+    for p in projects:
+        base[os.path.basename(p) or p].add(p)
+    def label(p):
+        if p == TS_HOME:
+            return TS_HOME
+        name = os.path.basename(p) or p
+        return "%s/%s" % (os.path.basename(os.path.dirname(p)), name) if len(base[name]) > 1 else name
+    csv_text = ts_csv(rows, zone, number, label)
+    path = os.path.join(cdir, "cclevel", "timesheet.csv")
+    try:
+        if os.path.islink(path) or (os.path.exists(path) and not os.path.isfile(path)):
+            saved = "Not written: %s is a link or not a plain file. Remove it and run again." % path
+        else:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            write_private(path, csv_text)
+            saved = "Project names and every block: %s (on this machine only)." % path
+    except OSError as e:
+        saved = "Could not write %s (%s)." % (path, e.strerror or type(e).__name__)
+
+    y, w, _ = monday.isocalendar()
+    out = head + ["", "  Timesheet · week %d-W%02d · %s · this machine only" % (y, w, zone),
+                  "  A block ends after %d min without activity. Activity, not proof you were at the desk." % idle, ""]
+    shown = [p for p in projects if time_of(in_week, p)]
+    cols = shown[:TS_COLUMNS]
+    others = shown[TS_COLUMNS:]
+    has_home = any(r["project"] == TS_HOME for r in in_week)
+    heads = ["P%d" % number[p] for p in cols] + (["others"] if others else []) + ([TS_HOME] if has_home else [])
+    out.append("  %-11s%10s%15s" % ("", "with you", "Claude alone") + "".join("%9s" % h for h in heads))
+    week_rows = []
+    for d in days:
+        rs = [r for r in in_week if r["tag"][0] == d]
+        if rs:
+            week_rows.append(("%s %d %s" % (d.strftime("%a"), d.day, d.strftime("%b")), rs))
+    if not week_rows:
+        out.append("   No activity in this week.")
+    total_line = ("Week", in_week)
+    sums = None
+    for title, rs in week_rows + ([total_line] if week_rows else []):
+        if title == "Week":
+            vals = sums
+        else:
+            you = ts_union((r["a"], r["b"]) for r in rs if r["kind"] == "you")
+            alone = ts_union((r["a"], r["b"]) for r in rs) - you
+            vals = [you, alone] + [time_of(rs, p) for p in cols]
+            if others:
+                vals.append(ts_union((r["a"], r["b"]) for r in rs if r["project"] in others))
+            if has_home:
+                vals.append(time_of(rs, TS_HOME))
+            sums = vals if sums is None else [a + b for a, b in zip(sums, vals)]
+        out.append("   %-10s%10s%15s" % (title, hm(vals[0]), hm(vals[1])) + "".join("%9s" % hm(v) for v in vals[2:]))
+    out.append("")
+    if sums and sum(sums[2:]) > sums[0] + sums[1]:
+        out.append("  Projects can add up to more than the day when sessions ran side by side.")
+    if sums and has_home and sums[-1]:
+        out.append("  %s was in sessions started from your home folder: start Claude Code inside a project to split it."
+                   % hm(sums[-1]))
+    if names and shown:
+        out += ["  %-8s%s" % ("P%d" % number[p], label(p)) for p in shown] + [""]
+    elif others:
+        n = [number[p] for p in others]
+        out.append("  others: P%d." % n[0] if len(n) == 1 else "  others: P%d–P%d (%d projects)." % (min(n), max(n), len(n)))
+    out.append("  Logs reach back to %s (Claude Code deletes them after 30 days unless cleanupPeriodDays says otherwise)."
+               % "{d.day} {d:%b} {d.year}".format(d=ts_local(first, tz).date()))
+    out += ["  " + saved, ""]
+    return "\n".join(out)
+
+
+def ts_csv(rows, zone, number, label):
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(TS_HEADER)
+    for r in sorted(rows, key=lambda r: (r["a"], r["b"], r["project"])):
+        day, off = r["tag"]
+        w.writerow([day.isoformat(), day.strftime("%a"), ts_hhmm(r["a"], off, day), ts_hhmm(r["b"], off, day),
+                    r["b"] - r["a"], r["kind"], label(r["project"]), number.get(r["project"], ""), 1, r["prompts"],
+                    zone, ts_offset(off)])
+    return buf.getvalue()
+
+
 # Nothing above this line touches the network. Everything below runs only
 # when the user asks for it by flag, or from the plugin's session-start hook
 # after the user turned auto check-in on with --auto on.
@@ -1406,7 +2430,7 @@ INVITE_LINK_RE = re.compile(r"https?://([^/\s#?]+)\S*?#([0-9a-f]{32})(?![0-9a-f]
 INVITE_CODE_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])")
 GROUP_MAX = 25           # must match the board
 DUEL_DAYS = 7            # must match the board
-CARD_VERSION = 1         # must match the card page, server/public/card.js
+CARD_VERSION = 2         # must match the card page, server/public/card.js
 GH_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")   # GitHub's rule for a login
 
 
@@ -1559,7 +2583,7 @@ def opt_back_in(cdir):
 # join): nothing is sent then either, except the requests that remove data from the board.
 PRIVACY_ON = "Privacy mode is on: cclevel sends nothing. /pet privacy off to use the board."
 STILL_LISTED = "Your row is still on the board: /pet privacy on deletes it."
-PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card or invite link you open in a browser"
+PRIVACY_NOW = ("Privacy mode is on: cclevel sends nothing from now on (a share-card, Wrapped or invite link you open in a browser"
                " still loads its page from the board's website, cclevel.com for the public board). /pet privacy off goes"
                " back to Default mode.")
 
@@ -2055,11 +3079,41 @@ def duel_link(server, code):
 
 def card_link(server, result):
     """The share card's address. Its numbers sit after "#", which browsers never send: the page draws the picture from
-    them. XP, the six stats, the mood, the streak and the badges as bits; the page works out the rest the way this file does."""
+    them. XP, the six stats, the mood, the streak and the badges as bits; the page works out the rest the way this file does.
+    The last number is the creature's look, plus 64 if it is shiny."""
+    marks = result.get("marks") or marks_of(None)
     numbers = [CARD_VERSION, result["xp"], *(result["stats"][s] for s in STAT_ORDER),
                list(MOODS.values()).index(result["mood"]), result["raw"]["current_streak"],
-               sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"])]
+               sum(1 << i for i, b in enumerate(BADGES) if b in result["badges"]),
+               marks["look"] + (LOOKS if marks["shiny"] else 0)]
     return "%s/card#%s" % (site(server), "-".join(str(n) for n in numbers))
+
+
+BADGE_COLOUR = "d97757"   # the brand colour of the README's own badges
+
+
+def badge_part(text):
+    """One part of a shields.io static badge path: "-" and "_" doubled, spaces as "_", then percent-encoded."""
+    return urllib.parse.quote(text.replace("-", "--").replace("_", "__").replace(" ", "_"), safe="_")
+
+
+def readme_badge(server, result, today):
+    """Markdown for a "Lv 42 · Gigachad" badge. The numbers sit in the image address, so nothing looks anything up."""
+    when = "%d %s %d" % (today.day, MONTHS[today.month - 1], today.year)
+    image = "https://img.shields.io/badge/%s-%s-%s" % (
+        badge_part("CC level"), badge_part("Lv %d · %s" % (result["level"], result["stage"])), BADGE_COLOUR)
+    return "[![CC level: Lv %d %s (%s)](%s)](%s)" % (result["level"], result["stage"], when, image, site(server))
+
+
+def readme_badge_text(server, result, today):
+    when = "%d %s %d" % (today.day, MONTHS[today.month - 1], today.year)
+    return "\n".join([
+        "", readme_badge(server, result, today), "",
+        "Paste this into a README. For your GitHub profile, that's the repository named after your login.",
+        "It shows Lv %d as of %s and doesn't update itself. Run /pet readme badge again to refresh it." % (result["level"], when),
+        "Anyone who sees it sees your level next to your name. If your creature is on the world lists, people may be able to "
+        "match the two: /pet world off takes it off the lists. The picture comes from shields.io, a free badge service; "
+        "cclevel sends nothing."])
 
 
 def read_invite(text, server):
@@ -3032,6 +4086,434 @@ def checked_in(cdir, server, ident, token, data, result):
     return 0, ident
 
 
+# ------------------------------------------------------------------ fix
+# /pet fix: the top Fix next item, done after a yes. The plan (--fix) reads and writes nothing. With --yes the scanner
+# backs up every file the plan names into ~/.claude/cclevel/fixes/<time>-<code>/ first. Only one fix is automatic: moving
+# unused own skills (a plain, local, exactly reversible move). The rest are made by Claude in the user's session, so
+# Claude Code shows the diff, or are advice only. Never run from the hook, the band or the panel. Nothing is sent.
+FIX_CLASS = {"unused_skills": "auto", "heavy_context": "assisted", "brains_1": "assisted", "brains_3": "assisted",
+             "brains_4": "assisted", "brains_5": "assisted", "brains_6": "assisted", "brains_7": "assisted",
+             "brains_8": "assisted", "brains_9": "assisted"}
+FIX_DENY_RULE = "Read(./.env)"
+FIX_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+CLASS_TEXT = {"auto": "automatic, after your yes. Reversible.",
+              "assisted": "Claude makes this change and shows you the diff first. Backup first, reversible."}
+
+
+def tilde(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def tree_hash(path):
+    """SHA-256 of a file, or of a folder's names and bytes in order. A link is hashed as its target text, never followed."""
+    h = hashlib.sha256()
+    if os.path.islink(path):
+        h.update(b"link:" + os.readlink(path).encode())
+    elif os.path.isfile(path):
+        with open(path, "rb") as f:
+            h.update(f.read())
+    elif os.path.isdir(path):
+        for top, dirs, files in os.walk(path):
+            dirs.sort()
+            for name in sorted(dirs + files):
+                full = os.path.join(top, name)
+                h.update(os.path.relpath(full, path).encode() + b"\0")
+                if os.path.islink(full):
+                    h.update(b"link:" + os.readlink(full).encode())
+                elif os.path.isfile(full):
+                    with open(full, "rb") as f:
+                        h.update(f.read())
+    else:
+        return None
+    return h.hexdigest()
+
+
+def fingerprint(path):
+    """A quick identity for a plan: each name under `path` with its size and change time. Reads no file contents."""
+    out = []
+    for top, dirs, files in os.walk(path) if os.path.isdir(path) and not os.path.islink(path) else [("", [], [path])]:
+        dirs.sort()
+        for name in sorted(files + dirs):
+            full = os.path.join(top, name)
+            try:
+                st = os.lstat(full)
+                out.append((os.path.relpath(full, path) if top else "", st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+            except OSError:
+                out.append((full, None))
+    return out
+
+
+def in_git(path):
+    """True if `path` sits in a git work tree (a .git anywhere above it). Read from the folders only; git is not run."""
+    path = os.path.realpath(path)
+    while True:
+        if os.path.lexists(os.path.join(path, ".git")):
+            return True
+        up = os.path.dirname(path)
+        if up == path:
+            return False
+        path = up
+
+
+def fixes_dir(cdir):
+    return os.path.join(cdir, "cclevel", "fixes")
+
+
+def settings_refusal(path):
+    if os.path.islink(path):
+        return "Your settings.json is a link, so cclevel will not change it. Add the change yourself:"
+    if os.path.exists(path) and not isinstance(load_json(path), dict):
+        return "Your settings.json does not parse, so cclevel will not touch it. Fix it first (claude /doctor), then try again."
+    if not os.access(path if os.path.exists(path) else os.path.dirname(path), os.W_OK):
+        return "Your settings.json is write-protected, so cclevel will not change it. Add the change yourself:"
+    return None
+
+
+def linked_into(moves):
+    """The first folder in moves that a link in a kept sibling (or its direct children) points into, else None."""
+    real = [(m, os.path.realpath(m) + os.sep) for m in moves]
+    for base in sorted({os.path.dirname(m) for m in moves}):
+        try:
+            kept = [os.path.join(base, e) for e in os.listdir(base) if os.path.join(base, e) not in moves]
+        except OSError:
+            continue
+        for k in kept:
+            links = [k]
+            if os.path.isdir(k) and not os.path.islink(k):
+                try:
+                    links += [os.path.join(k, e) for e in os.listdir(k)]
+                except OSError:
+                    pass
+            for link in links:
+                if os.path.islink(link):
+                    target = os.path.realpath(link) + os.sep
+                    for m, r in real:
+                        if target.startswith(r):
+                            return m
+    return None
+
+
+def fix_plan(cdir, result, extra, code, name=None):
+    """What a fix would do: {code, need, cls, targets [(path, action)], change [lines], when, refusal, id}. Reads only."""
+    need = next((n for n in result["needs"] if n["code"] == code), None)
+    plan = {"code": code, "need": need, "cls": FIX_CLASS.get(code, "advice"), "targets": [], "change": [],
+            "when": "", "refusal": None}
+    if need is None:
+        return plan
+    gain = "%s +%d" % (need["stat"].capitalize(), need["gain"])
+    plan["when"] = "%s now" % gain
+    how = HOWTO.get(code, ("", ""))[0]
+    agents = os.path.join(cdir, "agents")
+    name = name or ""
+    if name and not FIX_NAME.match(name):
+        plan["refusal"] = "A name is lower-case letters, digits and dashes, up to 40 characters."
+    if code == "unused_skills":
+        moves = []
+        for skill in extra.get("unused_names", []):
+            for base in ("skills", "commands"):
+                folder = os.path.join(cdir, base, skill)
+                if os.path.isfile(os.path.join(folder, "SKILL.md")):
+                    moves.append(folder)
+        bases = {os.path.dirname(m) for m in moves}
+        git = [b for b in sorted(bases) if in_git(b)]
+        try:
+            dev = os.stat(cdir).st_dev
+            far = [m for m in moves if os.lstat(m).st_dev != dev]
+        except OSError:
+            far = moves
+        if git:
+            plan["refusal"] = ("Your %s folder is a git repository, so cclevel will not move folders in it. Move them yourself:"
+                               % os.path.basename(git[0]))
+        elif linked_into(moves):
+            plan["refusal"] = ("A skill you keep links into %s, so moving it would break that skill. Move them yourself:"
+                               % os.path.basename(linked_into(moves)))
+        elif any(os.path.islink(m) for m in moves):
+            plan["refusal"] = "One of these skill folders is a link, so cclevel will not move it. Move them yourself:"
+        elif far:
+            plan["refusal"] = "One of these folders is on another disk, so cclevel will not move it. Move them yourself:"
+        plan["targets"] = [(m, "move") for m in moves]
+        if "health_without_unused" in extra:
+            plan["when"] = "Health +%d now" % (extra["health_without_unused"] - result["health"])
+        where = sorted({tilde(b) for b in bases}) or [tilde(os.path.join(cdir, "skills"))]
+        plan["change"] = ["Moves these folders out of %s into %s:" % (" and ".join(where),
+                                                                     tilde(os.path.join(fixes_dir(cdir), "<time>-unused_skills")) + "/"),
+                          "  " + ", ".join(os.path.basename(m) for m in moves)]
+    elif code in ("brains_7", "brains_8"):
+        path = os.path.join(cdir, "settings.json")
+        plan["refusal"] = plan["refusal"] or settings_refusal(path)
+        plan["targets"] = [(path, "edit" if os.path.exists(path) else "create")]
+        if code == "brains_7":
+            plan["change"] = ["Adds to permissions.deny in %s: \"%s\"" % (tilde(path), FIX_DENY_RULE)]
+        else:
+            plan["change"] = ["Adds a Stop hook to %s, with a command you pick (for example a sound when Claude finishes)."
+                              % tilde(path)]
+            plan["when"] = "%s after the hook runs once" % gain
+    elif code == "brains_9":
+        files = sorted(glob.glob(os.path.join(agents, "*.md")))
+        bare = [p for p in files if not field(frontmatter(read_head(p)), "model") and not os.path.islink(p)]
+        if not bare:
+            plan["cls"] = "advice"
+            how = "ask Claude to create a subagent first, then give it model: haiku in its frontmatter"
+        else:
+            plan["targets"] = [(bare[0], "edit")]
+            plan["change"] = ["Adds model: haiku to the frontmatter of %s." % tilde(bare[0])]
+            plan["when"] = "%s after it does real work" % gain
+    elif code in ("brains_5", "brains_6"):
+        path = os.path.join(agents, "%s.md" % (name or ("code-reviewer" if code == "brains_6" else "researcher")))
+        if os.path.lexists(path):
+            plan["cls"] = "advice"
+            how = "you have %s already: ask Claude to use it" % tilde(path)
+        else:
+            plan["targets"] = [(path, "create")]
+            plan["change"] = ["Creates a new subagent %s (%s)." % (
+                tilde(path), "a code reviewer to run after each change" if code == "brains_6" else "for research and reading")]
+            plan["when"] = "%s after you use it" % gain
+    elif code == "brains_3":
+        path = os.path.join(cdir, "skills", name or "my-task", "SKILL.md")
+        if os.path.lexists(os.path.dirname(path)):
+            plan["refusal"] = plan["refusal"] or "A skill with that name exists. Pick another name: /pet fix brains_3 NAME"
+        plan["targets"] = [(path, "create")]
+        plan["change"] = ["Creates a new skill %s from a task you name (rename it: /pet fix brains_3 NAME)." % tilde(path)]
+        plan["when"] = "%s after you use 3 own skills" % gain
+    elif code == "brains_4":
+        used = [s for s in sorted(extra.get("own_used", []))
+                if os.path.isfile(os.path.join(cdir, "skills", s, "SKILL.md"))]
+        if not used:
+            plan["cls"] = "advice"
+            how = "use one of your own skills first, then put a script next to its SKILL.md"
+        else:
+            path = os.path.join(cdir, "skills", used[0], "scripts", "%s.py" % (name or "helper"))
+            plan["refusal"] = plan["refusal"] or ("That script exists. Pick another name." if os.path.lexists(path) else None)
+            plan["targets"] = [(path, "create"), (os.path.join(cdir, "skills", used[0], "SKILL.md"), "edit")]
+            plan["change"] = ["Creates %s and adds one line to that skill's SKILL.md saying when to run it." % tilde(path)]
+            plan["when"] = "%s after you use the skill" % gain
+    elif code == "heavy_context":
+        path = os.path.join(cdir, "CLAUDE.md")
+        if not os.path.isfile(path) or os.path.islink(path):
+            plan["cls"] = "advice"
+        else:
+            skill = os.path.join(cdir, "skills", name or "claude-md-howtos", "SKILL.md")
+            plan["targets"] = [(path, "edit"), (skill, "create")]
+            plan["change"] = ["Moves long how-tos out of %s into a new skill %s." % (tilde(path), tilde(skill)),
+                              "Claude shows the trim as a diff before writing."]
+            plan["when"] = "Health up to +%d now, by how much is moved" % need["gain"]
+    elif code == "brains_1":
+        path = os.path.join(os.getcwd(), "CLAUDE.md")
+        if os.path.lexists(path):
+            plan["cls"] = "advice"
+            how = "this folder has a CLAUDE.md already: open Claude Code here once so it counts"
+        else:
+            plan["targets"] = [(path, "create")]
+            plan["change"] = ["Creates a starter CLAUDE.md for this folder: %s" % tilde(path)]
+            plan["when"] = "%s after your next session in this folder" % gain
+    plan["how"] = how
+    if plan["cls"] == "advice":
+        plan["targets"], plan["change"] = [], []
+    for path, action in plan["targets"]:
+        if action == "edit" and os.path.islink(path):
+            plan["refusal"] = plan["refusal"] or "%s is a link, so cclevel will not touch it." % tilde(path)
+    ident = json.dumps([code, name, [(p, a, fingerprint(p)) for p, a in plan["targets"]]])
+    plan["id"] = hashlib.sha256(ident.encode()).hexdigest()[:8]
+    return plan
+
+
+def fix_plan_text(plan, rank, name=None):
+    need = plan["need"]
+    out = ["  Fix next #%d: %s" % (rank, need_text(need))]
+    if plan["cls"] == "advice":
+        kind = "a habit, not a setting" if plan["code"] in ("interrupts", "brains_10", "brains_2") else "for you, not a file"
+        out.append("  This one is %s: %s." % (kind, plan["how"]))
+        return out
+    if plan["refusal"]:
+        out.append("  " + plan["refusal"])
+        out += ["  " + line for line in plan["change"]] if "yourself" in plan["refusal"] else []
+        return out
+    out.append("  Class: " + CLASS_TEXT[plan["cls"]])
+    out += ["  " + line for line in plan["change"]]
+    out.append("  Gain: %s." % plan["when"])
+    out.append("  Undo: /pet fix undo puts %s back." % ("them" if len(plan["targets"]) > 1 else "it"))
+    out.append("  To apply: --fix %s%s --plan %s --yes" % (plan["code"], " --fix-name " + name if name else "", plan["id"]))
+    return out
+
+
+def fix_command(args, cdir, result, extra, real=False):
+    """--fix [CODE] prints the plan; with --plan ID --yes it backs up and, for the automatic fix, applies it."""
+    needs = result["needs"]
+    code = args.fix
+    if code and code not in (n["code"] for n in needs):
+        print("  %s is not on your Needs list right now, so there is nothing to fix." % code)
+        return 0
+    if not needs:
+        print("  Needs: nothing right now. Nothing to fix.")
+        return 0
+    if not code:
+        out = []
+        for i, n in enumerate(needs):
+            plan = fix_plan(cdir, result, extra, n["code"], args.fix_name)
+            if plan["cls"] != "advice":
+                if i:
+                    out.append("  The next one I can fix:")
+                print("\n".join(out + fix_plan_text(plan, i + 1, args.fix_name)))
+                return 0
+            out += fix_plan_text(plan, i + 1)
+        print("\n".join(out + ["  None of your Needs is a setting cclevel can change. The How lines above say what to do."]))
+        return 0
+    rank = [n["code"] for n in needs].index(code) + 1
+    plan = fix_plan(cdir, result, extra, code, args.fix_name)
+    if not args.yes or plan["cls"] == "advice" or plan["refusal"]:
+        print("\n".join(fix_plan_text(plan, rank, args.fix_name)))
+        if args.yes and plan["cls"] == "advice":
+            print("  Nothing was changed.")
+        return 1 if args.yes and plan["refusal"] else 0
+    if args.plan != plan["id"]:
+        print("  The plan changed since you saw it (or no --plan was given). Nothing was changed. Run /pet fix again.")
+        return 1
+    return fix_apply(cdir, plan, result, real)
+
+
+def write_refused(err):
+    """True when the system said no (permissions, or Claude Code's sandbox), not that something is in the way."""
+    return isinstance(err, PermissionError) or err.errno == errno.EROFS
+
+
+def fix_refused(where):
+    print("  Claude Code's sandbox or the folder's permissions stopped cclevel from writing in %s. Nothing was changed."
+          " Once you agree, you can run it again outside the sandbox." % tilde(where))
+    return 1
+
+
+def private_dir(path):
+    """Makes a 700 folder for cclevel, refusing a link or a file in the way. True if it is a plain folder now."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as err:
+        if write_refused(err):
+            raise
+        return False
+    st = os.lstat(path)
+    return stat.S_ISDIR(st.st_mode)
+
+
+def fix_apply(cdir, plan, result, real=False):
+    base = os.path.join(cdir, "cclevel")
+    try:
+        plain = private_dir(base) and private_dir(fixes_dir(cdir))
+    except OSError:
+        return fix_refused(fixes_dir(cdir))
+    if not plain:
+        print("  %s is not a plain folder, so cclevel will not save a backup there. Nothing was changed." % tilde(fixes_dir(cdir)))
+        return 1
+    fid = "%s-%s" % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ"), plan["code"])
+    folder = os.path.join(fixes_dir(cdir), fid)
+    try:
+        os.mkdir(folder, 0o700)
+        os.mkdir(os.path.join(folder, "files"), 0o700)
+    except OSError as err:
+        if write_refused(err):
+            return fix_refused(fixes_dir(cdir))
+        print("  Something is in the way at %s, so cclevel will not save a backup there. Nothing was changed." % tilde(folder))
+        return 1
+    entries = []
+    for i, (path, action) in enumerate(plan["targets"]):
+        e = {"path": path, "action": action, "backup": os.path.join("files", str(i)), "sha256_before": tree_hash(path)}
+        if action == "edit":
+            e["mode"] = stat.S_IMODE(os.lstat(path).st_mode)
+            shutil.copy2(path, os.path.join(folder, e["backup"]), follow_symlinks=False)
+            os.chmod(os.path.join(folder, e["backup"]), 0o600)
+        entries.append(e)
+    manifest = {"version": 1, "id": fid, "code": plan["code"], "class": plan["cls"], "made": fid[:18], "entries": entries}
+    mpath = os.path.join(folder, "manifest.json")
+    write_private(mpath, json.dumps(manifest, indent=1))
+    if plan["cls"] != "auto":
+        print("  Backup saved in %s/. Claude now makes this change:" % tilde(folder))
+        print("\n".join("  " + line for line in plan["change"]))
+        print("  Then run /pet to confirm. Undo: /pet fix undo.")
+        return 0
+    done = []
+    try:
+        for e in entries:
+            os.rename(e["path"], os.path.join(folder, e["backup"]))
+            done.append(e)
+    except OSError as err:
+        for e in reversed(done):
+            os.rename(os.path.join(folder, e["backup"]), e["path"])
+        manifest["undone"] = True
+        write_private(mpath, json.dumps(manifest, indent=1))
+        if write_refused(err):
+            return fix_refused(os.path.dirname(e["path"]))
+        print("  Could not move %s (%s). Everything is back as it was." % (tilde(e["path"]), err.strerror or type(err).__name__))
+        return 1
+    manifest["applied"] = True
+    write_private(mpath, json.dumps(manifest, indent=1))
+    after = score(cdir, machine_jobs=real, save=False)
+    print("  Moved %s into %s/." % (count(len(entries), "folder"), tilde(folder)))
+    print("  Health %d → %d. Undo: /pet fix undo puts them back." % (result["health"], after["health"]))
+    return 0
+
+
+def fix_undo(cdir):
+    """Puts the latest fix back from its manifest. The current versions go into the fix folder; nothing is deleted."""
+    root = fixes_dir(cdir)
+    if os.path.islink(root) or os.path.islink(os.path.join(cdir, "cclevel")):
+        print("  %s is a link, so cclevel will not undo from it." % tilde(root))
+        return 1
+    manifests = []
+    for name in sorted(os.listdir(root), reverse=True) if os.path.isdir(root) else []:
+        folder = os.path.join(root, name)
+        m = load_dict(os.path.join(folder, "manifest.json"))
+        if not os.path.islink(folder) and isinstance(m.get("entries"), list) and not m.get("undone"):
+            manifests.append((folder, m))
+    if not manifests:
+        print("  Nothing to undo.")
+        return 0
+    folder, m = manifests[0]
+    for e in m["entries"]:
+        path, backup = e.get("path"), os.path.join(folder, str(e.get("backup")))
+        if not isinstance(path, str) or not os.path.isabs(path):
+            print("  The fix list in %s is not one cclevel wrote. Nothing was changed." % tilde(folder))
+            return 1
+        if os.path.islink(path) or os.path.islink(os.path.dirname(path)):
+            print("  %s is now a link, so cclevel will not put the backup there. Nothing was changed." % tilde(path))
+            return 1
+        moved = e.get("action") == "move" and m.get("applied")
+        if e.get("action") == "edit" or moved:
+            if os.path.islink(backup) or tree_hash(backup) != e.get("sha256_before"):
+                print("  The backup of %s is missing or changed, so cclevel will not restore it. Nothing was changed."
+                      % tilde(path))
+                return 1
+    replaced = os.path.join(folder, "replaced")
+    try:
+        os.mkdir(replaced, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as err:
+        if write_refused(err):
+            return fix_refused(root)
+        print("  Something is in the way at %s, so cclevel will not undo from there. Nothing was changed." % tilde(replaced))
+        return 1
+    back = 0
+    for i, e in enumerate(m["entries"]):
+        path, backup = e["path"], os.path.join(folder, e["backup"])
+        if e["action"] == "move" and not m.get("applied"):
+            continue
+        if os.path.lexists(path):
+            os.rename(path, os.path.join(replaced, str(i)))
+        if e["action"] in ("move", "edit"):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.rename(backup, path)
+            if "mode" in e:
+                os.chmod(path, e["mode"])
+            back += 1
+    m["undone"] = True
+    write_private(os.path.join(folder, "manifest.json"), json.dumps(m, indent=1))
+    what = "folder" if m.get("code") == "unused_skills" else "file"
+    print("  Put back %s from %s. The versions they replaced are in that folder." % (count(back, what), m.get("id")))
+    return 0
+
+
 def main():
     default_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     # Whole flag names only: an abbreviation such as --ye would otherwise count as --yes.
@@ -3043,6 +4525,10 @@ def main():
     ap.add_argument("--yes", action="store_true",
                     help="with --join, --world on, --auto on, --panel on, --privacy off, a group or duel start or join, or --verify-github: "
                          "do not ask again")
+    ap.add_argument("--names", action="store_true", help="with --timesheet: show project names (for your own terminal)")
+    ap.add_argument("--idle", metavar="MIN", type=idle_minutes, default=TS_IDLE,
+                    help="with --timesheet: minutes without activity that end a block, 1 to 240 (default: %(default)s)")
+    ap.add_argument("--tz", metavar="AREA/CITY", help="with --timesheet: the time zone (default: this machine's)")
     board = ap.add_mutually_exclusive_group()
     board.add_argument("--preview", action="store_true", help="print exactly what a check-in would send; sends and saves nothing")
     board.add_argument("--join", action="store_true", help="join the leaderboard (asks first)")
@@ -3066,8 +4552,26 @@ def main():
     board.add_argument("--card", action="store_true", help="print a link that draws your card as a picture to save and post; sends nothing")
     board.add_argument("--wrapped", metavar="YEAR", nargs="?", type=int, const=THIS_YEAR,
                        help="your year in review from this machine's ledger (default: this year); sends nothing")
+    board.add_argument("--story", action="store_true",
+                       help="our story: a timeline of you and your creature from this machine's ledger; sends nothing")
+    board.add_argument("--readme-badge", action="store_true",
+                       help="Markdown for a \"Lv 42 · Gigachad\" badge for a README or GitHub profile; the picture comes from "
+                            "shields.io; sends nothing")
+    board.add_argument("--evolve", action="store_true",
+                       help="a ready X post with your stage, class and level and a link to your class's page; sends nothing")
     board.add_argument("--learn", action="store_true",
                        help="the training path: five lessons per stat, ticked by what your logs show; sends nothing")
+    board.add_argument("--leaks", action="store_true",
+                       help="leak finder: where your tokens went over the last weeks, priced as an API yardstick; sends and "
+                            "saves nothing")
+    board.add_argument("--timesheet", metavar="WEEK", nargs="?", const="this",
+                       help="hours per project from your session logs, in local time: this (default), last or 2026-W45; "
+                            "projects are numbered, names go only to timesheet.csv on this machine; sends nothing")
+    board.add_argument("--fix", metavar="CODE", nargs="?", const="",
+                       help="plan the top Fix next item (or CODE); writes nothing. With --plan ID --yes: backs up, then applies")
+    board.add_argument("--fix-undo", action="store_true", help="put back the latest fix from its backup")
+    ap.add_argument("--plan", metavar="ID", help=argparse.SUPPRESS)
+    ap.add_argument("--fix-name", metavar="NAME", help="a name for a new skill, subagent or script a fix creates")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
     board.add_argument("--panel", choices=("on", "off"),
@@ -3109,15 +4613,42 @@ def main():
         except (OSError, subprocess.SubprocessError) as e:
             print("cclevel: could not set up the panel (%s)." % (getattr(e, "strerror", None) or type(e).__name__))
         sys.exit(1)
+    if args.timesheet is not None:
+        text = timesheet(cdir, args.timesheet, args.idle, args.tz, args.names)
+        print(text)
+        sys.exit(1 if text.startswith("cclevel:") else 0)
+    if args.fix_undo:
+        sys.exit(fix_undo(cdir))
     # Machine-level sources (scheduled jobs, ~/.claude.json) belong to the real folder only.
     real = os.path.realpath(cdir) == os.path.realpath(default_dir)
-    result = score(cdir, machine_jobs=real, save=not (args.no_save or args.preview))
+    extra = {}   # the leak finder's names and numbers: never in the card's --json or a check-in
+    quiet = args.no_save or args.preview or args.readme_badge or args.evolve or args.leaks or args.fix is not None
+    result = score(cdir, machine_jobs=real, save=not quiet, extra=extra)
+    if args.fix is not None:
+        sys.exit(fix_command(args, cdir, result, extra, real))
+    if args.leaks:
+        report = leaks(extra, result, datetime.now(timezone.utc).date())
+        print(json.dumps(report, indent=1) if args.json else leaks_text(report))
+        return
+    # A folder with no Claude Code activity has no creature yet, so it gets no seed either.
+    result["marks"] = creature_marks(cdir, save=result["raw"]["active_days"] > 0 and not quiet)
     if args.wrapped is not None:
         today = datetime.now(timezone.utc).date()
         year = today.year if args.wrapped is THIS_YEAR else args.wrapped
         if not FIRST_YEAR <= year <= today.year:
             sys.exit("cclevel: --wrapped takes a year from %d to %d" % (FIRST_YEAR, today.year))
-        print(wrapped(cdir, year, today))
+        print(wrapped(cdir, year, today, resolve_server(args, load_identity(cdir))))
+        return
+    if args.story:
+        today = datetime.now(timezone.utc).date()
+        s = story(cdir, result, today)
+        print(json.dumps(s, indent=1) if args.json else story_text(s, today))
+        return
+    if args.readme_badge:
+        print(readme_badge_text(resolve_server(args, load_identity(cdir)), result, datetime.now(timezone.utc).date()))
+        return
+    if args.evolve:
+        print(evolve_text(resolve_server(args, load_identity(cdir)), result, datetime.now(timezone.utc).date()))
         return
     if args.learn:
         sys.exit(learn_command(cdir, result, save=not args.no_save))
@@ -3136,7 +4667,9 @@ def main():
     if args.json:
         # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
         # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
-        print(json.dumps(dict({k: v for k, v in result.items() if k != "lessons"}, art=ART[result["stage"]],
+        marks = result["marks"]
+        print(json.dumps(dict({k: v for k, v in result.items() if k not in ("lessons", "hatch_due")},
+                              art=marked_art(result["stage"], marks["look"], marks["shiny"]),
                               **panel_extras(cdir, result), **friends_view(cdir, result)), indent=1))
     else:
         how, tip = training_extras(cdir, result, save=not args.no_save)
@@ -3144,7 +4677,10 @@ def main():
         # itself uses gets the session-start hook, so only that one joins by itself.
         token = load_identity(cdir).get("token")
         board = privacy_state(cdir) or ("on" if token else "soon" if real else "off")
-        print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token)))
+        leak = leak_card_line(leaks(extra, result, datetime.now(timezone.utc).date())) if how else None
+        print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token), leak=leak))
+        if result["hatch_due"] and not args.no_save:
+            record_hatch(cdir)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Your Wrapped · CC level</title>
+<link rel="stylesheet" href="/board.css">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.png" type="image/png" sizes="48x48">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="CC level">
+<meta property="og:title" content="A CC level Wrapped">
+<meta property="og:description" content="A year with Claude Code in five story images. What's yours? No account, drawn in your browser.">
+<meta property="og:url" content="https://cclevel.com/wrapped">
+<meta property="og:image" content="https://cclevel.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A pixel creature in Claude orange above the question: How big is your Claude Code?">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+<nav class="nav" aria-label="Site">
+<a class="brand" href="/"><span class="hl">CC</span> level</a>
+<ul>
+<li><a href="/#board">Board</a></li>
+<li><a href="/how">How it works</a></li>
+<li><a href="https://github.com/Spider333/cclevel">GitHub ↗</a></li>
+</ul>
+</nav>
+<main>
+<header class="hero">
+<p class="prompt" aria-hidden="true"><span class="path">~/world</span> <span class="dollar">$</span> cclevel --wrapped<span class="cursor">▌</span></p>
+<div class="meta">wrapped</div>
+<h1 id="title">Your Wrapped<span class="dot">.</span></h1>
+<p class="tagline">Five images for your story. Save them, post them, ask friends for theirs.</p>
+</header>
+
+<section class="share" id="share" aria-label="Your five story images" hidden>
+<div class="ctas">
+<button class="btn primary" type="button" id="save-all">Save all 5</button>
+<button class="btn" type="button" id="share-all" hidden>Share</button>
+</div>
+<p class="note" id="said" aria-live="polite"></p>
+<div class="stories" id="stories"></div>
+<p class="note">On your phone? Send this link to yourself and open it there to share straight to a story. The link holds your numbers, so it goes only where you send it.</p>
+<ul class="cmds">
+<li><code data-copy class="wrap" id="caption">My year with Claude Code. What's yours? cclevel.com</code></li>
+</ul>
+</section>
+
+<section class="how" aria-labelledby="own-title">
+<h2 id="own-title">// make your own</h2>
+<ol class="steps">
+<li><b>Install</b> in Claude Code:
+<ul class="cmds">
+<li><code data-copy>/plugin marketplace add Spider333/cclevel</code></li>
+<li><code data-copy>/plugin install cclevel@cclevel</code></li>
+</ul></li>
+<li><b>Run</b> <code>/pet wrapped</code> for your year, then open the link it prints.</li>
+</ol>
+</section>
+
+<div class="state" id="broken" hidden>
+<b>This Wrapped link is incomplete.</b>
+<p>Run <code>/pet wrapped</code> again for a fresh one.</p>
+</div>
+
+<footer>
+<p><a href="/">The world board</a> · <a href="https://github.com/Spider333/cclevel">Source on GitHub</a> · <a href="https://github.com/Spider333/cclevel/blob/main/PRIVACY.md">Privacy</a>. The numbers after <code>#</code> stay in your browser: this page draws the pictures here and sends nothing.</p>
+<p>Run by Amagi Labs LLC, Sheridan, Wyoming, USA. Questions about your data: <!--email_off-->cclevel.grimace562@passmail.net<!--/email_off--></p>
+</footer>
+</main>
+<script src="/wrapped.js"></script>
+</body>
+</html>

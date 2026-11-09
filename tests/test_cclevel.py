@@ -4,8 +4,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import plistlib
+import random
 import re
 import shutil
 import socket
@@ -16,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zlib
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -359,7 +362,7 @@ class Scanner(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(done.exception.code, 0)
         self.assertEqual(events, [])
-        self.assertIn("  %s/card#1-" % cclevel.PUBLIC_SITE, out.getvalue())   # the public board's card opens on its website
+        self.assertIn("  %s/card#2-" % cclevel.PUBLIC_SITE, out.getvalue())   # the public board's card opens on its website
         self.assertIn("Opening the link is a visit to cclevel.com, which Cloudflare's sampled visit logs may keep with your IP address",
                       out.getvalue())
 
@@ -425,9 +428,41 @@ class Scanner(unittest.TestCase):
         for stage, lines in cclevel.ART.items():
             drawn = re.search(r'(?:"%s"|\b%s): (\[.*?\]),\n' % (re.escape(stage), re.escape(stage)), art).group(1)
             self.assertEqual(json.loads(drawn), lines, stage)
+        # The markings tables, too: the page must draw the same marked art for every look.
+        self.assertEqual(int(re.search(r"var LOOKS = (\d+);", card).group(1)), cclevel.LOOKS)
+        for name in ("EYES", "MOUTHS"):
+            self.assertEqual(re.search(r'var %s = "([^"]+)";' % name, card).group(1), getattr(cclevel, name), name)
+        self.assertEqual(dict(re.findall(r'(\w+): "([^"]+)"', re.search(r"var CRESTS = \{(.*?)\};", card).group(1))), cclevel.CRESTS)
+        slots = re.search(r"var MARK_SLOTS = \{(.*?\n)\t\};", card, re.S).group(1)
+        for stage, mine in cclevel.MARK_SLOTS.items():
+            line = re.search(r'(?:"%s"|\b%s): \{(.*?)\},\n' % (re.escape(stage), re.escape(stage)), slots).group(1)
+            drawn = json.loads("{%s}" % re.sub(r"(\w+):", r'"\1":', line))
+            self.assertEqual(drawn, {k: [list(v) for v in at] if k == "eyes" else list(at) for k, at in mine.items()}, stage)
         for page in (card, duel_page):
             for call in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "import(", ".src ="):
                 self.assertNotIn(call, page)
+
+    def test_the_wrapped_page_reads_its_link_the_way_this_file_writes_it(self):
+        with open(os.path.join(ROOT, "server", "public", "wrapped.js"), encoding="utf-8") as f:
+            page = f.read()
+        for name in ("WRAPPED_VERSION", "FIRST_YEAR", "DAY_CAP"):
+            self.assertEqual(int(re.search(r"var %s = (\d+);" % name, page).group(1)), getattr(cclevel, name), name)
+        self.assertEqual(int(re.search(r"var COUNT = (\d+);", page).group(1)), 41)
+        for name, mine in (("STAT_ORDER", cclevel.STAT_ORDER), ("WRAPPED_CLASSES", cclevel.WRAPPED_CLASSES), ("MONTHS", cclevel.MONTHS)):
+            self.assertEqual(re.findall(r'"([^"]+)"', re.search(r"var %s = \[(.*?)\];" % name, page).group(1)), list(mine), name)
+        pairs = re.findall(r'\[(\d+), "([^"]+)"\]', re.search(r"var STAGES = \[(.*?)\];", page).group(1))
+        self.assertEqual([(int(floor), title) for floor, title in pairs], list(cclevel.STAGES))
+        block = re.search(r"var BADGE_NAMES = \{(.*?)\};", page, re.S).group(1)
+        self.assertEqual(re.findall(r'(\w+): "([^"]+)"', block), [(b, cclevel.BADGE_NAMES[b]) for b in cclevel.BADGES])
+        art = re.search(r"var ART = \{(.*?\n)\t\};", page, re.S).group(1)
+        for stage, lines in cclevel.ART.items():
+            drawn = re.search(r'(?:"%s"|\b%s): (\[.*?\]),\n' % (re.escape(stage), re.escape(stage)), art).group(1)
+            self.assertEqual(json.loads(drawn), lines, stage)
+        for call in ("fetch", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "import(", ".src ="):
+            self.assertNotIn(call, page)
+        # A Wrapped visit never wakes the Worker.
+        with open(os.path.join(ROOT, "server", "wrangler.jsonc"), encoding="utf-8") as f:
+            self.assertNotIn("wrapped", re.search(r'"run_worker_first": \[(.*?)\]', f.read()).group(1))
 
     def test_privacy_names_every_column_the_board_stores(self):
         with open(os.path.join(ROOT, "server", "schema.sql"), encoding="utf-8") as f:
@@ -708,6 +743,17 @@ class Framework(unittest.TestCase):
         self.assertEqual(cclevel.streaks({day(1), day(2), day(3)}, today), (3, 3, 0))
         self.assertEqual(cclevel.streaks({day(5)}, today), (1, 0, 0))
 
+    def test_days_away_are_the_empty_days_before_today(self):
+        today = datetime.now(timezone.utc).date()
+        day = lambda n: (today - timedelta(days=n)).isoformat()
+        away = cclevel.away_days
+        self.assertEqual(away({day(1)}, today), 0)                # yesterday was active
+        self.assertEqual(away({day(0), day(1)}, today), 0)        # and today too
+        self.assertEqual(away({day(0), day(6)}, today), 5)        # back today after five empty days: the same all day
+        self.assertEqual(away({day(6)}, today), 5)                # not back yet
+        self.assertEqual(away({day(0)}, today), None)             # nothing before today
+        self.assertEqual(away(set(), today), None)
+
     def test_a_day_without_logs_has_one_fixed_price(self):
         price = cclevel.old_day_xp
         self.assertEqual((price(0), price(-5)), (0, 0))
@@ -779,6 +825,129 @@ class Framework(unittest.TestCase):
         self.assertEqual(sorted(self.ledger()["weeks"]), ["2025-W10", week])
         self.assertEqual(self.ledger()["weeks"]["2025-W10"], good)
 
+    STORY_LEDGER = {
+        "version": 4, "first_seen": "2025-03-10",
+        "days": {"2024-12-31": 400, "2025-01-01": 100, "2025-01-02": 200, "2025-01-03": 300, "2025-03-10": 550,
+                 "2025-03-11": 550, "2025-12-31": 150},
+        "estimated": ["2025-01-01", "2024-12-31"],
+        "badges": {"first_hook": "2024-12-31", "first_skill": "2025-03-10", "streak_7": "2026-01-05"},
+        "weeks": {"2025-W11": {"xp": 1000, "stats": [10, 20, 30, 40, 50, 60], "health": 80},
+                  "2025-W40": {"xp": 2600, "stats": [10, 20, 30, 40, 80, 30], "health": 90}},
+    }
+    STORY_RESULT = {"story": {"met": "2024-12-01", "hatched": "2025-03-10", "together_days": 689},
+                    "raw": {"active_days": 7}, "class": "Shipper"}
+
+    def test_our_story_is_worked_out_from_the_ledger_alone(self):
+        write(self.dir, "cclevel/ledger.json", self.STORY_LEDGER)
+        today = date(2026, 10, 21)
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        s = cclevel.story(self.dir, self.STORY_RESULT, today)
+        self.assertEqual(events, [])
+        self.assertEqual((s["version"], s["met"], s["hatched"], s["together_days"], s["active_days"], s["estimated_days"]),
+                         (1, "2024-12-01", "2025-03-10", 689, 7, 2))
+        self.assertEqual(s["before_hatch"], {"days": 4, "xp": 1000, "estimated_days": 2, "level": 5, "stage": "Hatchling"})
+        # Every level and stage is dated on the first day an independent sum of days and badges reaches it.
+        led = self.STORY_LEDGER
+        def level_on(day):
+            xp = sum(x for d, x in led["days"].items() if d <= day)
+            xp += sum(cclevel.BADGES[b] for b, w in led["badges"].items() if w <= day)
+            return max(1, math.isqrt(xp // cclevel.LEVEL_DIVISOR))
+        days = sorted(set(led["days"]) | set(led["badges"].values()))
+        for e in s["events"]:
+            if e["kind"] in ("level", "stage"):
+                self.assertEqual(e["day"], next(d for d in days if level_on(d) >= e["level"]), e)
+        self.assertEqual([e["stage"] for e in s["events"] if e["kind"] == "stage"], ["Hatchling"])
+        # The past is "about": everything before the hatch, and the badges dated on it. Nothing after.
+        for e in s["events"]:
+            self.assertEqual(e.get("about", False), e["day"] < "2025-03-10" or (e["kind"] == "badge" and e["day"] == "2025-03-10"), e)
+        self.assertIn({"day": "2025-09-29", "kind": "class", "class": "AFK Farmer", "week": "2025-W40"}, s["events"])
+        self.assertEqual([e for e in s["events"] if e["kind"] == "best_day"], [{"day": "2025-03-10", "kind": "best_day", "xp": 550}])
+        self.assertEqual(s["records"], {"best_day": {"day": "2025-03-10", "xp": 550}, "best_week": {"week": "2025-W11", "xp": 1100},
+                                        "longest_streak": {"days": 4, "from": "2024-12-31", "to": "2025-01-03"}})
+        order = [(e["day"], cclevel.STORY_KINDS.index(e["kind"])) for e in s["events"]]
+        self.assertEqual(order, sorted(order))
+        # A year's records agree with Wrapped.
+        y = cclevel.story(self.dir, self.STORY_RESULT, today, year=2025)["records"]
+        w = cclevel.wrapped_numbers(self.dir, 2025, today)
+        self.assertEqual((y["levels"]["from"], y["levels"]["to"], y["best_day"]["day"]), (w["first"], w["last"], w["best_day"]))
+        self.assertEqual(y["longest_streak"]["days"], w["longest"])
+        text = cclevel.story_text(s, today)
+        self.assertIn("  Our story · this machine only, self-reported\n", text)
+        self.assertIn("  about 1 Dec 2024   You met Claude Code\n", text)
+        self.assertIn("  10 Mar 2025        cclevel hatched your creature: Hatchling Shipper, Lv 7\n", text)
+        self.assertIn("Before that: 4 active days, 1,000 XP (2 estimated from prompt counts)\n", text)
+        self.assertIn("  about 10 Mar 2025  Badge: Skill issue: solved\n", text)
+        self.assertIn("  29 Sep 2025        Became an AFK Farmer\n", text)
+        self.assertIn("  5 Jan              Badge: gm x7\n", text)
+        self.assertIn("  Together 689 days · 7 active days · longest streak 4 days (31 Dec 2024–3 Jan 2025)\n  Your year so far: /pet wrapped.\n", text)
+        self.assertNotIn("starts today", text)
+
+    def test_our_story_ignores_hand_edits_and_keeps_its_lines_short(self):
+        today = date(2026, 10, 21)
+        write(self.dir, "cclevel/ledger.json", self.STORY_LEDGER)
+        clean = cclevel.story(self.dir, self.STORY_RESULT, today)
+        odd = json.loads(json.dumps(self.STORY_LEDGER))
+        odd["days"].update({"2099-01-01": 500, "2025-03-11": 99999, "nope": 5})
+        odd["badges"].update({"made_up": "2025-01-01"})
+        odd["weeks"].update({"2025-W12": {"xp": "lots"}, "2025-W99": {"xp": 1, "stats": [1] * 6, "health": 1}})
+        write(self.dir, "cclevel/ledger.json", odd)
+        self.assertEqual(cclevel.story(self.dir, self.STORY_RESULT, today), clean)
+        # A heavy user's story stays at 25 event lines, the other level-ups folded into one.
+        many = {"version": 4, "first_seen": "2025-01-01",
+                "days": {(date(2025, 1, 1) + timedelta(days=i)).isoformat(): 550 for i in range(600)}}
+        write(self.dir, "cclevel/ledger.json", many)
+        s = cclevel.story(self.dir, dict(self.STORY_RESULT, story={"met": "2025-01-01", "hatched": "2025-01-01",
+                                                                 "together_days": 658}, raw={"active_days": 600}), today)
+        self.assertEqual(sum(1 for e in s["events"] if e["kind"] == "stage"), 5)
+        lines = cclevel.story_text(s, today).split("\n")
+        body = lines[lines.index("") + 1:lines.index("  Together 658 days · 600 active days · longest streak 600 days (1 Jan 2025–23 Aug)") - 1]
+        self.assertLessEqual(len([l for l in body if not l.strip().startswith(("+", "Before"))]), 25)
+        self.assertTrue(any("other level-ups" in l for l in body), body)
+        self.assertIn("Evolved into a GOAT (Lv 60)", "\n".join(body))
+
+    def test_our_story_starts_today_for_a_new_creature(self):
+        history(self.dir, {0: 3})
+        out = run("--claude-dir", self.dir, "--story")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("  Your story starts today.\n", out.stdout)
+        today = datetime.now(timezone.utc).date()
+        self.assertIn("cclevel hatched your creature: Egg", out.stdout)
+        s = json.loads(run("--claude-dir", self.dir, "--story", "--json").stdout)
+        self.assertEqual((s["met"], s["hatched"], s["together_days"], s["before_hatch"]), (today.isoformat(),) * 2 + (0, None))
+        # A folder with no activity at all: no dates, no crash.
+        empty = tempfile.mkdtemp(dir=self.dir)
+        s = json.loads(run("--claude-dir", empty, "--story", "--json").stdout)
+        self.assertEqual((s["met"], s["hatched"], s["events"]), (None, None, []))
+        self.assertIn("Your story starts today.", run("--claude-dir", empty, "--story").stdout)
+
+    def test_our_story_json_holds_only_short_known_strings(self):
+        write(self.dir, "cclevel/ledger.json", dict(self.STORY_LEDGER, first_seen="2025-03-10"))
+        history(self.dir, {1: 2, 3: 4})
+        out = run("--claude-dir", self.dir, "--story", "--json")
+        s = json.loads(out.stdout)
+        self.assertEqual(set(s), {"version", "scope", "today", "met", "hatched", "together_days", "active_days",
+                                  "estimated_days", "before_hatch", "events", "records"})
+        def strings(v):
+            if isinstance(v, dict):
+                for k, x in v.items():
+                    yield k
+                    yield from strings(x)
+            elif isinstance(v, list):
+                for x in v:
+                    yield from strings(x)
+            elif isinstance(v, str):
+                yield v
+        for text in strings(s):
+            self.assertLessEqual(len(text), 30, text)
+            self.assertNotIn(os.sep, text)
+        for e in s["events"]:
+            self.assertIn(e["kind"], cclevel.STORY_KINDS)
+        # The card's numbers carry the same short story, for the panel.
+        card = json.loads(run("--claude-dir", self.dir, "--json").stdout)
+        self.assertEqual(card["story"], {k: s[k] for k in ("met", "hatched", "together_days")})
+        self.assertEqual(card["story"]["together_days"], card["raw"]["age_days"])
+
     def test_wrapped_is_worked_out_from_the_ledger_alone(self):
         write(self.dir, "cclevel/ledger.json", {
             "version": 4,
@@ -808,6 +977,95 @@ class Framework(unittest.TestCase):
         self.assertIn("Wrapped 2026 so far", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
         self.assertIn("No finished days banked in 2026", cclevel.wrapped(self.dir, 2026, date(2026, 1, 20)))
         self.assertNotIn("Feb", cclevel.wrapped(self.dir, 2025, date(2025, 1, 20)))
+
+    def test_evolved_shows_for_seven_days_after_a_new_stage(self):
+        # 35,820 XP over 199 days, then one day that crosses 36,000: Lil Guy to Big Guy on 2026-12-03.
+        start = date(2026, 5, 18)
+        banked = {(start + timedelta(days=i)).isoformat(): 180 for i in range(199)}
+        banked["2026-12-03"] = 550
+        want = {"from": "Lil Guy", "to": "Big Guy", "day": "2026-12-03"}
+        self.assertIsNone(cclevel.evolved_of(banked, {}, date(2026, 12, 2)))   # a day to come never counts
+        for n in range(7):
+            self.assertEqual(cclevel.evolved_of(banked, {}, date(2026, 12, 3) + timedelta(days=n)), want, n)
+        self.assertIsNone(cclevel.evolved_of(banked, {}, date(2026, 12, 10)))
+        # Only the newest stage counts, and an Egg that hatched comes from "Egg".
+        self.assertEqual(cclevel.evolved_of({"2026-12-03": 550, "2026-12-04": 550}, {}, date(2026, 12, 5)),
+                         {"from": "Egg", "to": "Hatchling", "day": "2026-12-04"})
+        self.assertIsNone(cclevel.evolved_of({}, {}, date(2026, 12, 5)))
+        # The card's line.
+        result = self.score()
+        self.assertIsNone(result["evolved"])
+        result["evolved"] = want
+        self.assertIn("  Evolved into a Big Guy on 3 Dec! Post it: /pet evolve\n", cclevel.render(result))
+        result["evolved"] = None
+        self.assertNotIn("Evolved into", cclevel.render(result))
+
+    def test_milestones_match_a_recount_of_the_xp(self):
+        banked = {"2025-01-%02d" % d: 550 for d in range(1, 32)}
+        banked.update({"2025-03-%02d" % d: 550 for d in range(1, 31)})
+        banked.update({"2025-06-%02d" % d: 300 for d in range(1, 31)})
+        badges = {"first_hook": "2025-01-01", "first_skill": "2025-03-15", "streak_7": "garbage"}
+        marks = cclevel.milestones(banked, badges)
+        self.assertEqual(marks["first"], "2025-01-01")
+        # The independent recount: walk each day in order and add its XP and the XP of badges dated up to it.
+        days = sorted(set(banked) | {w for w in badges.values() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", w)})
+        expect = {}
+        for floor, name in ((1000, "Hatchling"), (9000, "Lil Guy"), (36000, "Big Guy"), (81000, "Gigachad"), (144000, "GOAT")):
+            expect[name] = None
+            for d in days:
+                total = sum(x for k, x in banked.items() if k <= d) + sum(cclevel.BADGES[b] for b, w in badges.items() if w <= d)
+                if total >= floor:
+                    expect[name] = d
+                    break
+            self.assertEqual(marks[name], expect[name], name)
+        self.assertIsNotNone(marks["Hatchling"])
+        self.assertIsNotNone(marks["Lil Guy"])
+        self.assertIsNone(marks["GOAT"])
+        self.assertEqual(cclevel.milestones({}, {}), {"first": None, "Hatchling": None, "Lil Guy": None, "Big Guy": None,
+                                                      "Gigachad": None, "GOAT": None})
+
+    def test_the_wrapped_link_carries_the_year_in_41_numbers(self):
+        ledger = {
+            "version": 4,
+            "days": {"2024-12-31": 400, "2025-01-01": 100, "2025-01-02": 200, "2025-01-03": 300, "2025-03-10": 550,
+                     "2025-03-11": 550, "2025-12-31": 150},
+            "estimated": ["2025-01-01"],
+            "badges": {"first_hook": "2024-12-31", "first_skill": "2025-03-10"},
+            "weeks": {"2025-W02": {"xp": 1000, "stats": [10, 20, 30, 40, 50, 60], "health": 80},
+                      "2025-W40": {"xp": 2600, "stats": [20, 20, 35, 40, 45, 60], "health": 90}},
+        }
+        write(self.dir, "cclevel/ledger.json", ledger)
+        events = []
+        sys.addaudithook(lambda name, args: events.append(name) if name.startswith("socket.") else None)
+        text = cclevel.wrapped(self.dir, 2025, date(2026, 10, 21), "https://go.cclevel.workers.dev")
+        self.assertEqual(events, [])
+        link = text.strip().splitlines()[-1].strip()
+        self.assertTrue(link.startswith("Story images to post: https://cclevel.com/wrapped#"), link)
+        n = [int(x) for x in link.split("#")[1].split("-")]
+        self.assertEqual(len(n), 41)
+        self.assertTrue(all(x >= 0 for x in n))
+        self.assertEqual(n[:13], [1, 2025, 0, 365, 1850, 6, 1, 4, 8, 69, 550, 2, 3])
+        self.assertEqual(n[13:25], [600, 0, 1100, 0, 0, 0, 0, 0, 0, 0, 0, 150])
+        self.assertEqual(n[25], 1 << list(cclevel.BADGES).index("first_skill"))
+        self.assertEqual(n[26:30], [2, cclevel.WRAPPED_CLASSES.index("Shipper"), cclevel.STAT_ORDER.index("craft"), 60])
+        self.assertEqual(n[30:36], [110, 100, 105, 100, 95, 100])
+        # Lv 5 (1,000 XP, badges counted) on 3 Jan, day 3; nothing higher this year.
+        self.assertEqual(n[36:], [3, 0, 0, 0, 0])
+        # This year so far: the flag, and the last day covered is yesterday.
+        so_far = cclevel.wrapped_link("https://example.com", cclevel.wrapped_numbers(self.dir, 2025, date(2025, 3, 12)))
+        self.assertTrue(so_far.startswith("https://example.com/wrapped#1-2025-1-70-"), so_far)
+        # One snapshot: class and strongest stat, no moves. None: neither.
+        ledger["weeks"].pop("2025-W40")
+        write(self.dir, "cclevel/ledger.json", ledger)
+        n = [int(x) for x in cclevel.wrapped_link("https://cclevel.com", cclevel.wrapped_numbers(self.dir, 2025, date(2026, 1, 5))).split("#")[1].split("-")]
+        self.assertEqual(n[26:36], [1, cclevel.WRAPPED_CLASSES.index("Shipper"), 5, 60] + [100] * 6)
+        ledger.pop("weeks")
+        write(self.dir, "cclevel/ledger.json", ledger)
+        n = [int(x) for x in cclevel.wrapped_link("https://cclevel.com", cclevel.wrapped_numbers(self.dir, 2025, date(2026, 1, 5))).split("#")[1].split("-")]
+        self.assertEqual(n[26:36], [0, len(cclevel.WRAPPED_CLASSES), len(cclevel.STAT_ORDER), 0] + [100] * 6)
+        # A year with no banked days has no link.
+        self.assertIsNone(cclevel.wrapped_numbers(self.dir, 2026, date(2026, 10, 21)))
+        self.assertNotIn("wrapped#", cclevel.wrapped(self.dir, 2026, date(2026, 10, 21), "https://cclevel.com"))
 
     def test_wrapped_takes_only_a_year_cclevel_can_have_seen(self):
         for year in ("2024", "0", str(datetime.now(timezone.utc).year + 1)):
@@ -888,6 +1146,7 @@ class Training(unittest.TestCase):
 
     def test_tips_are_off_until_turned_on(self):
         self.needy()
+        self.assertIn("An egg appeared!", self.card())   # the first card hatches, once; the rest are plain
         plain = self.card()
         self.assertNotIn("How:", plain)
         self.assertNotIn("Tip of the day", plain)
@@ -2029,7 +2288,8 @@ class Leaderboard(unittest.TestCase):
     def test_privacy_mode_sends_nothing_and_default_mode_does(self):
         board = {"CCLEVEL_SERVER": self.url}
         quiet = [("--auto-run",)] * 3 + [
-            ("--rank",), ("--preview",), ("--card",), (), ("--json",), ("--learn",), ("--wrapped",), ("--tips", "on"),
+            ("--rank",), ("--preview",), ("--card",), (), ("--json",), ("--learn",), ("--wrapped",), ("--story",),
+            ("--story", "--json"), ("--tips", "on"),
             ("--auto", "on", "--yes"), ("--world", "off"), ("--world", "on", "--yes"), ("--sync",), ("--group",),
             ("--group-create", "--yes"), ("--group-leave",), ("--duel",), ("--duel-create", "--yes"), ("--duel-leave",),
             ("--verify-github", "octocat", "--yes"), ("--unverify-github",), ("--privacy", "off"), ("--join",)]
@@ -2097,6 +2357,19 @@ class Leaderboard(unittest.TestCase):
         self.assertEqual([(r["method"], r["path"]) for r in FakeBoard.seen], [("DELETE", "/api/entry")])
         self.assertFalse(os.path.exists(self.identity))
         self.assertIn("Privacy mode: cclevel sends nothing.", run("--claude-dir", self.dir).stdout)
+
+    def test_privacy_on_keeps_the_seed_and_the_look(self):
+        self.joined()
+        seed = os.path.join(self.dir, "cclevel", "seed")
+        with open(seed) as f:
+            before = f.read()
+        look = json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)["marks"]
+        out = run("--claude-dir", self.dir, "--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertFalse(os.path.exists(self.identity))
+        with open(seed) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)["marks"], look)
 
     def test_privacy_on_deletes_the_row_and_a_failed_delete_still_stops_the_hook(self):
         board = {"CCLEVEL_SERVER": self.url}
@@ -3095,20 +3368,141 @@ class Leaderboard(unittest.TestCase):
             self.assertIn("Not joined", out.stdout, flag)
         self.assertEqual(FakeBoard.seen, [])
 
+    def test_wrapped_and_its_link_send_nothing_in_either_mode(self):
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "days": {utc_day(3): 550, utc_day(2): 300}})
+        board = {"CCLEVEL_SERVER": self.url}
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            out, sent = run_counted("--claude-dir", self.dir, "--wrapped", "--no-save", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertRegex(out.stdout, r"\n  Story images to post: %s/wrapped#(\d+-){40}\d+\n" % re.escape(self.url))
+        self.assertEqual(FakeBoard.seen, [])
+        # The same counter sees a board command reach the fake board.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
+
+    def test_the_readme_badge_sends_nothing_writes_nothing_in_either_mode(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        folder = os.path.join(self.dir, "cclevel")
+        today = datetime.now(timezone.utc).date()
+        when = "%d %s %d" % (today.day, cclevel.MONTHS[today.month - 1], today.year)
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            before = {f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}
+            out, sent = run_counted("--claude-dir", self.dir, "--readme-badge", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertEqual({f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}, before)
+            self.assertRegex(out.stdout, r"\[!\[CC level: Lv \d+ [A-Za-z ]+ \(%s\)\]\(https://img\.shields\.io/badge/CC_level-"
+                                         r"Lv_\d+_%%C2%%B7_[A-Za-z_]+-d97757\)\]\(%s\)\n" % (when, re.escape(self.url)))
+            self.assertIn("as of %s and doesn't update itself" % when, out.stdout)
+            self.assertIn("sees your level next to your name", out.stdout)
+            for c in CANARIES:
+                self.assertNotIn(c, out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        # Positive control: the same counter sees --rank reach the fake board in Default mode.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
+        self.assertTrue(FakeBoard.seen)
+
+    def test_evolve_sends_nothing_writes_nothing_in_either_mode(self):
+        board = {"CCLEVEL_SERVER": self.url}
+        folder = os.path.join(self.dir, "cclevel")
+        for privacy in (True, False):
+            if not privacy:
+                os.remove(self.off)
+            before = {f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}
+            out, sent = run_counted("--claude-dir", self.dir, "--evolve", env=board)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(sent, 0, "privacy" if privacy else "default")
+            self.assertEqual({f: os.path.getmtime(os.path.join(folder, f)) for f in os.listdir(folder)}, before)
+            self.assertIn("  Post it on X (opens a ready post you can edit): https://x.com/intent/post?text=", out.stdout)
+            self.assertIn("cclevel sends nothing", out.stdout)
+            for c in CANARIES:
+                self.assertNotIn(c, out.stdout)
+        self.assertEqual(FakeBoard.seen, [])
+        # Positive control: the same counter sees --rank reach the fake board in Default mode.
+        self.joined()
+        out, sent = run_counted("--claude-dir", self.dir, "--rank", env=board)
+        self.assertGreater(sent, 0)
+        self.assertTrue(FakeBoard.seen)
+
+    def test_the_evolve_link_holds_only_text_and_the_class_page(self):
+        for cls, slug in (("Shipper", "shipper"), ("AFK Farmer", "afk-farmer"), ("Loot Goblin", "loot-goblin"),
+                          ("Tokenmaxxer", "tokenmaxxer"), ("Perfectly Balanced", "perfectly-balanced"), ("Noob", "noob"),
+                          ("Unhatched", None)):
+            for evolved, stage, level in ((None, "Gigachad", 47), ({"from": "Big Guy", "to": "Gigachad", "day": "2026-12-03"},
+                                          "Gigachad", 45), ({"from": "Egg", "to": "Hatchling", "day": "2026-12-03"}, "Hatchling", 5)):
+                for server, site in ((cclevel.DEFAULT_SERVER, "https://cclevel.com"), ("https://example.test", "https://example.test")):
+                    r = {"stage": stage, "class": cls, "level": level, "evolved": evolved}
+                    link = cclevel.evolve_link(server, r)
+                    parts = urllib.parse.urlsplit(link)
+                    self.assertEqual((parts.scheme, parts.netloc, parts.path), ("https", "x.com", "/intent/post"))
+                    query = urllib.parse.parse_qs(parts.query, strict_parsing=True)
+                    self.assertEqual(sorted(query), ["text", "url"])
+                    text, url = query["text"][0], query["url"][0]
+                    self.assertIn(stage, text)
+                    self.assertIn("Lv %d" % level, text)
+                    self.assertTrue(text.endswith("What's yours?"), text)
+                    if slug:
+                        self.assertIn(cls, text)
+                    self.assertNotIn("Unhatched", text)
+                    self.assertEqual(url, "%s/class/%s" % (site, slug) if slug else site)
+                    self.assertEqual(os.path.isfile(os.path.join(ROOT, "server", "public", "class", "%s.html" % slug)), bool(slug))
+                    if evolved and evolved["from"] == "Egg":
+                        self.assertIn("just hatched", text)
+                    elif evolved:
+                        self.assertIn("just evolved into", text)
+                    else:
+                        self.assertIn("My Claude Code is a", text)
+        # Nothing private: no creature name or token reaches it, on a joined machine either.
+        os.remove(self.off)
+        token = self.joined()["token"]
+        out = run("--claude-dir", self.dir, "--evolve", env={"CCLEVEL_SERVER": self.url})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn(token, out.stdout)
+        self.assertNotIn(cclevel.creature_name(token), out.stdout)
+
+    def test_the_readme_badge_decodes_to_label_message_and_colour(self):
+        def unbadge(part):   # shields.io's static-badge rules, read back
+            part = urllib.parse.unquote(part)
+            return re.sub(r"__|--|_", lambda m: {"__": "_", "--": "-", "_": " "}[m.group()], part)
+        today = date(2026, 11, 5)
+        for floor, stage in cclevel.STAGES:
+            for level in (1, 5, 42, 99):
+                for server, link in ((cclevel.DEFAULT_SERVER, "https://cclevel.com"),
+                                     ("https://example.test", "https://example.test")):
+                    md = cclevel.readme_badge(server, {"level": level, "stage": stage}, today)
+                    m = re.fullmatch(r"\[!\[CC level: Lv %d %s \(5 Nov 2026\)\]\(https://img\.shields\.io/badge/"
+                                     r"([^/()]+)\)\]\((.+)\)" % (level, stage), md)
+                    self.assertTrue(m, md)
+                    parts = re.split(r"(?<!-)-(?!-)", m.group(1))
+                    self.assertEqual([unbadge(p) for p in parts], ["CC level", "Lv %d · %s" % (level, stage), "d97757"])
+                    self.assertEqual(m.group(2), link)
+        # The escapes that can fail: dashes, underscores and spaces in a name.
+        self.assertEqual(cclevel.badge_part("a-b_c d·"), "a--b__c_d%C2%B7")
+
     def test_the_card_link_carries_only_the_card_numbers_and_points_at_the_board(self):
         out = run("--claude-dir", self.dir, "--card", "--server", self.url)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(FakeBoard.seen, [])
         link = re.search(r"\n  (\S+/card#\S+)\n", out.stdout).group(1)
         result = cclevel.score(self.dir, machine_jobs=False, save=False)
+        result["marks"] = cclevel.creature_marks(self.dir, save=False)
         self.assertEqual(link, cclevel.card_link(self.url, result))
         numbers = [int(n) for n in link.split("#")[1].split("-")]
-        self.assertEqual(len(numbers), 11)
+        self.assertEqual(len(numbers), 12)
         self.assertEqual(numbers[:2], [cclevel.CARD_VERSION, result["xp"]])
         self.assertEqual(numbers[2:8], [result["stats"][s] for s in cclevel.STAT_ORDER])
         self.assertEqual(list(cclevel.MOODS.values())[numbers[8]], result["mood"])
         self.assertEqual(numbers[9], result["raw"]["current_streak"])
         self.assertEqual([b for i, b in enumerate(cclevel.BADGES) if numbers[10] >> i & 1], result["badges"])
+        self.assertEqual(numbers[11], result["marks"]["look"] + (64 if result["marks"]["shiny"] else 0))
         for canary in CANARIES:
             self.assertNotIn(canary, out.stdout)
         # A joined machine's card page is on its own board.
@@ -3118,6 +3512,99 @@ class Leaderboard(unittest.TestCase):
 
 
 PANEL_SOURCE = os.path.realpath(os.path.join(ROOT, "mac", "CclevelPanel.swift"))
+
+
+class Markings(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = make_folder(self.tmp.name)
+        self.seed = os.path.join(self.dir, "cclevel", "seed")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def scan(self, *flags):
+        out = run("--claude-dir", self.dir, "--json", *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_every_look_keeps_every_line_nine_ascii_characters(self):
+        for stage in cclevel.ART:
+            self.assertEqual(cclevel.marked_art(stage), cclevel.ART[stage], "look 0 is the classic art")
+            for look in range(cclevel.LOOKS):
+                for shiny in (False, True):
+                    for line in cclevel.marked_art(stage, look, shiny):
+                        self.assertEqual(len(line), 9, (stage, look, shiny))
+                        self.assertTrue(line.isascii(), (stage, look, shiny))
+        # The GOAT keeps its @ eyes and * sparkles; its shiny twinkles are + instead.
+        goat = cclevel.marked_art("GOAT", 63, True)
+        self.assertEqual(goat[1], " ( @ @ ) ")
+        self.assertEqual((goat[0][0], goat[0][8], goat[3][0], goat[3][8]), ("*", "*", "+", "+"))
+        self.assertEqual(cclevel.marked_art("Big Guy", 2), ["  .-^-.  ", " ( O O ) ", " /\\ ~ /\\ ", "  /| |\\  "])
+
+    def test_one_in_a_hundred_is_shiny_and_every_look_appears(self):
+        rng = random.Random(7)
+        marks = [cclevel.marks_of(rng.getrandbits(64)) for _ in range(100000)]
+        share = sum(m["shiny"] for m in marks) / len(marks)
+        self.assertTrue(0.009 <= share <= 0.011, share)
+        self.assertEqual({m["look"] for m in marks}, set(range(cclevel.LOOKS)))
+        self.assertEqual(cclevel.marks_of(None), {"look": 0, "shiny": False})
+        self.assertEqual(cclevel.marks_of(64 * 100 + 5), {"look": 5, "shiny": True})
+
+    def test_the_seed_is_made_once_and_the_look_is_the_same_everywhere(self):
+        self.assertFalse(self.scan("--no-save")["marks"]["shiny"])
+        self.assertFalse(os.path.exists(self.seed), "a run that does not save makes no seed")
+        first = self.scan()
+        self.assertEqual(stat.S_IMODE(os.stat(self.seed).st_mode), 0o600)
+        with open(self.seed) as f:
+            text = f.read()
+        self.assertRegex(text, r"^[0-9a-f]{16}\n$")
+        self.assertEqual(first["marks"], cclevel.marks_of(int(text, 16)))
+        again = self.scan()
+        self.assertEqual((again["marks"], again["art"]), (first["marks"], first["art"]))
+        with open(self.seed) as f:
+            self.assertEqual(f.read(), text, "never rewritten")
+        self.assertEqual(first["art"], cclevel.marked_art(first["stage"], first["marks"]["look"], first["marks"]["shiny"]))
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        for line in first["art"]:
+            self.assertIn("  %s   " % line, card)
+
+    def test_a_shiny_seed_shows_on_the_card_and_in_the_link(self):
+        write(self.dir, "cclevel/seed", "%016x\n" % (64 * 100 * 3 + 17))
+        data = self.scan("--no-save")
+        self.assertEqual(data["marks"], {"look": 17, "shiny": True})
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        first = next(line for line in card.splitlines() if "· Lv " in line)
+        self.assertTrue(first.endswith("· \u2726 Shiny"), first)
+        out = run("--claude-dir", self.dir, "--card", "--server", "http://127.0.0.1:9")
+        numbers = re.search(r"/card#([\d-]+)", out.stdout).group(1).split("-")
+        self.assertEqual((len(numbers), numbers[0], numbers[-1]), (12, "2", str(17 + 64)))
+
+    def test_an_odd_seed_means_the_classic_look_and_is_left_alone(self):
+        for odd in ("folder", "link", "garbage", "short"):
+            with self.subTest(odd):
+                shutil.rmtree(os.path.join(self.dir, "cclevel"), ignore_errors=True)
+                os.makedirs(os.path.join(self.dir, "cclevel"))
+                if odd == "folder":
+                    os.mkdir(self.seed)
+                elif odd == "link":
+                    write(self.tmp.name, "elsewhere", "%016x\n" % (64 * 100 + 9))
+                    os.symlink(os.path.join(self.tmp.name, "elsewhere"), self.seed)
+                else:
+                    write(self.dir, "cclevel/seed", "zzzz not hex zzzz\n" if odd == "garbage" else "abc\n")
+                data = self.scan()
+                self.assertEqual(data["marks"], {"look": 0, "shiny": False})
+                self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+                self.assertTrue(os.path.lexists(self.seed))
+                self.assertEqual(os.path.isdir(self.seed), odd == "folder")
+                self.assertEqual(os.path.islink(self.seed), odd == "link")
+
+    def test_the_look_is_never_sent(self):
+        write(self.dir, "cclevel/seed", "%016x\n" % (64 * 100 + 9))
+        preview = run("--claude-dir", self.dir, "--preview").stdout
+        self.assertNotIn("marks", preview)
+        self.assertNotIn("look", preview)
+        self.assertEqual(sorted(json.loads(preview.split("\n\n")[0])), ["badges", "stats", "v", "xp", "xp_days"])
 
 
 class PanelData(unittest.TestCase):
@@ -3349,7 +3836,7 @@ class Panel(unittest.TestCase):
         out = run("--claude-dir", self.dir, "--json", "--no-save")
         self.assertEqual(out.returncode, 0, out.stderr)
         data = json.loads(out.stdout)
-        self.assertEqual(data["art"], cclevel.ART[data["stage"]])
+        self.assertEqual(data["art"], cclevel.marked_art(data["stage"], data["marks"]["look"], data["marks"]["shiny"]))
         # Fix next: the card's own Needs, in order, each with how to fix it and its docs page.
         self.assertTrue(data["needs"], "the test folder has Needs")
         self.assertEqual([f["text"] for f in data["fix"]], [cclevel.need_text(n) for n in data["needs"][:5]])
@@ -3743,5 +4230,686 @@ class Panel(unittest.TestCase):
         self.assertEqual(text_art[0]["anim"], "blink", "without clips the text creature blinks")
 
 
+class Hatch(unittest.TestCase):
+    """The hatch block: on a new machine's first card only, never in --json, never a replay for an older ledger."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = make_folder(self.tmp.name)
+        self.ledger = os.path.join(self.dir, "cclevel", "ledger.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def card(self, *flags):
+        out = run("--claude-dir", self.dir, *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def grown(self):
+        """Thirty active days in the last month: a creature that has hatched."""
+        lines = [log_line(day_stamp(d), "m%d" % d, tools=[("Edit", {})] * 5, output=50000) for d in range(1, 31)]
+        write(self.dir, "projects/zzq-project/s1.jsonl", "\n".join(lines) + "\n")
+        history(self.dir, {d: 20 for d in range(1, 31)})
+
+    def test_the_first_card_hatches_once_and_says_what_hatched(self):
+        self.grown()
+        self.assertFalse(os.path.exists(self.ledger), "positive control: no ledger before the first run")
+        first = self.card()
+        info = json.loads(self.card("--json", "--no-save"))
+        self.assertNotEqual(info["stage"], "Egg")
+        who = info["stage"] if info["class"] == "Unhatched" else "%s %s" % (info["stage"], info["class"])
+        lines = first.splitlines()
+        self.assertEqual(lines[1], "  Your egg hatched!")
+        self.assertTrue(lines[2].startswith("  It's %s · Lv %d" % (cclevel.a_or_an(who), info["level"])), lines[2])
+        with open(self.ledger) as f:
+            self.assertEqual(json.load(f)["hatch_seen"], datetime.now(timezone.utc).date().isoformat())
+        self.assertNotIn("hatched!", self.card())
+        # A later save keeps the day it showed.
+        write(self.dir, "projects/zzq-project/s2.jsonl", log_line(day_stamp(0), "today") + "\n")
+        self.card()
+        with open(self.ledger) as f:
+            self.assertIn("hatch_seen", json.load(f))
+        self.assertNotIn("hatched!", self.card())
+
+    def test_no_save_shows_it_and_records_nothing_and_json_never_shows_it(self):
+        self.assertIn("An egg appeared!", self.card("--no-save"))
+        self.assertIn("An egg appeared!", self.card("--no-save"))
+        self.assertFalse(os.path.exists(self.ledger))
+        out = self.card("--json")
+        self.assertNotIn("egg appeared", out)
+        self.assertNotIn("hatch_due", out)
+        self.assertIsNone(json.loads(out)["hatched"], "no ledger yet")
+        with open(self.ledger) as f:
+            self.assertNotIn("hatch_seen", json.load(f), "--json banks the day but records no hatch")
+        self.assertIn("An egg appeared!", self.card())
+
+    def test_an_egg_says_when_it_hatches(self):
+        lines = self.card().splitlines()
+        self.assertEqual(lines[1:3], ["  An egg appeared!", "  It hatches at Lv 5."])
+        with open(self.ledger) as f:
+            self.assertIn("hatch_seen", json.load(f))
+        self.assertNotIn("egg appeared", self.card())
+
+    def test_an_older_ledger_never_replays_it(self):
+        self.grown()
+        for days, shows in ((30, False), (8, False), (7, True), (2, True)):
+            write(self.dir, "cclevel/ledger.json", {"version": 4, "first_seen": utc_day(days), "days": {utc_day(1): 100}})
+            self.assertEqual("Your egg hatched!" in self.card("--no-save"), shows, days)
+            self.assertEqual(json.loads(self.card("--json", "--no-save"))["hatched"], utc_day(days))
+
+    def test_both_modes_stay_on_the_first_card_and_nothing_is_sent(self):
+        real = {"CLAUDE_CONFIG_DIR": self.dir}   # the folder Claude Code uses, so the card has its two-modes lines
+        out, count = run_counted("--claude-dir", self.dir, "--no-save", env=real)
+        self.assertEqual(count, 0)
+        self.assertIn("An egg appeared!", out.stdout)
+        self.assertIn("Default mode:", out.stdout)
+        self.assertIn("Privacy mode:", out.stdout)
+        write(self.dir, "cclevel/opted-out", "")
+        out, count = run_counted("--claude-dir", self.dir, env=real)
+        self.assertEqual(count, 0)
+        self.assertIn("An egg appeared!", out.stdout)
+        self.assertIn("Privacy mode: cclevel sends nothing.", out.stdout)
+
+    def test_plain_text_only(self):
+        for flags in ((), ("--json",)):
+            out = self.card("--no-save", *flags)
+            self.assertNotIn("\x1b", out)
+            self.assertNotIn("\r", out)
+
+    def test_no_activity_no_hatch(self):
+        empty = tempfile.mkdtemp(dir=self.tmp.name)
+        out = run("--claude-dir", empty)
+        self.assertNotIn("egg appeared", out.stdout)
+        self.assertFalse(os.path.exists(os.path.join(empty, "cclevel", "ledger.json")))
+
+
+def reply(when, message_id, model="claude-opus-5-5", output=100, fresh=10, read=0, w5=0, w1=0, speed=None, tools=()):
+    """One assistant reply with the full usage block Claude Code writes, cache split included."""
+    usage = {"input_tokens": fresh, "output_tokens": output, "cache_read_input_tokens": read,
+             "cache_creation_input_tokens": w5 + w1,
+             "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1}}
+    if speed:
+        usage["speed"] = speed
+    return json.dumps({"type": "assistant", "timestamp": when.isoformat().replace("+00:00", "Z"), "sessionId": "s1",
+                       "requestId": "req_" + message_id, "entrypoint": "cli",
+                       "message": {"id": message_id, "model": model, "usage": usage,
+                                   "content": [{"type": "tool_use", "id": "%s_%d" % (message_id, i), "name": name,
+                                                "input": {}} for i, name in enumerate(tools)]}},
+                      separators=(",", ":"))
+
+
+def compaction(when, trigger, pre=500000, post=20000):
+    return json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": when.isoformat().replace("+00:00", "Z"),
+                       "compactMetadata": {"trigger": trigger, "preTokens": pre, "postTokens": post}},
+                      separators=(",", ":"))
+
+
+class Leaks(unittest.TestCase):
+    """/pet leaks: where the tokens went, priced as a yardstick, offline, outside the score and the card's --json."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        write(self.dir, "CLAUDE.md", "x" * 4000)
+        history(self.dir, {1: 3})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def logs(self, *lines, name="s1"):
+        write(self.dir, "projects/zzq-project/%s.jsonl" % name, "\n".join(lines) + "\n")
+
+    def report(self):
+        out = run("--claude-dir", self.dir, "--leaks", "--json")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def text(self, *flags):
+        out = run("--claude-dir", self.dir, "--leaks", *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_token_totals_keep_one_line_per_message(self):
+        t = day_stamp(1)
+        # The same reply written three times (once per content block), the last one the most complete.
+        self.logs(reply(t, "m1", output=1), reply(t, "m1", output=1), reply(t, "m1", output=500, read=1000),
+                  reply(t + timedelta(minutes=1), "m2", output=7, fresh=3))
+        r = self.report()
+        self.assertEqual(r["totals_30d"]["output_tokens"], 507)
+        self.assertEqual(r["totals_30d"]["input_tokens"], 13)
+        self.assertEqual(r["totals_30d"]["cache_read_input_tokens"], 1000)
+        self.assertEqual(r["requests"], 2)
+        self.assertEqual(sum(w["tokens"]["output_tokens"] for w in r["weeks"]), 507)
+
+    def test_compactions_by_trigger_and_none_seen(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1"))
+        self.assertIn("Auto-compaction: none seen", self.text())
+        self.logs(reply(t, "m1"), compaction(t + timedelta(minutes=1), "auto"), reply(t + timedelta(minutes=2), "m2", w5=9000),
+                  compaction(t + timedelta(minutes=3), "auto", pre=300000), compaction(t + timedelta(minutes=4), "manual"))
+        r = self.report()
+        self.assertEqual(r["compactions"], {"auto": 2, "manual": 1})
+        comp = next(f for f in r["leaks"] if f["code"] == "compaction")
+        self.assertEqual((comp["times"], comp["sessions"], comp["average_before"]), (2, 1, 400000))
+        self.assertEqual(comp["tokens_written_again"], 9000)   # the reply after the first one; none after the second
+        self.assertIn("Auto-compaction: 2 times in 4 weeks (and 1 /compact typed), in 1 of 1 session", self.text())
+
+    def test_connectors_set_up_but_never_called(self):
+        plugin = os.path.join(self.dir, "plugin-root")
+        write(plugin, ".mcp.json", {"mcpServers": {"zzq-gamma": {"command": "x"}}})
+        write(self.dir, "plugins/installed_plugins.json", {"plugins": {"tools@market": [{"installPath": plugin}]}})
+        write(self.dir, ".claude.json", {"mcpServers": {"zzq-alpha": {}},
+                                         "projects": {"/somewhere": {"mcpServers": {"zzq-beta": {}}}}})
+        self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search"]))
+        r = self.report()
+        self.assertEqual(r["unused_connectors"], ["zzq-beta", "zzq-gamma"])
+        # Positive control: calling the plugin server by its log name takes it off the list.
+        self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search", "mcp__plugin_tools_zzq-gamma__go"]))
+        self.assertEqual(self.report()["unused_connectors"], ["zzq-beta"])
+        self.assertIn("No dollar figure", self.text())
+
+    def test_prices_are_a_yardstick_and_unknown_models_have_none(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1", model="claude-x-y", output=1200000, fresh=0))
+        r = self.report()
+        self.assertEqual(r["unpriced"], {"claude-x-y": 1200000})
+        self.assertEqual(sum(w["dollars"] for w in r["weeks"]), 0)
+        text = self.text()
+        self.assertIn("claude-x-y: 1.2M tokens, no price for this model.", text)
+        for line in text.splitlines():
+            if "$" in line:
+                self.assertIn("yardstick", line)
+
+    def test_fast_mode_and_cache_write_prices(self):
+        u = {"input_tokens": 1000000, "output_tokens": 1000000}
+        self.assertAlmostEqual(cclevel.dollars("claude-opus-5-5", dict(u, speed="fast")), 48)
+        self.assertAlmostEqual(cclevel.dollars("claude-opus-5-5", u), 24)
+        one_hour = {"cache_creation_input_tokens": 1000000, "cache_creation": {"ephemeral_1h_input_tokens": 1000000}}
+        self.assertAlmostEqual(cclevel.dollars("claude-sonnet-4-6", one_hour), 6)       # 2x the $3 input price
+        five = {"cache_creation_input_tokens": 1000000, "cache_creation": {"ephemeral_5m_input_tokens": 1000000}}
+        self.assertAlmostEqual(cclevel.dollars("claude-sonnet-4-6", five), 3.75)        # 1.25x
+        self.assertAlmostEqual(cclevel.dollars("claude-haiku-4-5-20251001", {"output_tokens": 1000000}), 5)
+        self.assertIsNone(cclevel.dollars("claude-opus-5-1", u))
+        self.assertIsNone(cclevel.dollars("claude-sonnet-4-6", dict(u, speed="fast")))  # no fast price known: no figure
+
+    def test_cache_written_again_after_a_pause(self):
+        t = day_stamp(1)
+        self.logs(reply(t, "m1", w5=1000), reply(t + timedelta(minutes=2), "m2", w5=2000),
+                  reply(t + timedelta(minutes=12), "m3", w5=4000, w1=8000), reply(t + timedelta(minutes=80), "m4", w1=16000))
+        pauses = next(f for f in self.report()["leaks"] if f["code"] == "pauses")
+        # m2 came within 5 minutes; m3 after 10 minutes re-wrote its 5-minute part only; m4 after 68 minutes, its 1-hour part.
+        self.assertEqual((pauses["times"], pauses["tokens"]), (2, 20000))
+
+    def test_no_logs(self):
+        self.assertIn("No session logs in the last 30 days, so no leaks to measure.", self.text())
+
+    def test_offline_stores_nothing_and_leaves_the_card_alone(self):
+        write(self.dir, ".claude.json", {"mcpServers": {"zzq-unused-server": {}}})
+        self.logs(reply(day_stamp(1), "m1"))
+        card = run("--claude-dir", self.dir, "--json", "--no-save")
+        preview = run("--claude-dir", self.dir, "--preview").stdout
+        before = sorted(os.listdir(self.dir))
+        for privacy in (False, True):
+            if privacy:
+                cclevel.opt_out(self.dir)
+                before = sorted(os.listdir(self.dir))
+            out, events = run_counted("--claude-dir", self.dir, "--leaks")
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(events, 0)
+            self.assertIn("zzq-unused-server", out.stdout)
+            self.assertEqual(sorted(os.listdir(self.dir)), before)
+        self.assertNotIn("zzq-unused-server", card.stdout)
+        cclevel.opt_back_in(self.dir)
+        after = json.loads(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
+        self.assertEqual({k: v for k, v in after.items() if k != "generated"},
+                         {k: v for k, v in json.loads(card.stdout).items() if k != "generated"})
+        self.assertEqual(run("--claude-dir", self.dir, "--preview").stdout, preview)
+
+    def test_card_names_a_big_leak_only_with_tips_on(self):
+        t = day_stamp(1)
+        self.logs(*[reply(t + timedelta(minutes=10 * i), "m%d" % i, w5=2000000) for i in range(6)])
+        plain = run("--claude-dir", self.dir, "--no-save").stdout
+        self.assertNotIn("Leaks:", plain)
+        self.assertEqual(run("--claude-dir", self.dir, "--tips", "on").returncode, 0)
+        card = run("--claude-dir", self.dir, "--no-save").stdout
+        self.assertRegex(card, r"Leaks: about \$\d+ a week in cache lost to pauses \(yardstick\)\. /pet leaks")
+
+
+def tree_hashes(root, skip="cclevel"):
+    """{relative path: SHA-256} for every file under root, cclevel's own folder left out."""
+    out = {}
+    for top, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not (top == root and d == skip))
+        for name in files:
+            full = os.path.join(top, name)
+            with open(full, "rb") as f:
+                out[os.path.relpath(full, root)] = hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
+class Fix(unittest.TestCase):
+    """/pet fix: the plan writes nothing, the one automatic fix round-trips, refusals hold, advice never writes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        history(self.dir, {1: 3})
+        write(self.dir, "projects/zzq-project/s1.jsonl", reply(day_stamp(1), "m1") + "\n")
+        old = time.time() - 91 * 86400
+        for name in ("old-a", "old-b", "old-c", "fresh", "used-one"):
+            write(self.dir, "skills/%s/SKILL.md" % name, "---\ndescription: %s\n---\nbody\n" % name)
+            if name != "fresh":
+                os.utime(os.path.join(self.dir, "skills", name, "SKILL.md"), (old, old))
+        stamp = int(day_stamp(1).timestamp() * 1000)
+        write(self.dir, ".claude.json", {"skillUsage": {"used-one": {"usageCount": 2, "lastUsedAt": stamp}}})
+        write(self.dir, "settings.json", {"theme": "dark", "permissions": {"allow": ["Bash(ls)"]}})
+        write(self.dir, ".mcp.json", {"mcpServers": {"zzq-alpha": {"command": "x"}}})
+        plugin = os.path.join(self.dir, "plugins", "cache", "tool")
+        write(plugin, "skills/plug-old/SKILL.md", "---\ndescription: p\n---\n")
+        write(self.dir, "plugins/installed_plugins.json", {"plugins": {"tool@m": [{"installPath": plugin}]}})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fix(self, *flags):
+        return run("--claude-dir", self.dir, *flags)
+
+    def plan_id(self, code, *flags):
+        out = self.fix("--fix", code, *flags)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return re.search(r"--plan (\w+) --yes", out.stdout).group(1)
+
+    def health(self):
+        return json.loads(self.fix("--json", "--no-save").stdout)["health"]
+
+    def test_the_plan_writes_nothing_and_sends_nothing(self):
+        before = tree_hashes(self.dir, skip="")
+        codes = [n["code"] for n in json.loads(self.fix("--json", "--no-save").stdout)["needs"]]
+        self.assertIn("unused_skills", codes)
+        for code in [""] + codes:
+            out, calls = run_counted("--claude-dir", self.dir, "--fix", *([code] if code else []))
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(calls, 0)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel")))
+
+    def test_card_points_to_fix(self):
+        self.assertIn("Ask Claude: /pet fix", self.fix("--no-save").stdout)
+
+    def test_auto_round_trip(self):
+        before, health = tree_hashes(self.dir), self.health()
+        out = self.fix("--fix")
+        self.assertIn("old-a, old-b, old-c", out.stdout)
+        gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        # Without the plan's id nothing happens.
+        self.assertEqual(self.fix("--fix", "unused_skills", "--yes").returncode, 1)
+        self.assertEqual(tree_hashes(self.dir), before)
+        out = self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        left = sorted(os.listdir(os.path.join(self.dir, "skills")))
+        self.assertEqual(left, ["fresh", "used-one"])   # the used one and the new one stay
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "plugins", "cache", "tool", "skills", "plug-old")))
+        self.assertEqual(self.health(), health + gain)
+        folder = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*-unused_skills"))
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(folder, "manifest.json")).st_mode), 0o600)
+        out = self.fix("--fix-undo")
+        self.assertIn("Put back 3 folders", out.stdout)
+        self.assertEqual(tree_hashes(self.dir), before)
+        self.assertIn("Nothing to undo", self.fix("--fix-undo").stdout)
+
+    def test_planned_gain_counts_the_lighter_context(self):
+        # Unused skills with long descriptions: moving them also lightens the start-up context, and the plan says so.
+        write(self.dir, "CLAUDE.md", "x" * 70000)
+        old = time.time() - 91 * 86400
+        for name in ("old-a", "old-b", "old-c"):
+            write(self.dir, "skills/%s/SKILL.md" % name, "---\ndescription: %s\n---\nbody\n" % ("d" * 30000))
+            os.utime(os.path.join(self.dir, "skills", name, "SKILL.md"), (old, old))
+        health = self.health()
+        out = self.fix("--fix", "unused_skills")
+        gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        needs = json.loads(self.fix("--json", "--no-save").stdout)["needs"]
+        self.assertEqual(next(n["gain"] for n in needs if n["code"] == "unused_skills"), gain)   # the card says the same
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        self.assertEqual(self.health(), health + gain)
+
+    def test_assisted_edit_and_undo(self):
+        path = os.path.join(self.dir, "settings.json")
+        with open(path, "rb") as f:
+            original = f.read()
+        out = self.fix("--fix", "brains_7", "--plan", self.plan_id("brains_7"), "--yes")
+        self.assertIn("Backup saved", out.stdout)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), original)   # the scanner itself never edits: Claude does
+        data = json.loads(original)
+        data["permissions"]["deny"] = ["Read(./.env)"]
+        write(self.dir, "settings.json", data)
+        with open(path, encoding="utf-8") as f:
+            edited = json.load(f)
+        self.assertEqual({k: v for k, v in edited.items() if k != "permissions"}, {"theme": "dark"})
+        self.assertNotIn("brains_7", [n["code"] for n in json.loads(self.fix("--json", "--no-save").stdout)["needs"]])
+        self.assertIn("Put back 1 file", self.fix("--fix-undo").stdout)
+        with open(path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).digest(), hashlib.sha256(original).digest())
+        kept = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*-brains_7", "replaced", "0"))
+        with open(kept, encoding="utf-8") as f:
+            self.assertIn("Read(./.env)", f.read())
+
+    def assertRefused(self, code, *flags, plan=None):
+        before = tree_hashes(self.dir, skip="")
+        out = self.fix("--fix", code, "--plan", plan or "00000000", "--yes", *flags)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        return out.stdout
+
+    def test_refusals(self):
+        os.mkdir(os.path.join(self.dir, "skills", ".git"))
+        plan = re.search(r"--plan (\w+)", self.fix("--fix", "unused_skills").stdout)
+        self.assertIsNone(plan)
+        self.assertIn("is a git repository", self.assertRefused("unused_skills"))
+        os.rmdir(os.path.join(self.dir, "skills", ".git"))
+        # A kept skill whose SKILL.md links into a folder the plan would move (gstack-browse into gstack).
+        write(self.dir, "skills/old-a/browse/SKILL.md", "---\ndescription: b\n---\n")
+        os.makedirs(os.path.join(self.dir, "skills", "kept-link"))
+        os.symlink(os.path.join(self.dir, "skills", "old-a", "browse", "SKILL.md"),
+                   os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        self.assertNotIn("--plan", self.fix("--fix", "unused_skills").stdout)
+        self.assertIn("links into old-a", self.assertRefused("unused_skills"))
+        os.remove(os.path.join(self.dir, "skills", "kept-link", "SKILL.md"))
+        os.rmdir(os.path.join(self.dir, "skills", "kept-link"))
+        # A folder renamed after the plan.
+        plan = self.plan_id("unused_skills")
+        os.rename(os.path.join(self.dir, "skills", "old-c"), os.path.join(self.dir, "skills", "old-d"))
+        self.assertIn("plan changed", self.assertRefused("unused_skills", plan=plan))
+        # A link planted where the backups go.
+        os.makedirs(os.path.join(self.dir, "cclevel"))
+        os.symlink(tempfile.gettempdir(), os.path.join(self.dir, "cclevel", "fixes"))
+        self.assertIn("not a plain folder", self.assertRefused("unused_skills", plan=self.plan_id("unused_skills")))
+        os.remove(os.path.join(self.dir, "cclevel", "fixes"))
+        # A settings.json that does not parse.
+        write(self.dir, "settings.json", "{not json")
+        self.assertIn("does not parse", self.assertRefused("brains_7", plan=self.plan_id("brains_7")
+                                                           if "--plan" in self.fix("--fix", "brains_7").stdout else None))
+
+    def planned_sums(self):
+        return [cclevel.tree_hash(os.path.join(self.dir, "skills", n)) for n in ("old-a", "old-b", "old-c")]
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through chmod")
+    def test_a_folder_that_refuses_writes_says_so(self):
+        # Claude Code's sandbox (or the folder's permissions) says no: not "something is in the way".
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        os.chmod(fixes, 0o500)
+        try:
+            out = self.assertRefused("unused_skills", plan=plan)
+        finally:
+            os.chmod(fixes, 0o700)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 1, out)
+        self.assertIn("sandbox or the folder's permissions stopped cclevel from writing in", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertIn("outside the sandbox", out)
+        self.assertNotIn("in the way", out)
+        self.assertEqual(self.planned_sums(), sums)
+        self.assertEqual(os.listdir(fixes), [])
+        # Undo meets the same wall once a fix is in.
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        folder = glob_one(os.path.join(fixes, "*-unused_skills"))
+        before = tree_hashes(self.dir, skip="")
+        os.chmod(folder, 0o500)
+        try:
+            out = self.fix("--fix-undo")
+        finally:
+            os.chmod(folder, 0o700)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("stopped cclevel from writing in", out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+
+    def test_a_file_where_the_fix_folder_goes_is_in_the_way(self):
+        fixes = os.path.join(self.dir, "cclevel", "fixes")
+        os.makedirs(fixes)
+        plan = self.plan_id("unused_skills")
+        sums = self.planned_sums()
+        now = time.time()
+        for s in range(15):   # the fix folder is named for the second it runs in
+            stamp = datetime.fromtimestamp(now + s, timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+            write(fixes, "%s-unused_skills" % stamp, "a plain file")
+        out = self.assertRefused("unused_skills", plan=plan)
+        self.assertIn("Something is in the way", out)
+        self.assertNotIn("sandbox", out)
+        self.assertEqual(self.planned_sums(), sums)
+
+    def test_changed_backup_blocks_undo(self):
+        self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
+        backup = glob_one(os.path.join(self.dir, "cclevel", "fixes", "*", "files", "0", "SKILL.md"))
+        write(os.path.dirname(backup), "SKILL.md", "changed")
+        before = tree_hashes(self.dir, skip="")
+        out = self.fix("--fix-undo")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("missing or changed", out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+
+    def test_advice_never_writes_and_mcp_untouched(self):
+        mcp = [os.path.join(self.dir, ".claude.json"), os.path.join(self.dir, ".mcp.json")]
+        sums = [file_sha(p) for p in mcp]
+        before = tree_hashes(self.dir, skip="")
+        for code in ("brains_2", "brains_10", "sign_in", "tool_errors", "interrupts"):
+            out = self.fix("--fix", code, "--yes")
+            self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(tree_hashes(self.dir, skip=""), before)
+        self.assertEqual([file_sha(p) for p in mcp], sums)
+
+    def test_fix_leaves_payload_alone(self):
+        result = cclevel.score(self.dir, machine_jobs=False, save=False, extra={})
+        self.assertEqual(sorted(cclevel.payload(result)), ["badges", "stats", "v", "xp", "xp_days"])
+        self.assertNotIn("unused_names", self.fix("--json", "--no-save").stdout)
+
+
+def file_sha(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def glob_one(pattern):
+    import glob
+    found = glob.glob(pattern)
+    assert len(found) == 1, found
+    return found[0]
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Timesheet(unittest.TestCase):
+    """/pet timesheet: hours per project in local time, offline. Numbers in the chat, names only in the local CSV."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.dir = os.path.join(self.home, ".claude")
+        self.a = os.path.join(self.home, "work", "zzq-alpha")
+        self.b = os.path.join(self.home, "work", "zzq-bravo")
+        for repo in (self.a, self.b):
+            os.makedirs(os.path.join(repo, ".git"))
+        self.wt = os.path.join(self.a, ".claude", "worktrees", "zzq-wt")
+        os.makedirs(self.wt)
+        self.fixture()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def log(self, rel, *events, **extra):
+        lines = []
+        for ts, kind, cwd in events:
+            o = {"type": "assistant" if kind == "a" else "user", "timestamp": ts, "cwd": cwd, "sessionId": rel}
+            if kind == "a":
+                o["message"] = {"id": "m" + ts, "role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+            elif kind == "t":
+                o["message"] = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}
+            else:
+                o["message"] = {"role": "user", "content": "zzq prompt text"}
+            o.update(extra)
+            lines.append(json.dumps(o))
+        write(self.dir, "projects/-zzq/%s.jsonl" % rel, "\n".join(lines) + "\n")
+
+    def fixture(self):
+        a, b, wt = self.a, self.b, self.wt
+        # Two blocks with a 20-minute gap, lines out of order; its subagent fills 08:05 and 08:12.
+        self.log("s1", ("2026-11-02T08:40:30Z", "a", a), ("2026-11-02T08:00:00Z", "p", a), ("2026-11-02T08:10:00Z", "a", a),
+                 ("2026-11-02T08:30:00Z", "p", a))
+        self.log("s1/subagents/agent-x", ("2026-11-02T08:12:00Z", "a", a), ("2026-11-02T08:05:00Z", "p", a))
+        self.log("s2", ("2026-11-02T08:05:00Z", "p", a), ("2026-11-02T08:20:00Z", "a", a))       # side by side with s1
+        self.log("s3", ("2026-11-02T22:50:00Z", "p", wt), ("2026-11-02T23:05:00Z", "a", wt),
+                 ("2026-11-02T23:20:00Z", "a", wt))     # a worktree, midnight
+        self.log("s4", ("2026-11-03T10:00:00Z", "p", b), ("2026-11-03T10:15:00Z", "a", b), ("2026-11-03T10:30:00Z", "a", b),
+                 sessionKind="bg")
+        self.log("s5", ("2026-11-03T10:15:00Z", "p", b), ("2026-11-03T10:30:00Z", "a", b), ("2026-11-03T10:45:00Z", "a", b),
+                 entrypoint="sdk-cli")
+        self.log("s6", ("2026-10-25T00:40:00Z", "p", b), ("2026-10-25T00:52:00Z", "t", b),       # summer time ends
+                 ("2026-10-25T01:05:00Z", "a", b), ("2026-10-25T01:20:00Z", "a", b))
+        self.log("s7", ("2026-11-04T12:00:00Z", "p", self.home), ("2026-11-04T12:05:00Z", "a", self.home))
+
+    def sheet(self, *flags, week="2026-W45", tz="Europe/Bratislava"):
+        out = run("--claude-dir", self.dir, "--timesheet", week, "--tz", tz, *flags, env={"HOME": self.home})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def rows(self):
+        import csv
+        with open(os.path.join(self.dir, "cclevel", "timesheet.csv"), newline="", encoding="utf-8") as f:
+            r = list(csv.reader(f))
+        self.assertEqual(r[0], cclevel.TS_HEADER)
+        return [(x[0], x[2], x[3], int(x[4]), x[5], x[6], x[11]) for x in r[1:]]
+
+    def test_hand_count_bratislava(self):
+        out = self.sheet()
+        A, B, H = "zzq-alpha", "zzq-bravo", "(home)"
+        self.assertEqual(self.rows(), [
+            ("2026-10-25", "02:40", "03:00", 20, "you", B, "+02:00"),
+            ("2026-10-25", "02:00", "02:20", 20, "you", B, "+01:00"),
+            ("2026-11-02", "09:00", "09:12", 12, "you", A, "+01:00"),
+            ("2026-11-02", "09:05", "09:20", 15, "you", A, "+01:00"),
+            ("2026-11-02", "09:30", "09:41", 11, "you", A, "+01:00"),
+            ("2026-11-02", "23:50", "24:00", 10, "you", A, "+01:00"),
+            ("2026-11-03", "00:00", "00:20", 20, "you", A, "+01:00"),
+            ("2026-11-03", "11:00", "11:30", 30, "alone", B, "+01:00"),
+            ("2026-11-03", "11:15", "11:45", 30, "alone", B, "+01:00"),
+            ("2026-11-04", "13:00", "13:05", 5, "you", H, "+01:00"),
+        ])
+        lines = {l.split()[0] + (l.split()[1] if l.split()[0] != "Week" else ""): l.split() for l in out.splitlines()
+                 if l.startswith("   ")}
+        self.assertEqual(lines["Mon2"][3:], ["41m", "-", "41m", "-", "-"])
+        self.assertEqual(lines["Tue3"][3:], ["20m", "45m", "20m", "45m", "-"])
+        self.assertEqual(lines["Wed4"][3:], ["5m", "-", "-", "-", "5m"])
+        self.assertEqual(lines["Week"][1:], ["1h", "06m", "45m", "1h", "01m", "45m", "5m"])
+        self.assertIn("Europe/Bratislava", out)
+        self.assertIn("home folder", out)
+        for secret in (A, B, "zzq-wt", "zzq prompt text", "work"):
+            self.assertNotIn(secret, out)
+
+    def test_background_job_counts_only_typed_prompts(self):
+        # Week 44, outside the fixture: a bg prompt a person typed is "you"; notices and peer messages are "alone".
+        b = self.b
+        for rel, kind, ts in (("bg1", "human", "2026-10-28T09:00:00Z"), ("bg2", "task-notification", "2026-10-28T12:00:00Z"),
+                              ("bg3", "peer", "2026-10-28T15:00:00Z")):
+            write(self.dir, "projects/-zzq/%s.jsonl" % rel, "\n".join(json.dumps(o) for o in (
+                {"type": "user", "timestamp": ts, "cwd": b, "sessionKind": "bg", "entrypoint": "cli",
+                 "origin": {"kind": kind}, "message": {"role": "user", "content": "zzq prompt text"}},
+                {"type": "assistant", "timestamp": ts[:14] + "10:00Z", "cwd": b, "sessionKind": "bg", "entrypoint": "cli",
+                 "message": {"id": "m" + rel, "role": "assistant", "content": [{"type": "text", "text": "ok"}]}})) + "\n")
+        out = self.sheet(week="2026-W44")
+        week = [r for r in self.rows() if r[0] == "2026-10-28"]
+        self.assertEqual(sorted((r[1], r[4]) for r in week), [("10:00", "you"), ("13:00", "alone"), ("16:00", "alone")])
+        wed = [l.split() for l in out.splitlines() if l.startswith("   Wed")][0]
+        self.assertEqual(wed[3:5], ["10m", "20m"])
+
+    def test_others_is_one_short_line(self):
+        for i in range(90):
+            repo = os.path.join(self.home, "many", "zzq-m%02d" % i)
+            os.makedirs(os.path.join(repo, ".git"))
+            self.log("m%02d" % i, ("2026-10-28T%02d:%02d:00Z" % (8 + i // 30, i % 30 * 2), "p", repo))
+        out = self.sheet(week="2026-W44")
+        lines = [l for l in out.splitlines() if "others:" in l]
+        self.assertEqual(lines, ["  others: P6–P90 (85 projects)."])
+        self.assertNotIn("P7,", out)
+        self.assertEqual(len([r for r in self.rows() if r[0] == "2026-10-28"]), 90)   # the CSV keeps every project
+
+    def test_hand_count_los_angeles(self):
+        out = self.sheet(tz="America/Los_Angeles")
+        A, B = "zzq-alpha", "zzq-bravo"
+        self.assertEqual(self.rows(), [
+            ("2026-10-24", "17:40", "18:20", 40, "you", B, "-07:00"),
+            ("2026-11-02", "00:00", "00:12", 12, "you", A, "-08:00"),
+            ("2026-11-02", "00:05", "00:20", 15, "you", A, "-08:00"),
+            ("2026-11-02", "00:30", "00:41", 11, "you", A, "-08:00"),
+            ("2026-11-02", "14:50", "15:20", 30, "you", A, "-08:00"),
+            ("2026-11-03", "02:00", "02:30", 30, "alone", B, "-08:00"),
+            ("2026-11-03", "02:15", "02:45", 30, "alone", B, "-08:00"),
+            ("2026-11-04", "04:00", "04:05", 5, "you", "(home)", "-08:00"),
+        ])
+        self.assertIn("Mon 2 Nov", out)
+        self.assertIn("1h 01m", out)   # 20 + 11 + 30 on Monday, with you
+
+    def test_names_only_with_names_flag_and_in_csv(self):
+        self.assertNotIn("zzq-alpha", self.sheet())
+        with open(os.path.join(self.dir, "cclevel", "timesheet.csv"), encoding="utf-8") as f:
+            self.assertIn("zzq-alpha", f.read())
+        self.assertIn("zzq-alpha", self.sheet("--names"))
+
+    def test_idle_rule_never_adds_minutes(self):
+        self.sheet("--idle", "5")
+        five = self.rows()
+        self.sheet()
+        fifteen = self.rows()
+        self.assertGreaterEqual(len(five), len(fifteen))
+        self.assertLessEqual(sum(r[3] for r in five), sum(r[3] for r in fifteen))
+        self.assertNotEqual(run("--claude-dir", self.dir, "--timesheet", "--idle", "0").returncode, 0)
+
+    def test_csv_private_and_link_refused(self):
+        self.sheet()
+        path = os.path.join(self.dir, "cclevel", "timesheet.csv")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        ino = os.stat(path).st_ino
+        self.sheet()
+        self.assertNotEqual(os.stat(path).st_ino, ino)   # replaced in one step, not written over
+        os.unlink(path)
+        target = os.path.join(self.home, "elsewhere.txt")
+        with open(target, "w") as f:
+            f.write("keep")
+        os.symlink(target, path)
+        out = self.sheet()
+        self.assertIn("Not written", out)
+        self.assertTrue(os.path.islink(path))
+        with open(target) as f:
+            self.assertEqual(f.read(), "keep")
+
+    def test_bad_zone_falls_back(self):
+        out = self.sheet(tz="Nowhere/Zzq")
+        self.assertIn("Unknown time zone 'Nowhere/Zzq'. Using this machine's zone", out)
+
+    def test_no_logs(self):
+        empty = os.path.join(self.home, "empty")
+        os.makedirs(empty)
+        out = run("--claude-dir", empty, "--timesheet")
+        self.assertIn("No session logs in the last 30 days, so no timesheet.", out.stdout)
+
+    def test_offline_in_both_modes_and_nothing_else_moves(self):
+        before = json.loads(run("--claude-dir", self.dir, "--json", "--no-save", env={"HOME": self.home}).stdout)
+        out, n = run_counted("--claude-dir", self.dir, "--timesheet", "2026-W45", env={"HOME": self.home})
+        self.assertEqual((out.returncode, n), (0, 0), out.stderr)
+        write(self.dir, "cclevel/opted-out", "")
+        out, n = run_counted("--claude-dir", self.dir, "--timesheet", "2026-W45", env={"HOME": self.home})
+        self.assertEqual((out.returncode, n), (0, 0), out.stderr)
+        os.unlink(os.path.join(self.dir, "cclevel", "opted-out"))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
+        after = json.loads(run("--claude-dir", self.dir, "--json", "--no-save", env={"HOME": self.home}).stdout)
+        before.pop("generated", None), after.pop("generated", None)
+        self.assertEqual(before, after)
+        for flags in (("--json", "--no-save"), ("--preview",), ("--leaks", "--json")):
+            text = run("--claude-dir", self.dir, *flags, env={"HOME": self.home}).stdout
+            self.assertNotIn("zzq-alpha", text)
+            self.assertNotIn("zzq-bravo", text)
