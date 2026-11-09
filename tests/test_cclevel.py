@@ -4569,6 +4569,8 @@ class Fix(unittest.TestCase):
         health = self.health()
         out = self.fix("--fix", "unused_skills")
         gain = int(re.search(r"Gain: Health \+(\d+) now", out.stdout).group(1))
+        needs = json.loads(self.fix("--json", "--no-save").stdout)["needs"]
+        self.assertEqual(next(n["gain"] for n in needs if n["code"] == "unused_skills"), gain)   # the card says the same
         self.fix("--fix", "unused_skills", "--plan", self.plan_id("unused_skills"), "--yes")
         self.assertEqual(self.health(), health + gain)
 

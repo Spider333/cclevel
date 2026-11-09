@@ -995,9 +995,15 @@ def score(cdir, machine_jobs, save, extra=None):
         "interrupts": (min(PENALTY_INTERRUPTS_MAX, INTERRUPT_POINTS * interrupt_rate), round(100 * interrupt_rate)),
     }
     health = round(100 - sum(p for p, _ in penalties.values()))
+    # What Health would be without the unused skills: their descriptions leave the start-up context too.
+    ctx_after = (setup["context_chars"] - sum(own[n]["desc"] for n in unused)) // 4
+    over_after = min(1.0, max(0.0, (ctx_after - CONTEXT_OK) / (CONTEXT_HEAVY - CONTEXT_OK)))
+    rest = sum(p for c, (p, _) in penalties.items() if c not in ("unused_skills", "heavy_context"))
+    health_without_unused = round(100 - rest - PENALTY_CONTEXT_MAX * over_after)
     for code, (points, count) in penalties.items():
         if round(points) >= 1:
-            needs.append({"code": code, "count": count, "stat": "health", "gain": round(points)})
+            gain = health_without_unused - health if code == "unused_skills" else round(points)
+            needs.append({"code": code, "count": count, "stat": "health", "gain": gain})
             if code == "sign_in":
                 needs[-1]["from_plugins"] = sum(1 for name in waiting if name.startswith("plugin:"))
     per_check = round(100 / len(checks))
@@ -1007,11 +1013,7 @@ def score(cdir, machine_jobs, save, extra=None):
     needs.sort(key=lambda n: -n["gain"])
     if extra is not None:   # for /pet fix only: the names it may move, never in the --json or a check-in
         extra["unused_names"], extra["own_used"] = sorted(unused), sorted(own_used)
-        # What the card's Health would be without the unused skills: their descriptions leave the start-up context too.
-        ctx_after = (setup["context_chars"] - sum(own[n]["desc"] for n in unused)) // 4
-        over_after = min(1.0, max(0.0, (ctx_after - CONTEXT_OK) / (CONTEXT_HEAVY - CONTEXT_OK)))
-        rest = sum(p for c, (p, _) in penalties.items() if c not in ("unused_skills", "heavy_context"))
-        extra["health_without_unused"] = round(100 - rest - PENALTY_CONTEXT_MAX * over_after)
+        extra["health_without_unused"] = health_without_unused
 
     earned = {
         "first_hook": w30["hooks_ran"] > 0, "first_skill": bool(own_used),
