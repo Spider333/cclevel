@@ -4021,6 +4021,8 @@ class Panel(unittest.TestCase):
         for e in events[2:]:
             self.assertLessEqual(max(e["w"], e["h"]), 72, e)
             self.assertTrue(25 < e["level"] < 101 and e["all_spaces"] and not e["full_screen"] and e["shown"], e)
+            # What keeps it off full-screen apps: without this setting macOS shows it over them (seen on a real Mac).
+            self.assertTrue(e["full_screen_none"], e)
         rests = named(events, "rest")
         self.assertTrue(rests and all(abs(e["top"] - e["line"]) <= 2 and not e["playing"] for e in rests), rests)
         trips = named(events, "trip")

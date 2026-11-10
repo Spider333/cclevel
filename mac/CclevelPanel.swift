@@ -1767,18 +1767,41 @@ final class Roamer: NSObject {
         window.hasShadow = false
         window.hidesOnDeactivate = false
         window.ignoresMouseEvents = false   // said outright: a click anywhere in its small square is a poke
-        // Above app windows and the menu bar's items, below any open menu. On every desktop, not in full-screen spaces.
+        // Above app windows and the menu bar's items, below any open menu. On every desktop, but never in a full-screen
+        // space: .fullScreenNone is what keeps it out. Without it macOS shows a menu bar program's "every desktop"
+        // window over full-screen apps too, at any window level (measured: it sat on top of a full-screen terminal).
         window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
         let center = NotificationCenter.default, work = NSWorkspace.shared.notificationCenter
-        center.addObserver(self, selector: #selector(seen), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        center.addObserver(self, selector: #selector(lookAgain), name: NSWindow.didChangeOcclusionStateNotification, object: window)
         center.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             work.addObserver(self, selector: #selector(sleep), name: name, object: nil)
         }
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            work.addObserver(self, selector: #selector(seen), name: name, object: nil)
+            work.addObserver(self, selector: #selector(lookAgain), name: name, object: nil)
         }
+        work.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+    }
+
+    /// Whether it can be seen: on the space in front (macOS keeps it off full-screen ones) and not covered. macOS tells
+    /// a menu bar program nothing else about full screen (its presentation options stay empty), so this is the test.
+    private var inSight: Bool { window.isOnActiveSpace && window.occlusionState.contains(.visible) }
+
+    private var look: Timer?
+
+    /// What can be seen may have changed (the space in front, what covers the window, the screen waking). macOS says so
+    /// in bursts while it animates, so the walker decides once, a moment after the last of them.
+    @objc private func lookAgain() {
+        look?.invalidate()
+        look = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in self?.seen() }
+    }
+
+    /// Another space came to the front. In a full-screen space the walker is not there, so everything stops; back on a
+    /// desktop it goes on. It looks again a little later too, in case the window's own state settled late.
+    @objc private func spaceChanged() {
+        lookAgain()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.lookAgain() }
     }
 
     /// The display with the main menu bar, and the line under it: where the window's bottom left corner may be.
@@ -1812,7 +1835,8 @@ final class Roamer: NSObject {
             "x": Double(f.minX), "y": Double(f.minY), "w": Double(f.width), "h": Double(f.height),
             "top": Double(f.maxY), "line": Double(screen?.visibleFrame.maxY ?? 0), "level": window.level.rawValue,
             "playing": (player?.rate ?? 0) != 0, "all_spaces": window.collectionBehavior.contains(.canJoinAllSpaces),
-            "full_screen": window.collectionBehavior.contains(.fullScreenAuxiliary), "shown": window.isVisible]
+            "full_screen": window.collectionBehavior.contains(.fullScreenAuxiliary),
+            "full_screen_none": window.collectionBehavior.contains(.fullScreenNone), "shown": window.isVisible]
         more.forEach { info[$0] = $1 }
         log(event, info)
     }
@@ -1854,7 +1878,7 @@ final class Roamer: NSObject {
         settled = true
         report("out")
         // Let out where it cannot be seen (a full-screen app in front, the screen asleep): it waits there, stopped.
-        if !window.occlusionState.contains(.visible) { return sleep() }
+        if !inSight { return sleep() }
         rest(roamFirstRest)
     }
 
@@ -2013,10 +2037,10 @@ final class Roamer: NSObject {
         report("sleep")
     }
 
-    /// Visible again: back to a short rest, then on with its walk.
-    @objc private func seen() {
+    /// Visible again: back to a short rest, then on with its walk. Still out of sight: stopped.
+    private func seen() {
         guard isOut, settled else { return }
-        if !window.occlusionState.contains(.visible) { return sleep() }
+        if !inSight { return sleep() }
         guard asleep else { return }
         asleep = false
         report("wake")
