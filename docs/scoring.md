@@ -6,8 +6,9 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 
 - **Level (1 to 99)** comes from XP: `level = floor(sqrt(xp / 40))`. XP is earned per finished day. A finished day is priced once and is not changed afterwards. Days are UTC dates, so travelling does not move them.
 - **A day with logs** earns 100 for showing up, plus up to 150 for tokens, 100 for distinct skills, connectors and subagent types used, 100 for edits, commits and pull requests, and 100 for unattended sessions. That adds up to at most 550, so a level cannot be bought with one big burn.
+- **Only work that worked counts.** A tool call earns its part only when its result is not an error: a commit, pull request, edit, connector, skill or subagent call that failed, was refused or was blocked earns nothing (it still counts as a failing tool call under Health). A session that ran without you counts once Claude has answered in it, so a headless run that stopped at a login or API error earns nothing, and a day with nothing but such runs is not a day you showed up. Days already banked keep their XP.
 - **A day whose logs are gone** (Claude Code deletes them after 30 days by default) has one fixed price, the same for everyone: 100 plus up to 300 from the number of prompts written that day. One prompt is worth 145, ten are worth 256, a hundred or more 400. The card says how many days were estimated this way.
-- **Badges** add one-off XP for things done: a hook that ran at the end of a turn, an own skill used, a subagent spawned, an unattended session, 7, 30 and 100 days in a row, and 10, 50 and 100 distinct skills used.
+- **Badges** add one-off XP for things done: a hook that ran at the end of a turn, an own skill used, a subagent spawned, an unattended session that got an answer, 7, 30 and 100 days in a row, and 10, 50 and 100 distinct skills used.
 - **Six stats (0 to 100, in steps of 5)**:
   - Grind: days used out of the last 30, and streaks.
   - Appetite: weighted tokens over the last 30 days.
@@ -17,7 +18,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
   - Craft: edits, commits, pull requests, published pages and projects touched.
   - They add up to **Aura**.
 - **Brains** has ten checks worth ten points each. Eight need use: skills used within the last 90 days, and for the rest something seen in the session logs of the last 30 days. Two are things to have (an instructions file, a guardrail), so a folder of files that were never used scores 20. From 30 it earns a title: Wrinkly Brain, Big Brain from 50, Galaxy Brain from 80.
-- **Streak.** A day counts when it has any session or prompt, as a UTC date. The current streak counts the days in a row through yesterday until today is active, so the morning never shows 0. One empty UTC day ends it. There is no freeze and no repair, and nothing warns you about it. The card shows it, and the creature band shows "streak N" from 2. `--json` also gives `raw.away_days`: the empty UTC days just before today (0 when yesterday was active, null with no activity before today).
+- **Streak.** A day counts when Claude answered in a session or you typed a prompt, as a UTC date. The current streak counts the days in a row through yesterday until today is active, so the morning never shows 0. One empty UTC day ends it. There is no freeze and no repair, and nothing warns you about it. The card shows it, and the creature band shows "streak N" from 2. `--json` also gives `raw.away_days`: the empty UTC days just before today (0 when yesterday was active, null with no activity before today).
 - **A new stage.** The day each stage was reached is worked out from the ledger: the first day the banked XP, plus the XP of badges earned by then, reaches the stage's level. For 7 days from that day (the day itself and the six after it) the card says "Evolved into a Big Guy on 3 Dec!" and `--json` gives `evolved: {from, to, day}`; otherwise `evolved` is null. Only the newest stage counts. `--evolve` turns it into a ready X post that links to the class's page, `/class/<class>` on the website (Unhatched links to the home page).
 - **Health** drives the mood. It drops for own skills that are at least 90 days old and went unused in that time, connectors waiting for sign-in, a heavy start-up context, failing tool calls and interrupted turns.
 
@@ -44,7 +45,7 @@ The arithmetic is plain. The names are internet, on purpose. Everything here is 
 | ✦ Shiny | 1 in 100 creatures. Two twinkles on the art and "✦ Shiny" on the card and the share card. Just for fun: it changes no number |
 | Skill issue, Certified chonk, Touch grass | Asides in the Needs list: unused skills, a heavy start-up context, nothing to fix |
 | gm x7, No days off, Terminally online | Badges for 7, 30 and 100 days in a row |
-| Hooked, Skill issue: solved, Not my job, AFK gains | Badges for the first hook that ran at the end of a turn, own skill used, subagent spawned and unattended session |
+| Hooked, Skill issue: solved, Not my job, AFK gains | Badges for the first hook that ran at the end of a turn, own skill used, subagent spawned and unattended session that got an answer |
 | Loadout, Full kit, Maxed out | Badges for 10, 50 and 100 distinct skills used |
 
 ## Timesheet: outside the score
@@ -97,6 +98,6 @@ Grind and Brains never set the class. The scoring constants and the names are de
 - A score covers one machine and is self-reported. Anyone can edit their own local files and show any level, so it is for fun and is not a credential.
 - Claude Code deletes session logs after 30 days by default, so log-based numbers use a 30-day window. Days from before your first scan have no logs left, so their XP is an estimate from prompt counts. For a long-time user most of the level is such an estimate, and the card says how much.
 - Our story (`/pet story`) is worked out from the ledger: the level on a day is the XP of the days banked up to it plus the badges dated by then, the same sum Wrapped uses. Dates from before your first scan are estimates and say "about". Badges you already had at the first scan are dated that day, so they say "about" too.
-- "Unattended" sessions are inferred from how a session was started, which is an approximation.
+- "Unattended" sessions are inferred from how a session was started, which is an approximation. They count once Claude has answered in them.
 - A Brains check is passed by a single use inside its window. Brains shows what is wired and working, not how often it is used.
 - The fixed price for a day without logs is tuned to match a typical logged day on average. For a very light day it can come out a little higher than the logs would have given.

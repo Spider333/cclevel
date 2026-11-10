@@ -471,7 +471,7 @@ def merged_lists(a, b):
 
 
 def new_day():
-    return {"tok": Counter(), "models": Counter(), "skills": set(), "servers": set(), "agents": set(),
+    return {"tok": Counter(), "models": Counter(), "skills": set(), "servers": set(), "servers_called": set(), "agents": set(),
             "auto": set(), "sessions": set(), "projects": set(), "pages": set(),
             "commands": set(), "edits": 0, "commits": 0, "prs": 0, "spawns": 0, "tools": 0,
             "errors": 0, "interrupts": 0, "turns": 0, "plan": 0, "hooks_ran": 0, "memory_writes": 0, "compacts": 0,
@@ -495,6 +495,41 @@ def scan_history(cdir):
     return per_day
 
 
+def earns(name, inp):
+    """What one tool call adds to its day once it has worked, as (field, value) pairs: a number adds up, a name joins
+    the day's set. Small on purpose, so the call's input (a Write holds a whole file) is never kept."""
+    if name == "Skill":
+        return (("skills", str(inp.get("skill"))),)
+    if name in ("Agent", "Task"):
+        return (("spawns", 1), ("agents", str(inp.get("subagent_type") or "general-purpose")))
+    if name.startswith("mcp__"):
+        return (("servers", name.split("__")[1]),)
+    if name in EDIT_TOOLS:
+        return (("edits", 1), ("memory_writes", int(MEMORY_FOLDER in str(inp.get("file_path", "")).replace("\\", "/"))))
+    if name == "Bash":
+        cmd = str(inp.get("command", ""))
+        return (("commits", int(bool(GIT_COMMIT_RE.search(cmd)))), ("prs", int("gh pr create" in cmd)))
+    if name == "Artifact" and inp.get("file_path") and not inp.get("asset") and inp.get("action") in (None, "publish"):
+        return (("pages", str(inp["file_path"])),)
+    if name == "ExitPlanMode":
+        return (("plan", 1),)
+    if name == "EnterWorktree":
+        return (("worktrees", 1),)
+    return ()
+
+
+def failed_ids(line):
+    """The ids of the tool calls a result line marks as failed. Only Claude Code's is_error flag counts, never the
+    result's text: a call that worked can still print something that starts with "Error"."""
+    try:
+        o = json.loads(line)
+    except (ValueError, RecursionError):
+        return []
+    content = as_dict(as_dict(o).get("message")).get("content")
+    return [str(b.get("tool_use_id")) for b in content if isinstance(b, dict) and b.get("type") == "tool_result"
+            and b.get("is_error") is True] if isinstance(content, list) else []
+
+
 def scan_logs(cdir, skill_names, extra=None):
     """Per-day activity from session logs. Returns (days, longest unattended run). Given a dict, `extra` also gets what
     the leak finder needs, from the same pass: each reply's usage with its time and log file, every compaction and
@@ -503,6 +538,8 @@ def scan_logs(cdir, skill_names, extra=None):
     best = {}            # (message id, request id) -> (output tokens, day, usage)
     when = {}            # the same key -> (time, log file), for the leak finder only
     seen_tools = set()
+    pending = {}         # tool call id -> (day, what it earns once it has worked)
+    failed = set()       # ids of the tool calls whose result is marked as an error
     longest = 0
     root = os.path.join(cdir, "projects")
     files = glob.glob(os.path.join(root, "*", "*.jsonl")) + \
@@ -543,7 +580,9 @@ def scan_logs(cdir, skill_names, extra=None):
                     if not sub:
                         run.add(str(m.get("id")))
                         d["sessions"].add(session)
-                    if str(o.get("entrypoint") or "").startswith("sdk"):
+                    # Unattended once Claude has really answered: Claude Code's own error reply ("Invalid API key")
+                    # is written as a <synthetic> one.
+                    if str(o.get("entrypoint") or "").startswith("sdk") and m.get("model") != "<synthetic>":
                         d["auto"].add(session)
                     d["projects"].add(project)
                     content = m.get("content")
@@ -552,33 +591,18 @@ def scan_logs(cdir, skill_names, extra=None):
                             continue
                         seen_tools.add(str(b.get("id")))
                         name = str(b.get("name") or "")
-                        inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                         d["tools"] += 1
-                        if name == "Skill":
-                            d["skills"].add(str(inp.get("skill")))
-                        elif name in ("Agent", "Task"):
-                            d["spawns"] += 1
-                            d["agents"].add(str(inp.get("subagent_type") or "general-purpose"))
-                        elif name.startswith("mcp__"):
-                            d["servers"].add(name.split("__")[1])
-                        elif name in EDIT_TOOLS:
-                            d["edits"] += 1
-                            d["memory_writes"] += MEMORY_FOLDER in str(inp.get("file_path", "")).replace("\\", "/")
-                        elif name == "Bash":
-                            cmd = str(inp.get("command", ""))
-                            d["commits"] += bool(GIT_COMMIT_RE.search(cmd))
-                            d["prs"] += "gh pr create" in cmd
-                        elif name == "Artifact":
-                            if inp.get("file_path") and not inp.get("asset") and inp.get("action") in (None, "publish"):
-                                d["pages"].add(str(inp["file_path"]))
-                        elif name == "ExitPlanMode":
-                            d["plan"] += 1
-                        elif name == "EnterWorktree":
-                            d["worktrees"] += 1
+                        if name.startswith("mcp__"):
+                            d["servers_called"].add(name.split("__")[1])   # for the leak finder: called, worked or not
+                        what = earns(name, b.get("input") if isinstance(b.get("input"), dict) else {})
+                        if what:
+                            pending[str(b.get("id"))] = (day, what)
                 elif '"type":"user"' in line:
                     if '"tool_result"' in line:
-                        if day and '"is_error":true' in line:
-                            days[day]["errors"] += 1
+                        if '"is_error":true' in line:
+                            if day:
+                                days[day]["errors"] += 1
+                            failed.update(failed_ids(line))
                         continue
                     if sub:
                         continue
@@ -617,6 +641,16 @@ def scan_logs(cdir, skill_names, extra=None):
                 if extra is not None and ('"subtype":"compact_boundary"' in line or '"type":"cost-state"' in line):
                     leak_line(extra, line, path)
         longest = max(longest, len(run))
+    # A tool call earns its part only once it has worked: a result marked as an error means it earns nothing. A call
+    # whose result has not come back yet counts for now; if its day is banked before the result comes, the credit stays.
+    for call, (day, what) in pending.items():
+        if call not in failed:
+            d = days[day]
+            for field_name, value in what:
+                if isinstance(d[field_name], set):
+                    d[field_name].add(value)
+                else:
+                    d[field_name] += value
     if extra is not None:
         extra["requests"] = [{"day": day, "time": when[k][0], "file": when[k][1], "model": str(model), "usage": u}
                              for k, (_, day, u, model) in best.items()]
@@ -895,6 +929,9 @@ def score(cdir, machine_jobs, save, extra=None):
     days, longest_run = scan_logs(cdir, set(setup["skills"]), extra)
     if extra is not None:
         extra["days"] = days
+    # A day counts only when Claude really answered (synthetic error replies are not in "models") or a prompt was typed:
+    # a headless run that stopped at "Invalid API key" is not a day you showed up.
+    days = {day: d for day, d in days.items() if d["models"] or prompts.get(day)}
     jobs = scheduled_jobs() if machine_jobs else 0
 
     recent_since = (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
@@ -2002,7 +2039,7 @@ def leaks(extra, result, today):
     called = set()
     for day, d in (extra.get("days") or {}).items():
         if d30 <= day <= until_s:
-            called |= {LOG_NAME_RE.sub("_", s) for s in d["servers"]}
+            called |= {LOG_NAME_RE.sub("_", s) for s in d["servers_called"]}
     idle = sorted({shown for name, shown in (extra.get("connectors") or {}).items()
                    if LOG_NAME_RE.sub("_", name) not in called}, key=str.lower)
     found.sort(key=lambda f: -f["per_week"])
