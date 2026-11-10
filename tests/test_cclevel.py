@@ -496,6 +496,20 @@ def log_line(when, message_id, session="s1", entrypoint="cli", model="model-a", 
     }, separators=(",", ":"))
 
 
+def result_line(when, call_id, failed=False, text="done", session="s1"):
+    """Claude Code's answer to one tool call, as it logs it: the output, with is_error true when the call failed."""
+    return json.dumps({"type": "user", "timestamp": when.isoformat(), "sessionId": session,
+                       "message": {"role": "user", "content": [{"tool_use_id": call_id, "type": "tool_result",
+                                                                "content": text, "is_error": failed}]}},
+                      separators=(",", ":"))
+
+
+def prompt_line(when, text, session="s1", entrypoint="cli"):
+    """A prompt as the session log keeps it (a headless run's prompt is logged here, never in history.jsonl)."""
+    return json.dumps({"type": "user", "timestamp": when.isoformat(), "sessionId": session, "entrypoint": entrypoint,
+                       "message": {"role": "user", "content": text}}, separators=(",", ":"))
+
+
 def history(root, days):
     """Prompt history: {days ago: number of prompts}."""
     write(root, "history.jsonl", "".join(
@@ -1105,6 +1119,91 @@ class Framework(unittest.TestCase):
         self.assertEqual(list(cclevel.STATS["appetite"]), ["mtok_30d"])
         self.assertNotIn("spawns_30d", cclevel.STATS["autonomy"])
         self.assertEqual(tuple(cclevel.STATS) + ("brains",), tuple(n for n in cclevel.STAT_ORDER if n != "brains") + ("brains",))
+
+    def test_a_tool_call_that_failed_earns_nothing(self):
+        """Issue #35: a commit that errors is not a commit, a connector call that errors is not a connector used."""
+        when = day_stamp(1)
+        calls = [("Bash", {"command": "git commit -m 'ship it'"}), ("Bash", {"command": "gh pr create --fill"}),
+                 ("Edit", {"file_path": "/home/u/.claude/projects/p/memory/notes.md"}), ("mcp__zzq-tracker__list", {}),
+                 ("Skill", {"skill": "zzq-skill"}), ("Agent", {"subagent_type": "zzq-helper"}),
+                 ("Artifact", {"file_path": "page.html"}), ("EnterWorktree", {}), ("ExitPlanMode", {})]
+        counts = ("commits_30d", "prs_30d", "edits_30d", "connectors_used", "skills_used", "agent_types_used",
+                  "spawns_30d", "pages_30d")
+        lessons = {"c_commit", "c_pr", "c_edit", "b_memory", "r_connector", "r_skill", "u_subagent", "c_worktree", "b_plan"}
+        # No plan-mode line in this log: only ExitPlanMode can pass the plan check here.
+        for failed in (True, False):
+            # A working call's output may itself start with "Error": only the is_error flag counts.
+            texts = {3: "Error: result (91,204 characters) exceeds maximum allowed tokens. Output has been saved to a file."}
+            lines = [log_line(when, "m1", tools=calls)]
+            lines += [result_line(when, "m1_%d" % i, failed, texts.get(i, "done")) for i in range(len(calls))]
+            write(self.dir, "projects/proj/s1.jsonl", "\n".join(lines) + "\n")
+            result = self.score()
+            raw = result["raw"]
+            self.assertEqual({k: raw[k] for k in counts}, {k: 0 if failed else 1 for k in counts}, failed)
+            self.assertEqual(lessons & set(result["lessons"]), set() if failed else lessons, failed)
+            self.assertEqual("first_subagent" in result["badges"], not failed)
+            # A failed call is still a tool call, and still a failing one under Health.
+            self.assertEqual((raw["tool_calls_30d"], raw["tool_errors_30d"]), (len(calls), len(calls) if failed else 0))
+        # A call whose answer has not been logged yet (still running) counts for now.
+        write(self.dir, "projects/proj/s1.jsonl", log_line(when, "m1", tools=calls[:1]) + "\n")
+        self.assertEqual(self.score()["raw"]["commits_30d"], 1)
+        # One result line can carry several answers (parallel calls): only the one that failed loses its credit.
+        both = json.dumps({"type": "user", "timestamp": when.isoformat(), "sessionId": "s1", "message": {"role": "user", "content": [
+            {"tool_use_id": "m1_0", "type": "tool_result", "content": "nothing to commit", "is_error": True},
+            {"tool_use_id": "m1_1", "type": "tool_result", "content": "pull request opened", "is_error": False}]}},
+            separators=(",", ":"))
+        write(self.dir, "projects/proj/s1.jsonl", log_line(when, "m1", tools=calls[:2]) + "\n" + both + "\n")
+        raw = self.score()["raw"]
+        self.assertEqual((raw["commits_30d"], raw["prs_30d"], raw["tool_errors_30d"]), (0, 1, 1))
+        # Failed calls lower the day's XP: the same day with every call failing earns less than with every call working.
+        priced = {}
+        for failed in (True, False):
+            lines = [log_line(when, "m1", tools=calls * 3)] + [result_line(when, "m1_%d" % i, failed) for i in range(27)]
+            write(self.dir, "projects/proj/s1.jsonl", "\n".join(lines) + "\n")
+            priced[failed] = self.score()["raw"]["xp_by_day"][-2]       # yesterday, as banked
+        self.assertLess(priced[True], priced[False])
+
+    def test_a_headless_run_that_never_got_an_answer_is_not_unattended(self):
+        when = day_stamp(1)
+        write(self.dir, "projects/proj/s1.jsonl", log_line(when, "m1") + "\n")      # a real interactive day
+        failed_run = [prompt_line(when, "run the nightly job", session="s2", entrypoint="sdk-cli"),
+                      log_line(when, "x1", session="s2", entrypoint="sdk-cli", model="<synthetic>", output=0)]
+        write(self.dir, "projects/proj/s2.jsonl", "\n".join(failed_run) + "\n")
+        result = self.score()
+        self.assertEqual((result["raw"]["auto_sessions_30d"], result["raw"]["auto_days_30d"]), (0, 0))
+        self.assertNotIn("first_loop", result["badges"])
+        self.assertNotIn("u_headless", result["lessons"])
+        # The same run once Claude has really answered in it: unattended, with the badge.
+        write(self.dir, "projects/proj/s2.jsonl", "\n".join(failed_run + [log_line(when, "x2", session="s2", entrypoint="sdk-cli")]) + "\n")
+        result = self.score()
+        self.assertEqual((result["raw"]["auto_sessions_30d"], result["raw"]["auto_days_30d"]), (1, 1))
+        self.assertIn("first_loop", result["badges"])
+        self.assertIn("u_headless", result["lessons"])
+
+    def test_a_day_of_nothing_but_failed_runs_is_not_a_day(self):
+        """A cron with a broken key on a machine nobody uses: no showing up, no streak, no XP."""
+        def runs(model):
+            for ago in range(1, 9):
+                when = day_stamp(ago)
+                write(self.dir, "projects/proj/c%d.jsonl" % ago, "\n".join([
+                    prompt_line(when, "run the nightly job", session="c%d" % ago, entrypoint="sdk-cli"),
+                    log_line(when, "c%d" % ago, session="c%d" % ago, entrypoint="sdk-cli", model=model)]) + "\n")
+        runs("<synthetic>")
+        result = self.score()
+        raw = result["raw"]
+        self.assertEqual((raw["active_days"], raw["longest_streak"], result["xp"], raw["xp_by_day"]), (0, 0, 0, [0] * 14))
+        self.assertEqual(result["badges"], [])
+        # Positive control: the same eight days, each with one real answer, show up and keep a streak.
+        runs("model-a")
+        result = self.score()
+        self.assertEqual(result["raw"]["active_days"], 8)
+        self.assertGreaterEqual(result["raw"]["longest_streak"], 7)
+        self.assertIn("streak_7", result["badges"])
+        # A day whose every reply failed still counts when you typed prompts that day (an outage), priced from its logs.
+        runs("<synthetic>")
+        history(self.dir, {3: 2})
+        raw = self.score()["raw"]
+        self.assertEqual((raw["active_days"], raw["xp_days"], raw["xp_days_estimated"]), (1, 1, 0))
 
 
 def command_line(when, name):
@@ -4407,6 +4506,10 @@ class Leaks(unittest.TestCase):
         # Positive control: calling the plugin server by its log name takes it off the list.
         self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search", "mcp__plugin_tools_zzq-gamma__go"]))
         self.assertEqual(self.report()["unused_connectors"], ["zzq-beta"])
+        # A call that failed is still a call: that connector is in use (and may need fixing), not idle.
+        self.logs(reply(day_stamp(1), "m1", tools=["mcp__zzq-alpha__search", "mcp__zzq-beta__find"]),
+                  result_line(day_stamp(1), "m1_1", failed=True))
+        self.assertEqual(self.report()["unused_connectors"], ["zzq-gamma"])
         self.assertIn("No dollar figure", self.text())
 
     def test_prices_are_a_yardstick_and_unknown_models_have_none(self):
