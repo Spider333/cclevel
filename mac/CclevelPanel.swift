@@ -20,6 +20,11 @@
 // in memory, quiet, and silent when macOS user interface sound effects are off. With Reduce Motion on it boings without
 // moving. It sends and saves nothing.
 //
+// Free roam: the lock in the corner of the creature's square lets it out. It hops along the top of the screen, just under
+// the menu bar, in a small see-through window of its own (creatures/roam/<stage>_<class>.mov, else the stage's), rests
+// most of the time, and a poke makes it jump aside. The lock again, or a right-click on it, calls it back. While it is
+// out the panel keeps one empty file, roam, beside itself. It sends nothing. `--roam-test` (further down) runs it for tests.
+//
 // `--snapshot OUT.png --card CARD.json [--clips DIR] [--page home|fix|learn] [--height PT] [--full | --scrolled]` draws
 // what the panel shows on that page (with --height, as on a screen with that much room; with --full, the whole page; with
 // --scrolled, the page scrolled to its end, under the header that stays put) into a picture,
@@ -151,6 +156,34 @@ func uiSoundsOn() -> Bool {
     if let testUISounds { return testUISounds }
     let value = UserDefaults(suiteName: "com.apple.systemsound")?.object(forKey: "com.apple.sound.uiaudio.enabled")
     return (value as? NSNumber)?.boolValue ?? true
+}
+
+/// The poke's boing, in a stage's voice: the player is made once per stage and kept. The creature in the panel and the
+/// one out for a walk follow the same rules: silent when user interface sound effects are off, and once per boingGap.
+final class Boinger {
+    private var made: (stage: String, player: AVAudioPlayer, wav: Data)?
+    private var last: TimeInterval = -.infinity
+
+    func boing(stage: String, at time: TimeInterval) -> (sound: String, hz: Double, seconds: Double, peak: Double) {
+        guard let voice = boingVoices[stage] else { return ("none", 0, 0, -.infinity) }
+        if made?.stage != stage {
+            let wav = boingWAV(hz: voice)
+            made = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: stage, player: $0, wav: wav) }
+            made?.player.prepareToPlay()
+        }
+        guard let made else { return ("failed", voice, 0, -.infinity) }
+        var sound = "off"
+        if uiSoundsOn() {
+            if time - last < boingGap {
+                sound = "throttled"
+            } else {
+                last = time
+                made.player.currentTime = 0
+                sound = made.player.play() ? "played" : "failed"
+            }
+        }
+        return (sound, voice, made.player.duration, peakDBFS(made.wav))
+    }
 }
 
 /// Holds the first frame while it is decoded on another queue.
@@ -575,7 +608,7 @@ func heading(_ title: String, _ symbol: String, right: String? = nil, width: CGF
 
 /// The Creature card: the creature (its rendered loop, or the card's own art), who it is, and how it feels.
 final class PanelView: NSView {
-    var card: Card? { didSet { updateAccessibility(); loadClip(); needsDisplay = true } }
+    var card: Card? { didSet { updateAccessibility(); loadClip(); roamChanged(); needsDisplay = true } }
     var isBlinking = false { didSet { needsDisplay = true } }
     /// Where the stage loops are; nil, or a stage without its file, draws the card's art instead.
     var clipsDir: URL? { didSet { clipStage = nil; loadClip() } }
@@ -594,8 +627,13 @@ final class PanelView: NSView {
     private var wantsPlay = false
     private var hovering = false
     private var pressed = false
-    private var lastBoing: TimeInterval = -.infinity
-    private var boing: (stage: String, player: AVAudioPlayer, wav: Data)?
+    private let boinger = Boinger()
+    /// Free roam: whether the creature is out for a walk (its square then says so and plays nothing), whether this look
+    /// has a see-through loop to walk with, and what the lock in the square's corner does.
+    var roamOut = false { didSet { roamChanged() } }
+    var roamAvailable = false { didSet { roamChanged() } }
+    var onRoam: (() -> Void)?
+    let lock = NSButton(frame: NSRect(x: creatureBox.maxX - 30, y: creatureBox.maxY - 30, width: 26, height: 26))
 
     /// What one poke did, read back from the layer and the player: --poke-at prints it.
     struct Poke {
@@ -629,6 +667,14 @@ final class PanelView: NSView {
         video.isHidden = true
         video.setAccessibilityElement(false)   // decorative: the card's label says who the creature is
         addSubview(video)
+        lock.wantsLayer = true   // layer-backed like the loop under it, or the playing loop would cover it
+        lock.isBordered = false
+        lock.imagePosition = .imageOnly
+        lock.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        lock.target = self
+        lock.action = #selector(lockClicked)
+        addSubview(lock)
+        roamChanged()
         // Hover and the pointing hand: the panel is an accessory app, so the cursor is set on enter and exit as well.
         addTrackingArea(NSTrackingArea(rect: creatureBox, options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways],
                                        owner: self))
@@ -641,6 +687,24 @@ final class PanelView: NSView {
     @objc private func motionSettingChanged() {
         setPlaying(wantsPlay)
         lift()   // a hover lift goes (or comes back) with the setting
+    }
+
+    @objc private func lockClicked() { onRoam?() }
+
+    /// The lock in the creature square's corner: closed while the creature is home, open while it is out for a walk,
+    /// and switched off for a look with no see-through loop.
+    private func roamChanged() {
+        let name = roamOut ? "lock.open.fill" : "lock.fill"
+        let label = roamOut ? "Call your creature back" : "Let your creature out on your screen"
+        lock.image = NSImage(systemSymbolName: name, accessibilityDescription: label)
+        lock.setAccessibilityLabel(label)
+        lock.isEnabled = roamAvailable || roamOut
+        lock.isHidden = card == nil
+        lock.toolTip = roamOut ? "Call it back home."
+            : roamAvailable ? "Let it out: your creature hops along the top of your screen. Click again to call it back."
+            : "Not available for this creature yet."
+        setPlaying(wantsPlay)
+        needsDisplay = true
     }
 
     /// Loads the loop for the card's stage and class, once per look: its first frame now, the player for later.
@@ -692,12 +756,12 @@ final class PanelView: NSView {
             CATransaction.commit()
         }
         guard let player else { return }
-        if on && !reduceMotion() {
+        if on && !reduceMotion() && !roamOut {
             video.isHidden = false
             player.play()
         } else {
             player.pause()
-            if reduceMotion() {
+            if reduceMotion() || roamOut {
                 video.isHidden = true   // the first-frame still drawn underneath shows instead
             }
         }
@@ -726,12 +790,12 @@ final class PanelView: NSView {
         return hit === video ? self : hit
     }
 
-    private func onCreature(_ event: NSEvent) -> Bool {
-        card != nil && creatureBox.contains(convert(event.locationInWindow, from: nil))
+    private func onCreature(_ event: NSEvent) -> Bool {   // not while it is out for a walk: its square is empty
+        card != nil && !roamOut && creatureBox.contains(convert(event.locationInWindow, from: nil))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard card != nil else { return }
+        guard card != nil, !roamOut else { return }
         hovering = true
         NSCursor.pointingHand.set()
         lift()
@@ -789,7 +853,7 @@ final class PanelView: NSView {
     /// stage's voice, unless user interface sound effects are off or it boinged less than boingGap ago.
     @discardableResult
     func poke(at time: TimeInterval) -> Poke? {
-        guard let card else { return nil }
+        guard let card, !roamOut else { return nil }   // out for a walk: nobody in the square to poke
         if !reduceMotion() {
             if !video.isHidden {
                 hop()
@@ -798,29 +862,7 @@ final class PanelView: NSView {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in self?.isBlinking = false }
             }
         }
-        var sound = "none", hz = 0.0, seconds = 0.0, peak = -Double.infinity
-        if let voice = boingVoices[card.stage] {
-            if boing?.stage != card.stage {
-                let wav = boingWAV(hz: voice)
-                boing = (try? AVAudioPlayer(data: wav, fileTypeHint: AVFileType.wav.rawValue)).map { (stage: card.stage, player: $0, wav: wav) }
-                boing?.player.prepareToPlay()
-            }
-            hz = voice
-            sound = "failed"   // unless the player below was made
-            if let boing {
-                seconds = boing.player.duration
-                peak = peakDBFS(boing.wav)
-                if !uiSoundsOn() {
-                    sound = "off"
-                } else if time - lastBoing < boingGap {
-                    sound = "throttled"
-                } else {
-                    lastBoing = time
-                    boing.player.currentTime = 0
-                    sound = boing.player.play() ? "played" : "failed"
-                }
-            }
-        }
+        let (sound, hz, seconds, peak) = boinger.boing(stage: card.stage, at: time)
         let done = Poke(anim: (hopper.animationKeys() ?? []) + (isBlinking ? ["blink"] : []), sound: sound, hz: hz,
                         seconds: seconds, peak: peak)
         lastPoke = done
@@ -869,6 +911,14 @@ final class PanelView: NSView {
                 put(shown, art, orange, at: NSPoint(x: creatureBox.midX - w / 2, y: y))
                 y += step
             }
+        }
+        if roamOut {   // its square, dimmed, says where it went
+            NSColor(white: 0, alpha: 0.6).setFill()
+            NSBezierPath(roundedRect: creatureBox, xRadius: creatureCorner, yRadius: creatureCorner).fill()
+            let note = "Out for a walk"
+            let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            let w = (note as NSString).size(withAttributes: [.font: font]).width
+            put(note, font, .white, at: NSPoint(x: creatureBox.midX - w / 2, y: creatureBox.midY - 8))
         }
         // One short fact a line, so every mood, class and Brains title fits the column beside the creature,
         // even when the overview scrolls.
@@ -1558,6 +1608,510 @@ final class PageView: NSView {
 }
 
 /// The menu bar item, the panel it opens, and the hourly offline refresh.
+// Free roam: with the lock on the Creature card open, the creature leaves the panel and hops along the top of the screen,
+// just under the menu bar, in a small see-through window of its own that moves with it. The window is the size of one
+// frame of its loop, so the only clicks it can take are clicks on the creature (a poke); everything beside it belongs to
+// whatever is underneath. It rests most of the time on a paused frame; the loop plays while it travels and for a moment
+// when the pointer touches it. It makes no network call and saves one empty file, panel/roam, while it is out.
+
+/// The walker's window, a square this many points wide: one frame of the loop (the body is about 40 of them).
+let roamSize: CGFloat = 64
+/// A poke sends it at least this far from where it was, so what it sat on can be clicked.
+let roamAway: CGFloat = 120
+/// With no keyboard or mouse input for this long, it stops travelling until someone is back.
+let roamIdleAfter: TimeInterval = 5 * 60
+let roamRest = 5.0...20.0
+let roamFirstRest = 2.0...4.0
+/// How far one trip goes, in points.
+let roamTrip: ClosedRange<CGFloat> = 80...420
+/// How long the loop plays when the pointer touches it.
+let roamNotice: TimeInterval = 3
+/// How each stage travels: a hop's height and length in points, and its seconds.
+let roamStyles: [String: (hop: CGFloat, step: CGFloat, beat: TimeInterval)] = [
+    "Egg": (4, 14, 0.45), "Hatchling": (10, 26, 0.32), "Lil Guy": (12, 32, 0.34), "Big Guy": (8, 30, 0.5),
+    "Gigachad": (14, 44, 0.42), "GOAT": (18, 56, 0.6)]
+/// Set by --idle in a --roam-test run, as if nobody had touched this Mac for that many seconds (for tests).
+var testIdle: TimeInterval?
+
+/// The empty file that says the creature is out: there while it is, gone when it is home. --panel off removes it.
+func roamMarker(_ panelDir: URL) -> URL { panelDir.appendingPathComponent("roam") }
+
+/// The see-through loop for a look, creatures/roam/<stage>_<class>.mov or the stage's own: the first that is there and
+/// decodes, or nil, and then this creature cannot be let out.
+func roamClip(stage: String, cls: String, dir: URL?) -> URL? {
+    guard let dir, let name = clipNames[stage] else { return nil }
+    let roam = dir.appendingPathComponent("roam")
+    for url in ((classNames[cls].map { ["\(name)_\($0)"] } ?? []) + [name]).map({ roam.appendingPathComponent("\($0).mov") })
+    where FileManager.default.isReadableFile(atPath: url.path) && firstFrame(url) != nil {
+        return url
+    }
+    return nil
+}
+
+/// Seconds since the last keyboard or mouse input on this Mac: one number from macOS, not what was typed or clicked.
+func idleSeconds() -> TimeInterval {
+    testIdle ?? CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+}
+
+/// How see-through one pixel of a picture is, 0 (clear) to 255 (solid), counted from the top left (for --roam-test).
+func alphaAt(_ image: CGImage, x: Int, y: Int) -> Int {
+    var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    guard let context = CGContext(data: &pixels, width: image.width, height: image.height, bitsPerComponent: 8,
+                                  bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return -1 }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    return Int(pixels[(y * image.width + x) * 4 + 3])
+}
+
+/// The walker's choices (where next, how long a rest): random, or the same every run from --seed (for tests).
+struct Dice: RandomNumberGenerator {
+    var state: UInt64
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// The walker's window: never the key window, and free to hop up past the top of the screen.
+final class RoamWindow: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+/// What is in the walker's window: the loop, and the mouse. A click is a poke, a right-click offers the way home.
+final class RoamView: NSView {
+    weak var roamer: Roamer?
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        // Squashes from its feet. The loop's clear pixels stay clear: the layer asks for frames that keep their alpha.
+        playerLayer.anchorPoint = CGPoint(x: 0.5, y: 0)
+        playerLayer.frame = bounds
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.pixelBufferAttributes = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        layer?.addSublayer(playerLayer)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("Your creature, out for a walk")
+        setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Poke") { [weak self] in
+            self?.roamer?.poke(at: ProcessInfo.processInfo.systemUptime) ?? false
+        }])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.set()
+        roamer?.notice()
+    }
+
+    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+
+    override func mouseUp(with event: NSEvent) {
+        // Where the click was, from the click itself: the walker never asks macOS where the pointer is.
+        if bounds.contains(convert(event.locationInWindow, from: nil)), let window {
+            roamer?.poke(at: event.timestamp, clickX: window.convertPoint(toScreen: event.locationInWindow).x)
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Call it back", action: #selector(Roamer.callBack), keyEquivalent: "").target = roamer
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit CC level panel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "").target = NSApp
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+}
+
+/// The creature out for a walk: its window, where it goes and when it stops.
+final class Roamer: NSObject {
+    let window = RoamWindow(contentRect: NSRect(x: 0, y: 0, width: roamSize, height: roamSize),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private let view = RoamView(frame: NSRect(x: 0, y: 0, width: roamSize, height: roamSize))
+    private var player: AVQueuePlayer?
+    private var looper: AVPlayerLooper?
+    private var stage = ""
+    private let boinger = Boinger()
+    private var dice: Dice
+    /// The next thing to do (a trip after a rest, the loop's pause after a notice), and the 60-a-second clock that runs
+    /// only while it moves.
+    private var next: Timer?
+    private var stopLoop: Timer?
+    private var ticker: Timer?
+    private var move: (from: NSPoint, to: NSPoint, height: CGFloat, start: TimeInterval, seconds: TimeInterval,
+                       fade: (from: CGFloat, to: CGFloat), then: () -> Void)?
+    private(set) var isOut = false
+    private var settled = false   // on the line and free to travel: not on its way out or home
+    private var asleep = false
+    /// "Call it back" in its right-click menu.
+    var onCallBack: (() -> Void)?
+    /// --roam-test: every event, with where the window is.
+    var log: ((String, [String: Any]) -> Void)?
+
+    init(seed: UInt64?) {
+        dice = Dice(state: seed ?? UInt64.random(in: 0...UInt64.max))
+        super.init()
+        view.roamer = self
+        window.contentView = view
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.hidesOnDeactivate = false
+        window.ignoresMouseEvents = false   // said outright: a click anywhere in its small square is a poke
+        // Above app windows and the menu bar's items, below any open menu. On every desktop, but never in a full-screen
+        // space: .fullScreenNone is what keeps it out. Without it macOS shows a menu bar program's "every desktop"
+        // window over full-screen apps too, at any window level (measured: it sat on top of a full-screen terminal).
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
+        let center = NotificationCenter.default, work = NSWorkspace.shared.notificationCenter
+        center.addObserver(self, selector: #selector(lookAgain), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+        center.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            work.addObserver(self, selector: #selector(sleep), name: name, object: nil)
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            work.addObserver(self, selector: #selector(lookAgain), name: name, object: nil)
+        }
+        work.addObserver(self, selector: #selector(spaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+    }
+
+    /// Whether it can be seen: on the space in front (macOS keeps it off full-screen ones) and not covered. macOS tells
+    /// a menu bar program nothing else about full screen (its presentation options stay empty), so this is the test.
+    private var inSight: Bool { window.isOnActiveSpace && window.occlusionState.contains(.visible) }
+
+    private var look: Timer?
+
+    /// What can be seen may have changed (the space in front, what covers the window, the screen waking). macOS says so
+    /// in bursts while it animates, so the walker decides once, a moment after the last of them.
+    @objc private func lookAgain() {
+        look?.invalidate()
+        look = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in self?.seen() }
+    }
+
+    /// Another space came to the front. In a full-screen space the walker is not there, so everything stops; back on a
+    /// desktop it goes on. It looks again a little later too, in case the window's own state settled late.
+    @objc private func spaceChanged() {
+        lookAgain()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.lookAgain() }
+    }
+
+    /// The display with the main menu bar, and the line under it: where the window's bottom left corner may be.
+    private var screen: NSScreen? { NSScreen.screens.first }
+    private var lineY: CGFloat { (screen?.visibleFrame.maxY ?? roamSize) - roamSize }
+    private var lineX: ClosedRange<CGFloat> {
+        let frame = screen?.visibleFrame ?? .zero
+        return frame.minX...max(frame.minX, frame.maxX - roamSize)
+    }
+    private func onLine(_ x: CGFloat) -> CGFloat { min(max(x, lineX.lowerBound), lineX.upperBound) }
+    var hasClip: Bool { player != nil }
+
+    /// The look's see-through loop, paused on its first frame until the creature moves.
+    func load(_ url: URL, stage: String) {
+        self.stage = stage
+        let wasPlaying = (player?.rate ?? 0) != 0   // a new look while it travels (it evolved): the new loop plays on
+        player?.pause()
+        let queue = AVQueuePlayer()
+        queue.isMuted = true
+        queue.preventsDisplaySleepDuringVideoPlayback = false
+        looper = AVPlayerLooper(player: queue, templateItem: AVPlayerItem(url: url))
+        player = queue
+        view.playerLayer.player = queue
+        if wasPlaying { queue.play() }
+    }
+
+    private func report(_ event: String, _ more: [String: Any] = [:]) {
+        guard let log else { return }
+        let f = window.frame
+        var info: [String: Any] = [
+            "x": Double(f.minX), "y": Double(f.minY), "w": Double(f.width), "h": Double(f.height),
+            "top": Double(f.maxY), "line": Double(screen?.visibleFrame.maxY ?? 0), "level": window.level.rawValue,
+            "playing": (player?.rate ?? 0) != 0, "all_spaces": window.collectionBehavior.contains(.canJoinAllSpaces),
+            "full_screen": window.collectionBehavior.contains(.fullScreenAuxiliary),
+            "full_screen_none": window.collectionBehavior.contains(.fullScreenNone), "shown": window.isVisible]
+        more.forEach { info[$0] = $1 }
+        log(event, info)
+    }
+
+    /// Plays the loop, for a while or until the next rest. Never with Reduce Motion on.
+    private func playLoop(for seconds: TimeInterval? = nil) {
+        guard !reduceMotion() else { return }
+        stopLoop?.invalidate()
+        player?.play()
+        if let seconds {
+            stopLoop = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+                if self?.move == nil { self?.player?.pause() }
+            }
+        }
+    }
+
+    /// Out of its menu bar icon (or, with the icon hidden, at the right end) and down onto the line.
+    func letOut(from icon: NSRect?) {
+        guard hasClip, !isOut else { return }
+        isOut = true
+        settled = false
+        asleep = false
+        let x = onLine((icon?.midX ?? lineX.upperBound + roamSize / 2 - 12) - roamSize / 2)
+        if reduceMotion() {
+            window.setFrameOrigin(NSPoint(x: x, y: lineY))
+            window.alphaValue = 1
+            window.orderFrontRegardless()
+            arrived()
+            return
+        }
+        window.setFrameOrigin(NSPoint(x: x, y: lineY + roamSize))
+        window.alphaValue = 0
+        window.orderFrontRegardless()
+        playLoop()
+        animate(to: NSPoint(x: x, y: lineY), height: 0, seconds: 0.4, fade: (0, 1)) { [weak self] in self?.arrived() }
+    }
+
+    private func arrived() {
+        settled = true
+        report("out")
+        // Let out where it cannot be seen (a full-screen app in front, the screen asleep): it waits there, stopped.
+        if !inSight { return sleep() }
+        rest(roamFirstRest)
+    }
+
+    /// No loop for this look: nothing to walk with until another is loaded.
+    func unload() {
+        player?.pause()
+        looper = nil
+        player = nil
+        view.playerLayer.player = nil
+    }
+
+    /// Back up into its icon, and gone.
+    func goHome(to icon: NSRect?, now: Bool = false) {
+        guard isOut else { return }
+        settled = false
+        next?.invalidate()
+        let gone = { [weak self] in
+            guard let self else { return }
+            self.isOut = false
+            self.player?.pause()
+            self.window.orderOut(nil)
+            self.report("home")
+        }
+        if now || reduceMotion() || asleep {
+            stopMoving()
+            return gone()
+        }
+        let x = icon.map { $0.midX - roamSize / 2 } ?? window.frame.minX
+        playLoop()
+        animate(to: NSPoint(x: x, y: lineY + roamSize), height: 24, seconds: 0.45, fade: (1, 0), then: gone)
+    }
+
+    @objc func callBack() { onCallBack?() }
+
+    /// A rest on a paused frame, then a trip.
+    private func rest(_ range: ClosedRange<Double>) {
+        guard isOut, settled, !asleep else { return }
+        stopLoop?.invalidate()
+        player?.pause()
+        // On the line as it is now: the display may have changed while it was on its way.
+        window.setFrameOrigin(NSPoint(x: onLine(window.frame.minX), y: lineY))
+        report("rest")
+        next?.invalidate()
+        next = Timer.scheduledTimer(withTimeInterval: Double.random(in: range, using: &dice), repeats: false) { [weak self] _ in
+            self?.trip()
+        }
+    }
+
+    /// Hops to another spot on the line, now and then with a jump at the end. Not with Reduce Motion on, and not while
+    /// nobody is at the Mac: then it looks again after the next rest.
+    private func trip() {
+        guard isOut, settled, !asleep else { return }
+        if reduceMotion() || idleSeconds() >= roamIdleAfter { return rest(roamRest) }
+        let style = roamStyles[stage] ?? (10, 28, 0.4)
+        let from = window.frame.minX
+        // A short trip, to either side: back the other way where the line ends.
+        let far = CGFloat.random(in: roamTrip, using: &dice)
+        var side: CGFloat = Bool.random(using: &dice) ? 1 : -1
+        if !lineX.contains(from + side * far) { side = -side }
+        let to = onLine(from + side * far)
+        let hops = max(1, Int((abs(to - from) / style.step).rounded(.up)))
+        let jumps = Int.random(in: 0..<4, using: &dice) == 0
+        playLoop()
+        report("trip", ["to": Double(to), "hops": hops])
+        func hop(_ i: Int) {
+            guard i <= hops else {
+                guard jumps else { return rest(roamRest) }
+                report("jump")
+                return animate(to: NSPoint(x: to, y: lineY), height: 36, seconds: 0.55) { [weak self] in self?.rest(roamRest) }
+            }
+            let x = from + (to - from) * CGFloat(i) / CGFloat(hops)
+            animate(to: NSPoint(x: x, y: lineY), height: style.hop, seconds: style.beat) { hop(i + 1) }
+        }
+        hop(1)
+    }
+
+    /// The pointer touched it: the loop plays for a moment.
+    func notice() {
+        guard isOut, settled, !asleep, move == nil else { return }
+        playLoop(for: roamNotice)
+        report("notice")
+    }
+
+    /// A poke: the boing, a squash, and a jump of roamAway or more to the side away from the click (either side for a
+    /// poke that was not a click, such as VoiceOver's), so what it sat on is free. With Reduce Motion on, the boing alone.
+    @discardableResult
+    func poke(at time: TimeInterval, clickX: CGFloat? = nil) -> Bool {
+        guard isOut, settled else { return false }
+        let sound = boinger.boing(stage: stage, at: time).sound
+        let from = window.frame.minX
+        guard !reduceMotion(), !asleep else {
+            report("poke", ["sound": sound, "anim": "none", "from": Double(from)])
+            return true
+        }
+        let squash = CAAnimationGroup()
+        squash.animations = [("transform.scale.x", [1, 1.12, 0.96, 1]), ("transform.scale.y", [1, 0.82, 1.06, 1])].map {
+            let animation = CAKeyframeAnimation(keyPath: $0.0)
+            animation.values = $0.1
+            return animation
+        }
+        squash.duration = 0.3
+        view.playerLayer.add(squash, forKey: "poke")
+        let far = CGFloat.random(in: roamAway...(roamAway + 100), using: &dice)
+        let either = Bool.random(using: &dice)
+        var side: CGFloat = (clickX.map { from + roamSize / 2 >= $0 } ?? either) ? 1 : -1
+        if !lineX.contains(from + side * far) { side = -side }
+        next?.invalidate()
+        playLoop()
+        report("poke", ["sound": sound, "anim": "squash,jump", "from": Double(from)])
+        animate(to: NSPoint(x: onLine(from + side * far), y: lineY), height: 40, seconds: 0.55) { [weak self] in
+            self?.rest(roamRest)
+        }
+        return true
+    }
+
+    /// Moves the window from where it is to a point along an arc this high, fading if asked, then goes on.
+    private func animate(to: NSPoint, height: CGFloat, seconds: TimeInterval, fade: (from: CGFloat, to: CGFloat) = (1, 1),
+                         then: @escaping () -> Void) {
+        move = (window.frame.origin, to, height, ProcessInfo.processInfo.systemUptime, seconds, fade, then)
+        guard ticker == nil else { return }
+        let clock = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(clock, forMode: .common)   // keeps hopping while a menu is open
+        ticker = clock
+    }
+
+    private func tick() {
+        guard let m = move else { return stopMoving() }
+        let t = CGFloat(min(1, (ProcessInfo.processInfo.systemUptime - m.start) / m.seconds))
+        window.setFrameOrigin(NSPoint(x: m.from.x + (m.to.x - m.from.x) * t,
+                                      y: m.from.y + (m.to.y - m.from.y) * t + m.height * 4 * t * (1 - t)))
+        window.alphaValue = m.fade.from + (m.fade.to - m.fade.from) * t
+        if t >= 1 {
+            move = nil
+            m.then()
+            if move == nil { stopMoving() }
+        }
+    }
+
+    private func stopMoving() {
+        ticker?.invalidate()
+        ticker = nil
+        move = nil
+    }
+
+    /// The screen went to sleep, the session was switched away, or the window is not visible (a full-screen app, the
+    /// screensaver): everything stops, on the line.
+    @objc private func sleep() {
+        guard isOut, settled, !asleep else { return }
+        asleep = true
+        next?.invalidate()
+        stopLoop?.invalidate()
+        stopMoving()
+        player?.pause()
+        window.setFrameOrigin(NSPoint(x: onLine(window.frame.minX), y: lineY))
+        window.alphaValue = 1
+        report("sleep")
+    }
+
+    /// Visible again: back to a short rest, then on with its walk. Still out of sight: stopped.
+    private func seen() {
+        guard isOut, settled else { return }
+        if !inSight { return sleep() }
+        guard asleep else { return }
+        asleep = false
+        report("wake")
+        rest(roamFirstRest)
+    }
+
+    /// The display changed (resolution, a lid, the menu bar hidden or shown): back onto the line.
+    @objc private func screenChanged() {
+        guard isOut, settled, move == nil else { return }
+        window.setFrameOrigin(NSPoint(x: onLine(window.frame.minX), y: lineY))
+    }
+}
+
+/// Free roam's switch: the lock on the Creature card, the marker file, and the walker.
+final class RoamControl {
+    let roamer: Roamer
+    private let marker: URL
+    private let clipsDir: URL?
+    private weak var creature: PanelView?
+    private var look = ""
+    /// Where the menu bar icon is, when it is on screen: the creature leaves and comes home through it.
+    var icon: () -> NSRect? = { nil }
+    /// After the lock was clicked (the panel closes, so the creature is seen leaving).
+    var didToggle: (() -> Void)?
+
+    init(panelDir: URL, creature: PanelView, clipsDir: URL?, seed: UInt64? = nil) {
+        roamer = Roamer(seed: seed)
+        marker = roamMarker(panelDir)
+        self.clipsDir = clipsDir
+        self.creature = creature
+        creature.onRoam = { [weak self] in self?.toggle() }
+        roamer.onCallBack = { [weak self] in self?.toggle() }
+    }
+
+    private var wantsOut: Bool { FileManager.default.fileExists(atPath: marker.path) }
+
+    /// A new card: the look's see-through loop, if it has one, and out again if it was out when the panel last ran.
+    func update(_ card: Card?) {
+        guard let card else { return }
+        let key = "\(card.stage)|\(card.cls)"
+        guard key != look else { return }
+        look = key
+        if let clip = roamClip(stage: card.stage, cls: card.cls, dir: clipsDir) {
+            roamer.load(clip, stage: card.stage)
+            creature?.roamAvailable = true
+            if wantsOut && !roamer.isOut { roamer.letOut(from: icon()) }
+            creature?.roamOut = wantsOut && roamer.isOut   // the marker is gone while it is still on its way home
+        } else {   // home at once: its going is animated, so the panel is told here, not from isOut
+            creature?.roamAvailable = false
+            roamer.goHome(to: nil, now: true)
+            roamer.unload()
+            creature?.roamOut = false
+        }
+    }
+
+    /// The lock: out when it is home (and this look can walk), home when it is out.
+    func toggle() {
+        if roamer.isOut {
+            try? FileManager.default.removeItem(at: marker)
+            roamer.goHome(to: icon())
+            creature?.roamOut = false
+        } else if roamer.hasClip {
+            try? FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard FileManager.default.createFile(atPath: marker.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { return }
+            roamer.letOut(from: icon())
+            creature?.roamOut = true
+        }
+        didToggle?()
+    }
+}
+
 final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let python: String, scanner: String, claudeDir: String, cache: URL
     /// The creature's menu bar item. A fixed name lets macOS keep where the user ⌘-drags it, across restarts and
@@ -1578,6 +2132,9 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let root = PageView()
     var isScanning = false
     var blinkTimer: Timer?
+    /// Free roam: the lock on the Creature card, and the creature out for a walk.
+    lazy var roam = RoamControl(panelDir: cache.deletingLastPathComponent(), creature: root.creature,
+                                clipsDir: cache.deletingLastPathComponent().appendingPathComponent("creatures"))
 
     init(python: String, scanner: String, claudeDir: String, cache: String) {
         self.python = python; self.scanner = scanner; self.claudeDir = claudeDir
@@ -1595,6 +2152,14 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.popover.performClose(nil)
         }
         root.privacyOn = privacyCheck(claudeDir)
+        // The creature leaves and comes home through its menu bar icon, when the icon is on screen (a menu bar tidier
+        // or a crowded notch bar can hide it). The panel closes on the lock's click, so the creature is seen going.
+        roam.icon = { [weak self] in
+            guard let window = self?.item.button?.window, window.isVisible, let screen = NSScreen.screens.first,
+                  screen.frame.intersects(window.frame) else { return nil }
+            return window.frame
+        }
+        roam.didToggle = { [weak self] in self?.popover.performClose(nil) }
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
@@ -1624,6 +2189,7 @@ final class PanelApp: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         root.card = card
         root.updated = date
         showTitle(card)
+        roam.update(card)
     }
 
     func refreshIfStale() {
@@ -1778,6 +2344,10 @@ if let out = option("--snapshot") {
     }
     view.card = card
     view.updated = Date(timeIntervalSince1970: 0)
+    // Free roam's lock as the running panel would show it: on when this look has a see-through loop in --clips, and
+    // with --roam-out, as while the creature is out for a walk.
+    view.creature.roamAvailable = roamClip(stage: card.stage, cls: card.cls, dir: view.creature.clipsDir) != nil
+    view.creature.roamOut = CommandLine.arguments.contains("--roam-out")
     if CommandLine.arguments.contains("--page") {
         guard let name = option("--page"), let page = Page(rawValue: name) else {
             FileHandle.standardError.write("cclevel-panel: --page is home, fix, learn or friends\n".data(using: .utf8)!)
@@ -1832,7 +2402,85 @@ if let out = option("--snapshot") {
         exit(0)
     }
     for card in view.cards { print(card.accessibilityLabel() ?? "") }
+    if CommandLine.arguments.contains("--roam-out") || CommandLine.arguments.contains("--lock") {
+        let lock = view.creature.lock
+        print("Lock: \(lock.accessibilityLabel() ?? "")\(lock.isEnabled ? "" : " (off: \(lock.toolTip ?? ""))")")
+    }
     exit(0)
+}
+
+// How see-through each of free roam's loops is, for tests: `--clip-alpha DIR` prints, for every .mov in DIR by name, its
+// first frame's alpha at a corner and at the centre ("egg.mov 0 255"; "egg.mov none" for one that does not decode).
+if let dir = option("--clip-alpha") {
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".mov") }.sorted()
+    for name in names {
+        let url = URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent(name)
+        if let frame = firstFrame(url)?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            print("\(name) \(alphaAt(frame, x: 1, y: 1)) \(alphaAt(frame, x: frame.width / 2, y: frame.height / 2))")
+        } else {
+            print("\(name) none")
+        }
+    }
+    exit(0)
+}
+
+// Free roam without the menu bar item, for tests: `--roam-test SECONDS --card CARD.json --clips DIR --panel-dir DIR` runs
+// the walker as the panel would (out if DIR/roam is there) and prints one JSON line per event with where its window is.
+// `--seed N` makes its choices the same every run, `--idle S` runs it as if nobody had touched the Mac for S seconds,
+// `--poke-after S` pokes it S seconds in (with `--click-side left|right`, as a click on that half of it), `--toggle-after S` clicks the Creature card's lock S seconds in, and
+// --reduce-motion and --ui-sounds work as with --snapshot.
+if let text = option("--roam-test") {
+    guard let seconds = Double(text), let path = option("--card"), let data = FileManager.default.contents(atPath: path),
+          let card = readCard(data), let clips = option("--clips"), let panelDir = option("--panel-dir") else {
+        FileHandle.standardError.write("cclevel-panel: --roam-test SECONDS needs --card, --clips and --panel-dir\n".data(using: .utf8)!)
+        exit(1)
+    }
+    setvbuf(stdout, nil, _IONBF, 0)
+    testReduceMotion = CommandLine.arguments.contains("--reduce-motion")
+    testUISounds = ["on": true, "off": false][option("--ui-sounds") ?? ""]
+    testIdle = option("--idle").flatMap { Double($0) }
+    app.setActivationPolicy(.accessory)
+    let clipsDir = URL(fileURLWithPath: clips, isDirectory: true)
+    let creature = PanelView()
+    creature.clipsDir = clipsDir
+    creature.card = card
+    let control = RoamControl(panelDir: URL(fileURLWithPath: panelDir, isDirectory: true), creature: creature,
+                              clipsDir: clipsDir, seed: option("--seed").flatMap { UInt64($0) })
+    let start = ProcessInfo.processInfo.systemUptime
+    func line(_ event: String, _ info: [String: Any]) {
+        var all = info
+        all["event"] = event
+        all["t"] = ((ProcessInfo.processInfo.systemUptime - start) * 100).rounded() / 100
+        if let json = try? JSONSerialization.data(withJSONObject: all, options: [.sortedKeys]) {
+            print(String(data: json, encoding: .utf8) ?? "")
+        }
+    }
+    control.roamer.log = line
+    if let clip = roamClip(stage: card.stage, cls: card.cls, dir: clipsDir),
+       let frame = firstFrame(clip)?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+        line("clip", ["file": clip.lastPathComponent, "alpha_corner": alphaAt(frame, x: 1, y: 1),
+                      "alpha_centre": alphaAt(frame, x: frame.width / 2, y: frame.height / 2)])
+    } else {
+        line("clip", ["file": ""])
+    }
+    control.update(card)
+    line(control.roamer.isOut ? "walker" : "no-walker", ["lock_enabled": creature.lock.isEnabled])
+    if let after = option("--poke-after").flatMap({ Double($0) }) {
+        // With --click-side left|right, a poke as from a click on that half of the creature: it jumps to the other side.
+        let side: CGFloat? = ["left": 8, "right": roamSize - 8][option("--click-side") ?? ""]
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) {
+            control.roamer.poke(at: ProcessInfo.processInfo.systemUptime,
+                                clickX: side.map { control.roamer.window.frame.minX + $0 })
+        }
+    }
+    if let after = option("--toggle-after").flatMap({ Double($0) }) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) {
+            creature.lock.performClick(nil)
+            line("lock", ["out": creature.roamOut, "label": creature.lock.accessibilityLabel() ?? ""])
+        }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exit(0) }
+    app.run()
 }
 
 guard let python = option("--python"), let scanner = option("--scanner"), let claudeDir = option("--claude-dir"),

@@ -1670,7 +1670,9 @@ PANEL_LABEL = "com.cclevel.panel"
 PANEL_PREFS = "cclevel-panel"   # the panel program's macOS preferences: only where its menu bar item sits
 PANEL_START_TRIES = 3   # starting it again right after stopping the old copy can fail once or twice while macOS catches up
 PANEL_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "CclevelPanel.swift")
-PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json")   # all --panel on ever puts in its folder
+# All --panel on ever puts in its folder, and "roam": the empty file the panel keeps there while the creature is out
+# for a walk (free roam).
+PANEL_FILES = ("cclevel-panel", "cclevel-panel.building", "cclevel.py", "card.json", "roam")
 # The creature's rendered loops, one per stage; --panel on copies them into the panel's creatures/ folder.
 PANEL_CLIPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "mac", "creatures")
 PANEL_STAGE_CLIPS = ("egg", "hatchling", "lil_guy", "big_guy", "gigachad", "goat")
@@ -1703,14 +1705,16 @@ def panel_command(args, cdir):
                 subprocess.run([defaults, "delete", PANEL_PREFS], capture_output=True, timeout=30)
         found = False
         clips = os.path.join(folder, "creatures")
+        roam = os.path.join(clips, "roam")   # free roam's see-through loops
         for path in (agent, *(os.path.join(folder, name) for name in PANEL_FILES),
-                     *(os.path.join(clips, name + ext) for name in PANEL_CLIP_NAMES for ext in (".mp4", ".mp4.copying"))):
+                     *(os.path.join(clips, name + ext) for name in PANEL_CLIP_NAMES for ext in (".mp4", ".mp4.copying")),
+                     *(os.path.join(roam, name + ext) for name in PANEL_CLIP_NAMES for ext in (".mov", ".mov.copying"))):
             try:
                 os.remove(path)
                 found = True
             except FileNotFoundError:
                 pass
-        for path in (clips, folder):   # only if empty: anything else in there is not the panel's
+        for path in (roam, clips, folder):   # only if empty: anything else in there is not the panel's
             with contextlib.suppress(OSError):
                 os.rmdir(path)
         # The session-start hook's last group read for the panel, removed once the panel's program is gone and under the
@@ -1740,13 +1744,16 @@ def panel_command(args, cdir):
         print("Turning it on will:")
         print("  1. build a small program from the plugin's own source (mac/CclevelPanel.swift) with Apple's swiftc,")
         print("     into %s" % folder)
-        print("  2. copy this scanner and the creature's animations (about 1.7 MB) there, so the panel keeps")
+        print("  2. copy this scanner and the creature's animations (about 4.6 MB) there, so the panel keeps")
         print("     working when the plugin updates")
         print("  3. start it now and at every login, with %s" % agent)
         print("It scores your setup offline (--json --no-save, which writes nothing) at most once an hour, and again right")
         print("after an update or when a check-in or group read saves something new, keeps the last result in")
         print("%s, and sends nothing. It starts at the right end of your menu bar items; macOS keeps where it sits" % card)
         print("(and where you ⌘-drag it) in the program's own preferences, cclevel-panel. --panel off removes all of it.")
+        print("A lock on the Creature card can let your creature out to hop along the top of your screen (off until you")
+        print("click it). While out it reads only where its icon is, your display size and how long since you last used the")
+        print("keyboard or mouse, and sends nothing, the same in Default mode and Privacy mode.")
         print("Its Friends page shows your private group as the last check-in, Claude Code start (at most every 15")
         print("minutes) or --group saved it (Default mode);")
         print("in Privacy mode cclevel sends nothing and the page says friends are off.")
@@ -1770,13 +1777,17 @@ def panel_command(args, cdir):
         write_private(scanner, f.read())
     clips = os.path.join(folder, "creatures")
     os.makedirs(clips, mode=0o700, exist_ok=True)
-    for name in PANEL_CLIP_NAMES:   # a clip missing from this copy of the plugin: that stage shows its text art
-        src = os.path.realpath(os.path.join(PANEL_CLIPS, name + ".mp4"))
-        if os.path.isfile(src):
-            dst = os.path.join(clips, name + ".mp4")
-            shutil.copyfile(src, dst + ".copying")
-            os.chmod(dst + ".copying", 0o600)
-            os.replace(dst + ".copying", dst)
+    os.makedirs(os.path.join(clips, "roam"), mode=0o700, exist_ok=True)
+    # A clip missing from this copy of the plugin: that stage shows its text art. The see-through loops in roam/ are
+    # for free roam (the creature out for a walk); a look without one cannot be let out.
+    for sub, ext in (("", ".mp4"), ("roam", ".mov")):
+        for name in PANEL_CLIP_NAMES:
+            src = os.path.realpath(os.path.join(PANEL_CLIPS, sub, name + ext))
+            if os.path.isfile(src):
+                dst = os.path.join(clips, sub, name + ext)
+                shutil.copyfile(src, dst + ".copying")
+                os.chmod(dst + ".copying", 0o600)
+                os.replace(dst + ".copying", dst)
     program = [binary, "--python", sys.executable, "--scanner", scanner, "--claude-dir", cdir, "--cache", card]
     os.makedirs(os.path.dirname(agent), exist_ok=True)
     write_private(agent, plistlib.dumps({"Label": PANEL_LABEL, "ProgramArguments": program, "RunAtLoad": True,

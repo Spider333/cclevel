@@ -3835,8 +3835,12 @@ class Panel(unittest.TestCase):
         clips = os.path.join(self.folder, "creatures")
         self.assertEqual(stat.S_IMODE(os.stat(clips).st_mode), 0o700)
         shipped = sorted(f for f in os.listdir(os.path.join(ROOT, "mac", "creatures")) if f.endswith(".mp4"))
-        self.assertEqual(sorted(os.listdir(clips)), shipped)
-        for name in shipped:   # the plugin's own loops, byte for byte, private
+        self.assertEqual(sorted(os.listdir(clips)), shipped + ["roam"])
+        # Free roam's see-through loops, in their own folder beside the panel's.
+        walkers = sorted(f for f in os.listdir(os.path.join(ROOT, "mac", "creatures", "roam")) if f.endswith(".mov"))
+        self.assertEqual(sorted(os.listdir(os.path.join(clips, "roam"))), walkers)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(clips, "roam")).st_mode), 0o700)
+        for name in shipped + [os.path.join("roam", w) for w in walkers]:   # the plugin's own loops, byte for byte, private
             copied = os.path.join(clips, name)
             self.assertEqual(stat.S_IMODE(os.stat(copied).st_mode), 0o600)
             with open(copied, "rb") as a, open(os.path.join(ROOT, "mac", "creatures", name), "rb") as b:
@@ -3860,6 +3864,13 @@ class Panel(unittest.TestCase):
         shipped = {f[:-4] for f in os.listdir(os.path.join(ROOT, "mac", "creatures")) if f.endswith(".mp4")}
         self.assertTrue(set(cclevel.PANEL_STAGE_CLIPS) <= shipped, "every stage has its own loop")
         self.assertEqual(shipped - set(cclevel.PANEL_CLIP_NAMES), set(), "a loop --panel on copies but --panel off would leave")
+        # Free roam's see-through loops: one per stage at least, none --panel off would leave, and small.
+        roam = os.path.join(ROOT, "mac", "creatures", "roam")
+        walkers = {f[:-4] for f in os.listdir(roam) if f.endswith(".mov")}
+        self.assertEqual(set(os.listdir(roam)), {w + ".mov" for w in walkers}, "nothing but the loops in there")
+        self.assertTrue(set(cclevel.PANEL_STAGE_CLIPS) <= walkers, "every stage can be let out")
+        self.assertEqual(walkers - set(cclevel.PANEL_CLIP_NAMES), set())
+        self.assertLess(sum(os.path.getsize(os.path.join(roam, w + ".mov")) for w in walkers), 4 * 1024 * 1024)
 
     def test_off_removes_only_what_on_added_and_is_safe_twice(self):
         write(self.dir, "cclevel/ledger.json", "{}")
@@ -3867,6 +3878,8 @@ class Panel(unittest.TestCase):
         write(self.dir, "cclevel/panel/notes.txt", "mine")   # not the panel's: it stays, and so does its folder
         write(self.dir, "cclevel/panel/creatures/mine.mp4", "mine")   # the same inside the creatures folder
         write(self.dir, "cclevel/group-read", "1793900000\n")   # the session-start hook's last group read for the panel
+        write(self.dir, "cclevel/panel/roam", "")   # the panel's own note that the creature is out for a walk: it goes
+        self.assertTrue(os.listdir(os.path.join(self.folder, "creatures", "roam")), "free roam's loops were copied")
         before_off = len(self.calls())
         out = self.panel("off")
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -3957,6 +3970,96 @@ class Panel(unittest.TestCase):
         # Still --no-save: no ledger, and the tip is not recorded as shown.
         self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "ledger.json")))
         self.assertFalse(os.path.exists(os.path.join(self.dir, "cclevel", "training.json")))
+
+    @unittest.skipUnless(shutil.which("swiftc"), "needs Apple's swiftc")
+    def test_free_roam_lets_the_creature_out_under_the_menu_bar_and_back(self):
+        binary = os.path.join(self.tmp.name, "cclevel-panel")
+        build = subprocess.run(["swiftc", "-module-cache-path", os.path.join(self.tmp.name, "mc"), "-o", binary, PANEL_SOURCE],
+                               capture_output=True, text=True, timeout=600)
+        self.assertEqual(build.returncode, 0, build.stderr)
+        card = os.path.join(self.tmp.name, "card.json")
+        with open(card, "w", encoding="utf-8") as f:
+            f.write(run("--claude-dir", self.dir, "--json", "--no-save").stdout)
+        panel = os.path.join(self.tmp.name, "panel")
+        os.makedirs(panel)
+        marker = os.path.join(panel, "roam")
+        clips = os.path.join(ROOT, "mac", "creatures")
+
+        def walk(seconds, *extra, clips=clips):
+            # As if someone were at the Mac (--idle 0) unless a case says otherwise: the test Mac may sit untouched.
+            idle = () if "--idle" in extra else ("--idle", "0")
+            out = subprocess.run([binary, "--roam-test", str(seconds), "--card", card, "--clips", clips, "--panel-dir", panel,
+                                  "--seed", "7", "--ui-sounds", "off", *idle, *extra], capture_output=True, text=True, timeout=120)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            return [json.loads(line) for line in out.stdout.splitlines()]
+
+        def named(events, name):
+            return [e for e in events if e["event"] == name]
+
+        # Home by default: no marker, no window. The look's loop is see-through around the creature.
+        events = walk(2)
+        self.assertEqual([e["event"] for e in events], ["clip", "no-walker"])
+        self.assertTrue(events[0]["file"].endswith(".mov"), "the test Mac decodes the loop (run outside a sandbox)")
+        self.assertEqual((events[0]["alpha_corner"], events[0]["alpha_centre"]), (0, 255))
+        self.assertTrue(events[1]["lock_enabled"])
+        # So is every loop that ships: clear at a corner, solid in the middle (one rendered on black would be a black
+        # square over the desktop).
+        shipped = sorted(f for f in os.listdir(os.path.join(clips, "roam")) if f.endswith(".mov"))
+        out = subprocess.run([binary, "--clip-alpha", os.path.join(clips, "roam")], capture_output=True, text=True, timeout=300)
+        self.assertEqual(out.stdout.splitlines(), ["%s 0 255" % name for name in shipped])
+        self.assertEqual(len(shipped), 34)
+        # The lock lets it out and leaves the marker; with the marker there it is out from the start. Its window is one
+        # frame of the loop, its top on the line under the menu bar, above the menu bar's items (25) and below menus (101),
+        # on every desktop but not in full-screen spaces, and it rests with the loop paused.
+        events = walk(4, "--toggle-after", "1")
+        self.assertTrue(named(events, "lock")[0]["out"])
+        self.assertEqual(named(events, "lock")[0]["label"], "Call your creature back")
+        self.assertTrue(os.path.isfile(marker))
+        self.assertEqual(os.path.getsize(marker), 0)
+        events = walk(8)
+        self.assertEqual([e["event"] for e in events][:3], ["clip", "walker", "out"])
+        for e in events[2:]:
+            self.assertLessEqual(max(e["w"], e["h"]), 72, e)
+            self.assertTrue(25 < e["level"] < 101 and e["all_spaces"] and not e["full_screen"] and e["shown"], e)
+            # What keeps it off full-screen apps: without this setting macOS shows it over them (seen on a real Mac).
+            self.assertTrue(e["full_screen_none"], e)
+        rests = named(events, "rest")
+        self.assertTrue(rests and all(abs(e["top"] - e["line"]) <= 2 and not e["playing"] for e in rests), rests)
+        trips = named(events, "trip")
+        self.assertTrue(trips and trips[0]["playing"], "it sets off within a few seconds, with its loop playing")
+        # A poke: it jumps at least 120 points aside, so what it sat on is free.
+        events = walk(5, "--idle", "400", "--poke-after", "1.5")
+        poke = named(events, "poke")[0]
+        self.assertEqual((poke["anim"], poke["sound"]), ("squash,jump", "off"))
+        landed = [e for e in named(events, "rest") if e["t"] > poke["t"]][0]
+        self.assertGreaterEqual(abs(landed["x"] - poke["from"]), 120)
+        # Nobody at the Mac: it stays where it landed (the same seed set off above). Reduce Motion: no trip, no jump.
+        events = walk(8, "--idle", "400")
+        self.assertTrue(named(events, "out") and len(named(events, "rest")) >= 2, "it was out, and rested on")
+        self.assertEqual(named(events, "trip"), [])
+        # A click on its left half sends it right, and the other way round: away from the pointer. Poked 20 s in, when
+        # this seed has it resting well inside the line, with room on both sides.
+        for side, sign in (("left", 1), ("right", -1)):
+            events = walk(22, "--poke-after", "20", "--click-side", side)
+            poke = named(events, "poke")[0]
+            landed = [e for e in named(events, "rest") if e["t"] > poke["t"]][0]
+            self.assertGreaterEqual((landed["x"] - poke["from"]) * sign, 120, (side, poke, landed))
+        events = walk(8, "--reduce-motion", "--poke-after", "1.5")
+        self.assertTrue(named(events, "out") and len(named(events, "rest")) >= 2, "it was out, and its trip was declined")
+        self.assertEqual(named(events, "trip"), [])
+        self.assertEqual(named(events, "poke")[0]["anim"], "none")
+        self.assertEqual({e["x"] for e in events if "x" in e}, {named(events, "out")[0]["x"]})
+        # The lock again calls it back and removes the marker.
+        events = walk(4, "--toggle-after", "1")
+        self.assertFalse(named(events, "lock")[0]["out"])
+        self.assertEqual(named(events, "lock")[0]["label"], "Let your creature out on your screen")
+        self.assertTrue(named(events, "home"))
+        self.assertFalse(os.path.exists(marker))
+        # A look with no see-through loop cannot be let out: the lock is off, and a marker left there lets nothing out.
+        open(marker, "w").close()
+        events = walk(2, clips=self.tmp.name)
+        self.assertEqual([e["event"] for e in events], ["clip", "no-walker"])
+        self.assertFalse(events[1]["lock_enabled"])
 
     @unittest.skipUnless(shutil.which("swiftc"), "needs Apple's swiftc")
     def test_the_real_panel_builds_and_draws_a_card(self):
