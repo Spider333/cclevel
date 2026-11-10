@@ -5119,3 +5119,491 @@ class Timesheet(unittest.TestCase):
             text = run("--claude-dir", self.dir, *flags, env={"HOME": self.home}).stdout
             self.assertNotIn("zzq-alpha", text)
             self.assertNotIn("zzq-bravo", text)
+
+
+# ---------------------------------------------------------------- auto-update: Claude Code's own switch, turned on once
+
+KNOWN_FIXTURE = {
+    "claude-plugins-official": {"source": {"source": "github", "repo": "anthropics/claude-plugins-official"},
+                                "installLocation": "/x/marketplaces/claude-plugins-official", "lastUpdated": "2026-11-10T19:42:23.320Z"},
+    "cclevel": {"source": {"source": "github", "repo": "Spider333/cclevel"}, "installLocation": "/x/marketplaces/cclevel",
+                "lastUpdated": "2026-11-10T19:47:14.887Z"},
+}
+SETTINGS_FIXTURE = {
+    "model": "opus", "permissions": {"allow": ["Bash(ls)"]}, "env": {"ZZQ": "zzq ünïcode"},
+    "extraKnownMarketplaces": {"claude-plugins-official": {"source": {"source": "github", "repo": "anthropics/claude-plugins-official"}},
+                               "cclevel": {"source": {"source": "github", "repo": "Spider333/cclevel"}}},
+}
+
+
+class AutoUpdate(unittest.TestCase):
+    """The first plain card in Default mode turns on Claude Code's auto-update for the marketplace cclevel came from,
+    where the /plugin toggle writes it; the user's own choice and Privacy mode always win."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = make_folder(os.path.join(self.tmp.name, "claude"))
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.home)
+        # Installed the way Claude Code installs a plugin: plugins/cache/<marketplace>/<plugin>/<version>/.
+        self.script = os.path.join(self.dir, "plugins", "cache", "cclevel", "cclevel", "0.21.0", "skills", "pet", "scripts",
+                                   "cclevel.py")
+        os.makedirs(os.path.dirname(self.script))
+        shutil.copyfile(SCRIPT, self.script)
+        self.known = os.path.join(self.dir, "plugins", "known_marketplaces.json")
+        self.settings = os.path.join(self.dir, "settings.json")
+        self.state = os.path.join(self.dir, "cclevel", "autoupdate.json")
+        self.put(self.known, KNOWN_FIXTURE, 0o644)
+        self.put(self.settings, SETTINGS_FIXTURE, 0o600)
+        # This folder is Claude Code's own; any board request goes to a port where nothing listens. The developer's own
+        # updater settings stay out: each test sets only what it means to.
+        self.env = {"CLAUDE_CONFIG_DIR": self.dir, "HOME": self.home, "CCLEVEL_SERVER": "http://127.0.0.1:9"}
+        self.base = {k: v for k, v in os.environ.items()
+                     if k not in cclevel.AUTOUPDATE_BLOCKERS + ("FORCE_AUTOUPDATE_PLUGINS",)}
+
+    def put(self, path, data, mode):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.chmod(path, mode)
+
+    def run_it(self, *args, script=None, claude_dir=None, env=None):
+        return subprocess.run([sys.executable, script or self.script, "--claude-dir", claude_dir or self.dir, *args],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
+                              env=dict(self.base, **dict(self.env, **(env or {}))))
+
+    def counted(self, *args):
+        """(run, number of network events) for the installed copy, counted by Python's own audit hooks."""
+        fd, path = tempfile.mkstemp(suffix=".count")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        out = subprocess.run([sys.executable, "-c", COUNT_NETWORK, self.script, "--claude-dir", self.dir, *args],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
+                             env=dict(self.base, CCLEVEL_NETWORK_LOG=path, **self.env))
+        with open(path, encoding="utf-8") as f:
+            return out, int(f.read())
+
+    def texts(self):
+        out = []
+        for path in (self.known, self.settings):
+            with open(path, "rb") as f:
+                out.append(f.read())
+        return out
+
+    def entries(self):
+        with open(self.known, encoding="utf-8") as f:
+            known = json.load(f)
+        with open(self.settings, encoding="utf-8") as f:
+            settings = json.load(f)
+        return known, settings
+
+    def flags(self):
+        known, settings = self.entries()
+        return known["cclevel"].get("autoUpdate"), settings["extraKnownMarketplaces"]["cclevel"].get("autoUpdate")
+
+    def choice(self):
+        if not os.path.exists(self.state):
+            return None
+        with open(self.state, encoding="utf-8") as f:
+            return json.load(f)["choice"]
+
+    def card(self, **kw):
+        """A plain card that really ran to its end: proof that a run which says nothing about auto-update got there."""
+        out = self.run_it(**kw)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("This machine only, self-reported.", out.stdout)
+        return out.stdout
+
+    def test_the_first_card_turns_it_on_once_where_the_toggle_writes_it(self):
+        out = self.run_it()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("  " + cclevel.AUTOUPDATE_NOTICE + "\n", out.stdout)
+        self.assertEqual(self.flags(), (True, True))
+        known, settings = self.entries()
+        # Nothing else changed: every other entry and key keeps its value, and both files keep their permissions.
+        known["cclevel"].pop("autoUpdate")
+        settings["extraKnownMarketplaces"]["cclevel"].pop("autoUpdate")
+        self.assertEqual((known, settings), (KNOWN_FIXTURE, SETTINGS_FIXTURE))
+        self.assertEqual(stat.S_IMODE(os.stat(self.known).st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(os.stat(self.settings).st_mode), 0o600)
+        self.assertEqual(self.choice(), "auto")
+        self.assertEqual([n for n in os.listdir(os.path.dirname(self.known)) if n.endswith(".tmp")], [])
+        before = self.texts()
+        self.assertNotIn("uto-update", self.card())
+        self.assertEqual(self.texts(), before)
+
+    def test_without_a_settings_entry_only_claude_codes_own_file_changes(self):
+        os.remove(self.settings)
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.run_it().stdout)
+        self.assertFalse(os.path.exists(self.settings))
+        with open(self.known, encoding="utf-8") as f:
+            self.assertIs(json.load(f)["cclevel"]["autoUpdate"], True)
+
+    def test_off_sticks_and_on_turns_it_back_on(self):
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())   # the card's switch does write in this setup
+        out = self.run_it("--autoupdate", "off")
+        self.assertEqual((out.returncode, out.stdout), (0, cclevel.AUTOUPDATE_OFF + "\n"))
+        self.assertEqual(self.flags(), (False, False))
+        before = self.texts()
+        for _ in range(3):
+            self.assertNotIn("uto-update", self.card())
+        self.assertEqual(self.texts(), before)
+        out = self.run_it("--autoupdate", "on")
+        self.assertEqual((out.returncode, out.stdout), (0, cclevel.AUTOUPDATE_ON + "\n"))
+        self.assertEqual(self.flags(), (True, True))
+        self.assertEqual(self.choice(), "on")
+
+    def test_the_users_own_choice_wins(self):
+        for where, value in (("known", True), ("known", False), ("settings", True), ("settings", False)):
+            with self.subTest(where=where, value=value):
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(self.state)
+                known, settings = json.loads(json.dumps(KNOWN_FIXTURE)), json.loads(json.dumps(SETTINGS_FIXTURE))
+                (known["cclevel"] if where == "known" else settings["extraKnownMarketplaces"]["cclevel"])["autoUpdate"] = value
+                self.put(self.known, known, 0o644)
+                self.put(self.settings, settings, 0o600)
+                before = self.texts()
+                out = self.run_it()
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertNotIn("uto-update", out.stdout)
+                self.assertEqual(self.texts(), before)
+                self.assertEqual(self.choice(), "theirs")
+
+    def test_privacy_mode_never_turns_it_on(self):
+        for state in ("privacy", "leaving"):   # leaving: the opted-out note with a token still here (a delete not done)
+            with self.subTest(state=state):
+                write(self.dir, "cclevel/opted-out", "off\n")
+                if state == "leaving":
+                    write(self.dir, "cclevel/identity.json", {"token": "cd" * 32, "server": "http://127.0.0.1:9"})
+                before = self.texts()
+                text = self.card()
+                self.assertIn("Privacy mode", text)
+                self.assertNotIn("uto-update", text)
+                self.assertEqual(self.texts(), before)
+                self.assertIsNone(self.choice())
+                # The positive control: the same installed copy, back in Default mode, does turn it on.
+                os.remove(os.path.join(self.dir, "cclevel", "opted-out"))
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(os.path.join(self.dir, "cclevel", "identity.json"))
+                self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())
+                self.assertEqual(self.flags(), (True, True))
+                os.remove(self.state)
+                self.put(self.known, KNOWN_FIXTURE, 0o644)
+                self.put(self.settings, SETTINGS_FIXTURE, 0o600)
+
+    def test_every_way_into_privacy_mode_turns_off_what_the_card_turned_on(self):
+        for way in (("--privacy", "on"), ("--leave",), ("--auto", "off")):
+            with self.subTest(way=way):
+                self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.run_it().stdout)
+                self.assertEqual(self.flags(), (True, True))
+                out = self.run_it(*way)
+                self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                self.assertIn(cclevel.AUTOUPDATE_PRIVACY, out.stdout)
+                self.assertEqual(self.flags(), (None, None))
+                self.assertEqual(self.entries(), (KNOWN_FIXTURE, SETTINGS_FIXTURE))
+                self.assertIsNone(self.choice())
+                # Back to Default mode: the next card turns it on again, and says so (the loop's first line); the
+                # yes is asked with that said too.
+                out = self.run_it("--privacy", "off", "--yes")
+                self.assertEqual(out.returncode, 0)
+                self.assertIn("Your next /pet card also turns on Claude Code's auto-update for cclevel", out.stdout)
+
+    def test_privacy_mode_turns_it_off_even_when_the_board_cannot_be_reached(self):
+        self.run_it()
+        write(self.dir, "cclevel/identity.json", {"token": "ab" * 32, "server": "http://127.0.0.1:9", "auto": True})
+        out = self.run_it("--privacy", "on")
+        self.assertNotEqual(out.returncode, 0)   # the delete did not go through
+        self.assertIn(cclevel.AUTOUPDATE_PRIVACY, out.stdout)
+        self.assertEqual(self.flags(), (None, None))
+
+    def test_a_choice_the_user_made_survives_privacy_mode(self):
+        self.assertEqual(self.run_it("--autoupdate", "on").stdout, cclevel.AUTOUPDATE_ON + "\n")
+        out = self.run_it("--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn(cclevel.PRIVACY_NOW, out.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "cclevel", "opted-out")))
+        self.assertNotIn(cclevel.AUTOUPDATE_PRIVACY, out.stdout)
+        self.assertEqual(self.flags(), (True, True))
+        self.assertEqual(self.choice(), "on")
+        # The positive control: the same --privacy on, after the card turned it on by itself, does turn it off.
+        out = self.run_it("--privacy", "off", "--yes")
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn("also turns on Claude Code's auto-update", out.stdout)   # the user's own on: nothing to turn on
+        os.remove(self.state)
+        self.put(self.known, KNOWN_FIXTURE, 0o644)
+        self.put(self.settings, SETTINGS_FIXTURE, 0o600)
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())
+        out = self.run_it("--privacy", "on")
+        self.assertIn(cclevel.AUTOUPDATE_PRIVACY, out.stdout)
+        self.assertEqual(self.flags(), (None, None))
+
+    def test_only_the_plain_card_from_an_installed_copy_writes(self):
+        panel_copy = os.path.join(self.dir, "cclevel", "panel", "cclevel.py")
+        os.makedirs(os.path.dirname(panel_copy))
+        shutil.copyfile(SCRIPT, panel_copy)
+        # A second Claude Code folder with cclevel installed in it too, not the one Claude Code uses (CLAUDE_CONFIG_DIR).
+        other = os.path.join(self.tmp.name, "other")
+        shutil.copytree(self.dir, other)
+        other_script = os.path.join(other, os.path.relpath(self.script, self.dir))
+        other_files = [os.path.join(other, os.path.relpath(p, self.dir)) for p in (self.known, self.settings)]
+
+        def other_texts():
+            out = []
+            for path in other_files:
+                with open(path, "rb") as f:
+                    out.append(f.read())
+            return out
+
+        other_before = other_texts()
+        before = self.texts()
+        runs = [(("--json",), {}), (("--json", "--no-save"), {}), (("--no-save",), {}), (("--auto-run",), {}),
+                ((), {"script": SCRIPT}), ((), {"script": panel_copy}),
+                ((), {"script": other_script, "claude_dir": other})]
+        for args, kw in runs:
+            with self.subTest(args=args, kw=kw):
+                if args == ("--auto-run",):
+                    # The hook really ran: it tried to join (the board address is a port where nothing listens).
+                    out, sent = self.counted(*args)
+                    self.assertGreater(sent, 0, out.stderr)
+                else:
+                    out = self.run_it(*args, **kw)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertNotIn("uto-update", out.stdout)
+                self.assertEqual(self.texts(), before)
+                self.assertEqual(other_texts(), other_before)
+                self.assertIsNone(self.choice())
+        # The positive controls: the plain card from the installed copy, in the same state, does write; and the other
+        # folder's own copy does too once that folder is the one Claude Code uses.
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.run_it().stdout)
+        self.assertNotEqual(self.texts(), before)
+        out = self.run_it(script=other_script, claude_dir=other, env={"CLAUDE_CONFIG_DIR": other})
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, out.stdout)
+        self.assertNotEqual(other_texts(), other_before)
+
+    def test_autoupdate_needs_an_installed_copy(self):
+        out = run("--claude-dir", self.dir, "--autoupdate", "on", env=self.env)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("not installed from a plugin marketplace", out.stdout)
+        self.assertEqual(self.flags(), (None, None))
+
+    def broken(self, name, setup):
+        with self.subTest(name):
+            self.setUp()
+            setup()
+            before = self.texts() if os.path.exists(self.known) and os.path.exists(self.settings) else None
+            out = self.run_it()
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("This machine only, self-reported.", out.stdout)   # the card itself is all there
+            self.assertIn("cclevel could not turn on auto-update here (", out.stdout)
+            self.assertIn("Enable auto-update.", out.stdout)
+            self.assertNotIn(cclevel.AUTOUPDATE_NOTICE, out.stdout)
+            if before is not None:
+                self.assertEqual(self.texts(), before)
+            self.assertEqual(self.choice(), "theirs")
+            self.assertNotIn("could not turn on", self.card())   # said once
+
+    def test_files_it_cannot_change_safely_stay_as_they_are(self):
+        def link_settings():
+            real = os.path.join(self.tmp.name, "dotfiles-settings.json")
+            shutil.move(self.settings, real)
+            os.symlink(real, self.settings)
+
+        def not_json():
+            with open(self.known, "w", encoding="utf-8") as f:
+                f.write("{not json")
+
+        def settings_not_json():
+            with open(self.settings, "w", encoding="utf-8") as f:
+                f.write("[1, 2]")
+
+        def no_entry():
+            known = dict(KNOWN_FIXTURE)
+            known.pop("cclevel")
+            self.put(self.known, known, 0o644)
+
+        def wrapped():
+            self.put(self.known, {"version": 2, "marketplaces": KNOWN_FIXTURE}, 0o644)
+
+        def missing():
+            os.remove(self.known)
+
+        def folder_locked():
+            # The settings file cannot be replaced (its folder is not writable) after Claude Code's own file already
+            # was: that first change is put back.
+            os.makedirs(os.path.join(self.dir, "cclevel"), exist_ok=True)
+            os.chmod(self.dir, 0o555)
+
+        def folder_locked_crlf():
+            # The same, with Claude Code's file in Windows line endings: it is put back byte for byte.
+            with open(self.known, "w", encoding="utf-8", newline="") as f:
+                f.write(json.dumps(KNOWN_FIXTURE, indent=2).replace("\n", "\r\n") + "\r\n")
+            folder_locked()
+
+        def unknown_source():
+            known = json.loads(json.dumps(KNOWN_FIXTURE))
+            known["cclevel"]["source"] = {"source": "some-new-kind", "where": "x"}
+            self.put(self.known, known, 0o644)
+
+        for name, setup in (("read-only", lambda: os.chmod(self.known, 0o444)), ("settings is a link", link_settings),
+                            ("not JSON", not_json), ("settings not an object", settings_not_json),
+                            ("no entry", no_entry), ("another shape", wrapped), ("missing", missing),
+                            ("folder locked", folder_locked), ("folder locked, CRLF", folder_locked_crlf),
+                            ("unknown source", unknown_source)):
+            try:
+                self.broken(name, setup)
+            finally:
+                os.chmod(self.dir, 0o755)
+
+    def test_the_card_says_when_claude_code_updates_are_switched_off(self):
+        self.env["DISABLE_AUTOUPDATER"] = "1"
+        out = self.run_it()
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, out.stdout)
+        self.assertIn("switched off on this machine (DISABLE_AUTOUPDATER)", out.stdout)
+        self.env["FORCE_AUTOUPDATE_PLUGINS"] = "1"
+        self.assertEqual(self.run_it("--autoupdate", "on").stdout, cclevel.AUTOUPDATE_ON + "\n")
+
+    def test_the_card_and_the_switch_send_nothing(self):
+        for args in ((), ("--autoupdate", "off"), ("--autoupdate", "on")):
+            out, sent = self.counted(*args)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            # Each run did its job: the card turned it on, then off, then on (so the count covers the writes).
+            self.assertIn({(): cclevel.AUTOUPDATE_NOTICE, ("--autoupdate", "off"): cclevel.AUTOUPDATE_OFF,
+                           ("--autoupdate", "on"): cclevel.AUTOUPDATE_ON}[args], out.stdout)
+            self.assertEqual(sent, 0, args)
+        self.assertEqual(self.flags(), (True, True))
+        # The counter's own control: in the same setup, the session-start hook's join does count.
+        out, sent = self.counted("--auto-run")
+        self.assertGreater(sent, 0, out.stderr)
+
+    def test_a_folder_marketplace_has_nothing_to_switch(self):
+        # Claude Code never refreshes a marketplace added from a folder or file, so a notice would promise updates
+        # that never come. The card says nothing and keeps nothing; --autoupdate says why.
+        for source in ({"source": "directory", "path": "/x/cclevel"}, {"source": "file", "path": "/x/m.json"}):
+            with self.subTest(source=source["source"]):
+                known = json.loads(json.dumps(KNOWN_FIXTURE))
+                known["cclevel"]["source"] = source
+                self.put(self.known, known, 0o644)
+                before = self.texts()
+                self.assertNotIn("uto-update", self.card())
+                self.assertEqual(self.texts(), before)
+                self.assertIsNone(self.choice())
+                out = self.run_it("--autoupdate", "on")
+                self.assertEqual(out.returncode, 1)
+                self.assertIn("never updates from", out.stdout)
+                self.assertEqual(self.texts(), before)
+        # The positive control: the same folder with a GitHub source does turn it on.
+        self.put(self.known, KNOWN_FIXTURE, 0o644)
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())
+
+    def test_a_settings_file_in_another_shape_is_left_alone(self):
+        settings = json.loads(json.dumps(SETTINGS_FIXTURE))
+        settings["extraKnownMarketplaces"] = [{"cclevel": settings["extraKnownMarketplaces"]["cclevel"]}]
+        self.put(self.settings, settings, 0o600)
+        before = self.texts()
+        text = self.card()
+        self.assertIn("cclevel could not turn on auto-update here (settings.json lists marketplaces", text)
+        self.assertEqual(self.texts(), before)
+
+    def test_when_cclevels_own_folder_cannot_be_written_it_says_how_on_each_card(self):
+        # Claude Code's sandbox can keep the card from writing anything under ~/.claude: then nothing can be remembered,
+        # so the how-to line comes on every card, and neither file is touched.
+        folder = os.path.join(self.dir, "cclevel")
+        self.card()   # the ledger and the rest of cclevel's own folder exist, as on a machine that ran it before
+        os.remove(self.state)
+        self.put(self.known, KNOWN_FIXTURE, 0o644)
+        self.put(self.settings, SETTINGS_FIXTURE, 0o600)
+        os.chmod(folder, 0o555)
+        self.addCleanup(os.chmod, folder, 0o755)
+        before = self.texts()
+        for _ in range(2):
+            text = self.card()
+            self.assertIn("cclevel could not turn on auto-update here (cclevel's own folder cannot be written", text)
+            self.assertEqual(self.texts(), before)
+        # Once the user switched it in /plugin themselves, there is nothing more to say, even with nothing remembered.
+        known = json.loads(json.dumps(KNOWN_FIXTURE))
+        known["cclevel"]["autoUpdate"] = True
+        self.put(self.known, known, 0o644)
+        self.assertNotIn("uto-update", self.card())
+
+    def test_off_is_kept_even_when_the_files_cannot_be_changed(self):
+        os.chmod(self.known, 0o444)
+        out = self.run_it("--autoupdate", "off")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("Disable auto-update.", out.stdout)
+        self.assertEqual(self.choice(), "off")
+        os.chmod(self.known, 0o644)
+        before = self.texts()
+        self.assertNotIn("uto-update", self.card())   # no later card turns it on against the user's word
+        self.assertEqual(self.texts(), before)
+        self.assertIsNone(self.flags()[0])
+        # The positive control: with that decision gone, the same card does turn it on.
+        os.remove(self.state)
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())
+        self.assertEqual(self.flags(), (True, True))
+
+    def test_text_that_cannot_be_written_back_changes_nothing(self):
+        # Claude Code writes a broken emoji as an escaped lone surrogate; Python cannot write that back as UTF-8.
+        settings = json.loads(json.dumps(SETTINGS_FIXTURE))
+        settings["env"] = dict(settings.get("env") or {}, NOTE="\udc80")
+        with open(self.settings, "w", encoding="utf-8") as f:
+            f.write(json.dumps(settings, indent=2) + "\n")   # escaped, as Claude Code writes it
+        before = self.texts()
+        text = self.card()
+        self.assertIn("cclevel could not turn on auto-update here (settings.json cannot be changed", text)
+        self.assertEqual(self.texts(), before)   # Claude Code's own file was put back too
+        self.assertEqual(self.choice(), "theirs")
+
+    def test_a_choice_in_a_file_cclevel_will_not_change_is_still_the_users(self):
+        # A settings.json kept in a dotfiles folder and linked in: cclevel never replaces it, but a value in it is the
+        # user's own choice, so the card says nothing rather than asking them to switch it on.
+        real = os.path.join(self.tmp.name, "dotfiles-settings.json")
+        settings = json.loads(json.dumps(SETTINGS_FIXTURE))
+        settings["extraKnownMarketplaces"]["cclevel"]["autoUpdate"] = False
+        self.put(real, settings, 0o600)
+        os.remove(self.settings)
+        os.symlink(real, self.settings)
+        before = self.texts()
+        self.assertNotIn("uto-update", self.card())
+        self.assertEqual(self.texts(), before)
+        self.assertEqual(self.choice(), "theirs")
+        # The positive control: the same link without a value there gets the how-to line.
+        os.remove(self.state)
+        self.put(real, SETTINGS_FIXTURE, 0o600)
+        self.assertIn("cclevel could not turn on auto-update here (settings.json is a link", self.card())
+
+    def test_a_put_back_claude_code_got_in_the_way_of_stays_cclevels(self):
+        # Claude Code rewrites known_marketplaces.json just as cclevel puts it back after settings.json failed: cclevel's
+        # true stays there, so auto-update is on, and it must stay recorded as cclevel's for Privacy mode to undo it.
+        from unittest import mock
+        real_put = cclevel.put_text
+
+        def put(path, name, expect, new):
+            if name == "settings.json":
+                raise cclevel.NoSwitch("settings.json is read-only")
+            if expect is not None and '"autoUpdate": true' in expect:   # the put-back
+                raise cclevel.Moved()
+            return real_put(path, name, expect, new)
+
+        with mock.patch.object(cclevel, "installed_marketplace", return_value="cclevel"):
+            with mock.patch.object(cclevel, "put_text", side_effect=put):
+                lines = cclevel.autoupdate_card(self.dir)
+            self.assertEqual(lines[0], cclevel.AUTOUPDATE_NOTICE)
+            self.assertEqual(self.choice(), "auto")
+            self.assertEqual(self.flags(), (True, None))
+            self.assertEqual(cclevel.autoupdate_privacy(self.dir), cclevel.AUTOUPDATE_PRIVACY)
+        self.assertEqual(self.flags(), (None, None))
+
+    def test_privacy_mode_says_so_when_it_cannot_turn_it_off(self):
+        self.assertIn(cclevel.AUTOUPDATE_NOTICE, self.card())
+        _, settings = self.entries()
+        settings["env"] = dict(settings.get("env") or {}, NOTE="\udc80")
+        with open(self.settings, "w", encoding="utf-8") as f:
+            f.write(json.dumps(settings, indent=2) + "\n")
+        before = self.texts()
+        out = self.run_it("--privacy", "on")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("Traceback", out.stderr)
+        self.assertIn("cclevel could not turn auto-update off again (settings.json cannot be changed", out.stdout)
+        self.assertIn("→ cclevel → Disable auto-update.", out.stdout)
+        self.assertEqual(self.texts(), before)   # nothing half-done: both files still say on, and the line says so
+        self.assertEqual(self.flags(), (True, True))

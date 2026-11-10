@@ -55,7 +55,7 @@
 <li><code data-copy>/plugin install cclevel@cclevel</code></li>
 </ul>
 <p class="note">Needs Python 3.9 or newer, nothing else. From a shell instead: <code>claude plugin install cclevel --marketplace Spider333/cclevel</code></p>
-<p class="note">Already installed? Plugins from this marketplace do not update by themselves until you say so: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. Pick Enable auto-update there too, and new features arrive on their own.</p>
+<p class="note">Already installed? Before version 0.21.0, plugins from this marketplace do not update by themselves, so update once by hand: <code>/plugin</code> → Marketplaces → cclevel → Update marketplace, then <code>/reload-plugins</code>. From version 0.21.0, in Default mode your first <code>/pet</code> turns on auto-update for you (<code>/pet autoupdate off</code> stops it; Privacy mode turns off what your first <code>/pet</code> turned on), so new features arrive on their own.</p>
 </section>
 
 <section class="step" id="meet" aria-labelledby="meet-title">
@@ -85,8 +85,8 @@
 <section class="step" id="join" aria-labelledby="join-title">
 <span class="step-num" aria-hidden="true">03</span>
 <h2 id="join-title">You're on the board</h2>
-<p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. Then it reads your own private group (just your key, nothing else), and again at later Claude Code starts, at most every 15 minutes, while the panel is installed and you are in a group, so the Mac menu bar panel can show your friends. You show on the lists after check-ins on two different days.</p>
-<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. Opening a share-card, Wrapped or invite link still loads its page from cclevel.com, so that visit (not the numbers after <code>#</code>) may be in Cloudflare's sampled visit logs. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
+<p>Nothing to do. From your next Claude Code start, the plugin puts your creature on the world board under a made-up name and checks in once a day, quietly, in the background: nine numbers and your badge codes. Then it reads your own private group (just your key, nothing else), and again at later Claude Code starts, at most every 15 minutes, while the panel is installed and you are in a group, so the Mac menu bar panel can show your friends. You show on the lists after check-ins on two different days. Your first <code>/pet</code> also turns on Claude Code's own auto-update for CC level and says so in one line: Claude Code, not cclevel, then checks GitHub once a session and installs new versions. <code>/pet autoupdate off</code> stops it.</p>
+<p><b>That is Default mode. Privacy mode is one command:</b> <code>/pet privacy on</code>. It works before or after your creature joins, deletes your row at once, and from then on cclevel sends nothing; the card, the creature and the panel keep working. It never turns auto-update on, and turns it off again if your first card did; one you turned on yourself stays. Opening a share-card, Wrapped or invite link still loads its page from cclevel.com, so that visit (not the numbers after <code>#</code>) may be in Cloudflare's sampled visit logs. To stay on the board for your crew and duels but off the public lists, say <code>/pet take me off the world list</code>. Changed your mind? <code>/pet privacy off</code>.</p>
 <p>The board ranks only XP it watched you earn after joining, at most 550 a day, so a long history or an edited file doesn't buy a top spot.</p>
 </section>
 
@@ -126,6 +126,7 @@
 <tr><td><code>/pet readme badge</code></td><td>One line of Markdown for a "Lv 42 · Gigachad" badge on your GitHub profile or any README (example numbers). The picture comes from shields.io; it doesn't update itself, so run it again to refresh; sends nothing, in both modes</td></tr>
 <tr><td><code>/pet privacy on</code></td><td>Privacy mode: delete your row at once, and cclevel sends nothing after; a share-card, Wrapped or invite link you open still loads its page from cclevel.com (<code>/pet leave</code> is the same)</td></tr>
 <tr><td><code>/pet privacy off</code></td><td>Back to Default mode: shows what it sends and asks first; the board joins at your next Claude Code start</td></tr>
+<tr><td><code>/pet autoupdate off</code></td><td>Stop Claude Code installing new CC level versions by itself (Default mode turns it on at your first card); <code>/pet autoupdate on</code> turns it back on. Claude Code does the fetching; cclevel sends nothing</td></tr>
 </tbody>
 </table>
 </div>
