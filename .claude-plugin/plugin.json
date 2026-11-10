@@ -1,8 +1,8 @@
 {
 	"name": "cclevel",
 	"displayName": "CC level",
-	"version": "0.20.0",
-	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next, with the creature above your prompt while you work (/creature off hides it). Two modes: Default joins the public leaderboard under a generated name (nine numbers, no account); Privacy mode (/pet privacy on) deletes your row and cclevel sends nothing, while the card and creature keep working.",
+	"version": "0.21.0",
+	"description": "Scores your Claude Code setup and shows it as a creature that grows: level, six stats, mood and what to fix next, with the creature above your prompt while you work (/creature off hides it). Two modes: Default joins the public leaderboard under a generated name (nine numbers, no account) and turns on Claude Code's auto-update for cclevel at your first card (/pet autoupdate off stops it); Privacy mode (/pet privacy on) deletes your row and cclevel sends nothing, while the card and creature keep working.",
 	"author": { "name": "cclevel contributors" },
 	"homepage": "https://cclevel.com",
 	"repository": "https://github.com/Spider333/cclevel",
