@@ -6,7 +6,7 @@ allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cclevel.py), Bash(python
 
 # /pet: Claude Code Level card
 
-The scanner is `${CLAUDE_SKILL_DIR}/scripts/cclevel.py` (Python 3, standard library only). It reads the local Claude Code folder and writes only its own files in `~/.claude/cclevel/`. There are two exceptions. `/pet fix` writes elsewhere only after the user's yes, with a backup first. Auto-update is the other (see **Updates**): one key on cclevel's own marketplace entry, where Claude Code's `/plugin` toggle keeps it.
+The scanner is `${CLAUDE_SKILL_DIR}/scripts/cclevel.py` (Python 3, standard library only). It reads the local Claude Code folder (and, with Claude's Cowork on the same Mac, Cowork's session logs) and writes only its own files in `~/.claude/cclevel/`. There are two exceptions. `/pet fix` writes elsewhere only after the user's yes, with a backup first. Auto-update is the other (see **Updates**): one key on cclevel's own marketplace entry, where Claude Code's `/plugin` toggle keeps it.
 
 This skill pre-approves only the offline commands. Network commands are left to the user's normal permission rules, on purpose.
 
@@ -117,6 +117,7 @@ The plugin also draws the creature above the prompt in each session (Claude Code
 
 - Only finished days earn XP; today shows as "today so far". A banked day never shrinks.
 - Log-based numbers cover 30 days, because Claude Code deletes session logs after 30 days. Skill use looks back 90 days.
+- With Claude's Cowork on the same Mac, Cowork's session logs count too, as one project, from the day the card first saved on 0.22.0 (older Cowork work is not added). Only those logs are read, never Cowork's other files.
 - A check-in sends nine numbers and a list of badge codes, with a random token made on this machine. No names, paths or prompts. See `PRIVACY.md` in the repository.
 - Two modes: Default (the board is on) and Privacy (`/pet privacy on`: cclevel sends nothing; opening a share-card, Wrapped or invite link in a browser still loads its page from the board's website, cclevel.com for the public board). A machine that left the board before version 0.13.0 is in Privacy mode.
 - The world lists rank only XP the board itself saw after joining, so a new member starts at zero there whatever their level.
