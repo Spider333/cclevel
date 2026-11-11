@@ -1725,6 +1725,334 @@ def tips_command(args, cdir):
     return 0
 
 
+# ---------------------------------------------------------------- auto-update (Claude Code's own updater)
+# Claude Code updates the plugins of a marketplace by itself only when that marketplace's autoUpdate is on, and that is
+# off for every marketplace but Anthropic's. The first plain card in Default mode turns it on for the marketplace this
+# copy was installed from, with the same key the /plugin "Enable auto-update" toggle writes: on that marketplace's entry
+# in <claude dir>/plugins/known_marketplaces.json and, when the user's settings.json declares the marketplace under
+# extraKnownMarketplaces (claude plugin marketplace add puts it there), on that entry too. One key on cclevel's own
+# entries, nothing else; cclevel itself sends nothing for it. Claude Code then fetches the marketplace from GitHub once a
+# session. --autoupdate off undoes it for good, a value already in either file is the user's own choice and stays, and
+# Privacy mode turns off what the card turned on by itself. Never from the hook, the band or the panel.
+AUTOUPDATE_BLOCKERS = ("DISABLE_AUTOUPDATER", "DISABLE_UPDATES", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+AUTOUPDATE_CHOICES = ("auto", "on", "off", "theirs")   # auto: the card turned it on by itself; theirs: left to the user
+MARKETPLACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+AUTOUPDATE_NOTICE = ("Auto-update is on: Claude Code now installs new cclevel versions by itself (it checks GitHub once a"
+                     " session). /pet autoupdate off stops it.")
+AUTOUPDATE_ON = ("Auto-update on: Claude Code checks GitHub for a new cclevel once a session and installs it. The cclevel"
+                 " board is not involved. /pet autoupdate off stops it.")
+AUTOUPDATE_OFF = "Auto-update off: cclevel stays on this version until you update it in /plugin. /pet autoupdate on turns it back on."
+AUTOUPDATE_PRIVACY = "Auto-update is off again too: in Privacy mode cclevel leaves updates to you (/plugin)."
+
+
+class NoSwitch(Exception):
+    """Why the auto-update setting cannot be read or changed safely here, in a few plain words."""
+
+
+class Moved(Exception):
+    """Claude Code changed the file between cclevel reading it and replacing it: read it again."""
+
+
+class LocalMarketplace(Exception):
+    """The marketplace is a folder or file on this machine, which Claude Code never refreshes: nothing to switch."""
+
+
+# The marketplace sources Claude Code refreshes and so can update from; a local "directory", "file" or "settings" one it
+# never does. Any other source type is one cclevel does not know: it says how to switch auto-update on by hand.
+REFRESHED_SOURCES = ("github", "git", "url")
+LOCAL_SOURCES = ("directory", "file", "settings")
+
+
+def autoupdate_path(cdir):
+    return os.path.join(os.path.dirname(identity_path(cdir)), "autoupdate.json")
+
+
+def load_autoupdate(cdir):
+    """What was decided about auto-update on this machine, and for which marketplace. Kept on this machine only."""
+    path = autoupdate_path(cdir)
+    data = load_dict(path) if os.path.isfile(path) and not os.path.islink(path) else {}
+    mkt = data.get("marketplace")
+    return {"choice": data.get("choice") if data.get("choice") in AUTOUPDATE_CHOICES else None,
+            "marketplace": mkt if isinstance(mkt, str) and MARKETPLACE_NAME.fullmatch(mkt) else None}
+
+
+def save_autoupdate(cdir, choice, mkt):
+    """Writes the decision (None forgets it, so the next Default-mode card decides again). Under the identity lock."""
+    if choice is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(autoupdate_path(cdir))
+        return
+    write_private(autoupdate_path(cdir), json.dumps({"version": 1, "choice": choice, "marketplace": mkt}, indent=1,
+                                                    sort_keys=True))
+
+
+def installed_marketplace(cdir):
+    """The marketplace this copy of cclevel was installed from, read from where Claude Code put it:
+    <claude dir>/plugins/cache/<marketplace>/cclevel/<version>/skills/pet/scripts/cclevel.py. None for any other copy
+    (a git clone, --plugin-dir, a moved plugin cache, the menu bar panel's copy): it has no marketplace setting."""
+    here = os.path.realpath(os.path.abspath(__file__))
+    cache = os.path.realpath(os.path.join(cdir, "plugins", "cache"))
+    parts = os.path.relpath(here, cache).split(os.sep)
+    if (len(parts) == 7 and MARKETPLACE_NAME.fullmatch(parts[0]) and parts[1] == "cclevel" and parts[2] not in (".", "..")
+            and parts[3:] == ["skills", "pet", "scripts", "cclevel.py"]):
+        return parts[0]
+    return None
+
+
+def read_json_object(path, name, follow):
+    """(text, data) of a JSON file holding an object. Without `follow`, a link is refused. Raises NoSwitch."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        raise NoSwitch("%s is missing" % name)
+    except OSError as e:
+        raise NoSwitch("%s cannot be read: %s" % (name, e.strerror or type(e).__name__))
+    if stat.S_ISLNK(st.st_mode) and not follow:
+        raise NoSwitch("%s is a link, which cclevel leaves alone" % name)
+    try:
+        fd = os.open(path, os.O_RDONLY | (0 if follow else getattr(os, "O_NOFOLLOW", 0)) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, encoding="utf-8", newline="") as f:   # raw text, so a file put back is byte-for-byte the same
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise NoSwitch("%s is not a plain file" % name)
+            text = f.read()
+        data = json.loads(text)
+    except NoSwitch:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        raise NoSwitch("%s cannot be read as JSON" % name)
+    if not isinstance(data, dict):
+        raise NoSwitch("%s is not in a form cclevel knows" % name)
+    return text, data
+
+
+def autoupdate_files(cdir, mkt):
+    """Where Claude Code keeps this marketplace's autoUpdate, as [(path, name, text, data, entry)], `entry` being the
+    marketplace's own object inside `data`. Raises NoSwitch when one of them cannot be changed safely."""
+    known = os.path.join(cdir, "plugins", "known_marketplaces.json")
+    text, data = read_json_object(known, "known_marketplaces.json", follow=False)
+    entry = data.get(mkt)
+    if not isinstance(entry, dict) or not isinstance(entry.get("source"), dict):
+        raise NoSwitch("Claude Code's list of marketplaces has no entry for %s in a form cclevel knows" % mkt)
+    if entry["source"].get("source") in LOCAL_SOURCES:
+        raise LocalMarketplace()
+    if entry["source"].get("source") not in REFRESHED_SOURCES:
+        raise NoSwitch("%s comes from a kind of source cclevel does not know" % mkt)
+    found = [(known, "known_marketplaces.json", text, data, entry)]
+    settings = os.path.join(cdir, "settings.json")
+    if os.path.lexists(settings):
+        # Read through a link only to see whether it declares the marketplace; a linked file is never replaced.
+        text, data = read_json_object(settings, "settings.json", follow=True)
+        declared = data.get("extraKnownMarketplaces")
+        if declared is not None and not isinstance(declared, dict):
+            raise NoSwitch("settings.json lists marketplaces in a form cclevel does not know")
+        entry = declared.get(mkt) if declared else None
+        if entry is not None:
+            if not isinstance(entry, dict):
+                raise NoSwitch("settings.json declares %s in a form cclevel does not know" % mkt)
+            if os.path.islink(settings):
+                raise NoSwitch("settings.json is a link, which cclevel leaves alone")
+            found.append((settings, "settings.json", text, data, entry))
+    return found
+
+
+def autoupdate_values(cdir, mkt):
+    """The autoUpdate values already on this marketplace's entries, read wherever they can be (through a link too, only
+    to read), even in a file cclevel would not change. A value there is the user's own choice. Never raises."""
+    found = []
+    for path, name, inner in ((os.path.join(cdir, "plugins", "known_marketplaces.json"), "known_marketplaces.json", False),
+                              (os.path.join(cdir, "settings.json"), "settings.json", True)):
+        try:
+            _, data = read_json_object(path, name, follow=True)
+        except NoSwitch:
+            continue
+        place = data.get("extraKnownMarketplaces") if inner else data
+        entry = place.get(mkt) if isinstance(place, dict) else None
+        if isinstance(entry, dict) and "autoUpdate" in entry:
+            found.append(entry["autoUpdate"])
+    return found
+
+
+def put_text(path, name, expect, new):
+    """Replaces a file with `new` in one step, keeping its permissions, never through a link, and only if it still
+    holds `expect` (None: whatever it holds). Raises Moved or NoSwitch."""
+    try:
+        raw = new.encode("utf-8")   # before anything is touched: text that cannot be written (a lone surrogate) changes nothing
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            raise NoSwitch("%s is not a plain file" % name)
+        if not os.access(path, os.W_OK):   # replacing needs only the folder; a read-only file is meant to stay as it is
+            raise NoSwitch("%s is read-only" % name)
+        if expect is not None:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, encoding="utf-8", newline="") as f:
+                if f.read() != expect:
+                    raise Moved()
+        tmp = "%s.cclevel-%s.tmp" % (path, secrets.token_hex(8))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+            raise
+    except (OSError, UnicodeError) as e:
+        raise NoSwitch("%s cannot be changed: %s" % (name, getattr(e, "strerror", None) or type(e).__name__))
+
+
+def set_autoupdate(cdir, mkt, value, only_if=None):
+    """Sets autoUpdate on the marketplace's entries to True or False, or removes it (None); with `only_if`, only on
+    entries where it is that value now. Each file is read again and replaced in one step; one that Claude Code changed in
+    between is read again (up to three times). If a later file fails, the earlier ones are put back, unless Claude Code
+    has changed them since (then its version stays). Raises NoSwitch or LocalMarketplace; any other error is raised as
+    it is, after the same putting back."""
+    for _ in range(3):
+        files, done = autoupdate_files(cdir, mkt), []
+        try:
+            for path, name, text, data, entry in files:
+                if only_if is not None and entry.get("autoUpdate") is not only_if:
+                    continue
+                if value is None:
+                    entry.pop("autoUpdate", None)
+                else:
+                    entry["autoUpdate"] = value
+                new = json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else "")
+                put_text(path, name, text, new)
+                done.append((path, name, text, new))
+            return
+        except Exception as e:   # anything at all: the files already changed are put back first
+            for path, name, text, new in reversed(done):
+                with contextlib.suppress(Moved, NoSwitch):
+                    put_text(path, name, new, text)
+            if not isinstance(e, Moved):
+                raise
+    raise NoSwitch("Claude Code kept changing its files")
+
+
+def autoupdate_blocked():
+    """The environment setting that keeps Claude Code from updating anything by itself, or None."""
+    def set_(var):
+        return os.environ.get(var, "").strip().lower() not in ("", "0", "false", "no")
+    if set_("FORCE_AUTOUPDATE_PLUGINS"):
+        return None
+    return next((var for var in AUTOUPDATE_BLOCKERS if set_(var)), None)
+
+
+def blocked_line():
+    var = autoupdate_blocked()
+    return ("Claude Code's updates are switched off on this machine (%s), so cclevel will not update by itself until that"
+            " is removed." % var) if var else None
+
+
+def howto_line(reason, mkt):
+    return ("cclevel could not turn on auto-update here (%s). Do it once yourself: /plugin → Marketplaces → %s → Enable"
+            " auto-update." % (reason, mkt))
+
+
+def autoupdate_card(cdir):
+    """The first plain card in Default mode: turns Claude Code's auto-update on for this marketplace, once, and returns
+    the lines that say so, or why it could not (shown once; on every card while cclevel's own folder cannot be written,
+    since then it cannot remember). Empty when there is nothing to say."""
+    mkt = installed_marketplace(cdir)
+    if not mkt:
+        return []
+    try:
+        with identity_lock(cdir, 2):
+            # Asked again under the lock: Privacy mode that began a moment ago wins (its undo waits for this lock).
+            if load_autoupdate(cdir)["choice"] or privacy_state(cdir):
+                return []
+            try:
+                files = autoupdate_files(cdir, mkt)
+            except LocalMarketplace:
+                return []   # a folder marketplace is never refreshed: nothing to switch, nothing to say
+            except NoSwitch as e:
+                with contextlib.suppress(OSError):
+                    save_autoupdate(cdir, "theirs", mkt)
+                # A value already in a file cclevel will not change (a linked settings.json, say) is still the user's
+                # own choice: nothing to say about it.
+                return [] if autoupdate_values(cdir, mkt) else [howto_line(e, mkt)]
+            if any("autoUpdate" in f[4] for f in files):
+                with contextlib.suppress(OSError):
+                    save_autoupdate(cdir, "theirs", mkt)   # the user's own choice, in /plugin or settings: it stays
+                return []
+            try:
+                save_autoupdate(cdir, "auto", mkt)   # said first, so Privacy mode can always undo what follows
+            except OSError as e:
+                return [howto_line("cclevel's own folder cannot be written: %s" % (e.strerror or type(e).__name__), mkt)]
+            try:
+                set_autoupdate(cdir, mkt, True)
+            except Exception as e:   # what was changed is put back (see set_autoupdate): say how to do it by hand
+                if True in autoupdate_values(cdir, mkt):
+                    # Claude Code rewrote a file while cclevel was putting it back, so cclevel's own true stayed there:
+                    # auto-update is on, it stays recorded as cclevel's (Privacy mode undoes it), and the notice is right.
+                    return [AUTOUPDATE_NOTICE] + list(filter(None, [blocked_line()]))
+                with contextlib.suppress(OSError):
+                    save_autoupdate(cdir, "theirs", mkt)
+                return [] if isinstance(e, LocalMarketplace) else [howto_line(str(e) or type(e).__name__, mkt)]
+    except Busy as e:
+        # Another cclevel run holds the lock: the next card tries again. Something in the way of cclevel's own folder:
+        # it cannot remember anything, so it says how to do it by hand.
+        return [howto_line("cclevel's own folder cannot be used", mkt)] if e.blocked else []
+    return [AUTOUPDATE_NOTICE] + list(filter(None, [blocked_line()]))
+
+
+def autoupdate_command(args, cdir):
+    """--autoupdate on or off: the user's own choice, kept, and written where the /plugin toggle writes it. Sends nothing.
+    Off is kept even when the files cannot be changed, so no later card turns it on against the user's word."""
+    on = args.autoupdate == "on"
+    mkt = installed_marketplace(cdir)
+    if not mkt:
+        print("cclevel: this copy was not installed from a plugin marketplace, so it has no auto-update to switch.")
+        return 1
+    with identity_lock(cdir, 10):
+        try:
+            set_autoupdate(cdir, mkt, on)
+        except LocalMarketplace:
+            print("cclevel: the %s marketplace is a folder on this machine, which Claude Code never updates from, so there"
+                  " is no auto-update to switch." % mkt)
+            return 1
+        except NoSwitch as e:
+            if not on:
+                save_autoupdate(cdir, "off", mkt)
+            print("cclevel could not turn auto-update %s here (%s). Do it yourself: /plugin → Marketplaces → %s → %s"
+                  " auto-update." % ("on" if on else "off", e, mkt, "Enable" if on else "Disable"))
+            return 1
+        save_autoupdate(cdir, "on" if on else "off", mkt)
+    print(AUTOUPDATE_ON if on else AUTOUPDATE_OFF)
+    line = blocked_line() if on else None
+    if line:
+        print(line)
+    return 0
+
+
+def autoupdate_privacy(cdir):
+    """Privacy mode is on: turns off what the card turned on by itself (the user's own choice stays) and says so. The
+    next card in Default mode turns it on again. Returns the line to print, or None. The choice is read only under the
+    lock, so a card that is turning it on right now finishes first and is undone here. Never raises: when it cannot
+    turn it off, it says how to do that by hand."""
+    mkt = "cclevel"
+    try:
+        with identity_lock(cdir, 10):
+            state = load_autoupdate(cdir)
+            if state["choice"] != "auto" or not state["marketplace"]:
+                return None
+            mkt = state["marketplace"]
+            set_autoupdate(cdir, mkt, None, only_if=True)
+            save_autoupdate(cdir, None, None)
+    except (Busy, OSError):
+        with contextlib.suppress(Exception):
+            if load_autoupdate(cdir)["choice"] != "auto":
+                return None
+        return "cclevel could not turn auto-update off again just now; run /pet privacy on again."
+    except Exception as e:   # NoSwitch, LocalMarketplace or anything unexpected: the switch may still be on
+        return ("cclevel could not turn auto-update off again (%s): /plugin → Marketplaces → %s → Disable auto-update."
+                % (str(e) or ("its marketplace is a local folder" if isinstance(e, LocalMarketplace)
+                              else type(e).__name__), mkt))
+    return AUTOUPDATE_PRIVACY
+
+
 # ---------------------------------------------------------------- menu bar panel (macOS, opt-in)
 # --panel on builds a small menu bar program from the plugin's own Swift source (mac/CclevelPanel.swift) with Apple's
 # swiftc, keeps it beside a copy of this scanner in <claude dir>/cclevel/panel/, and starts it at login with a LaunchAgent.
@@ -3968,6 +4296,10 @@ def privacy_off(args, cdir, ident, data, state):
         print("to %s with a random token made on this machine. It also turns on the world ranking and a quiet" % send_to(hook_board))
         print("check-in once a day, followed by one read of your private group (again at later starts, at most every 15")
         print("minutes, with the menu bar panel installed). --privacy on goes back at any time.")
+    mkt = installed_marketplace(cdir)
+    if mkt and not load_autoupdate(cdir)["choice"] and not autoupdate_values(cdir, mkt):   # what the next card would do
+        print("Your next /pet card also turns on Claude Code's auto-update for cclevel (Claude Code checks GitHub once a"
+              " session); /pet autoupdate off keeps it off.")
     if not confirmed(args, "Turn Privacy mode off? [y/N] ", "Privacy mode stays on. Re-run with --yes to turn it off."):
         return 1
     with board_lock(cdir, 30):
@@ -4688,6 +5020,9 @@ def main():
     ap.add_argument("--fix-name", metavar="NAME", help="a name for a new skill, subagent or script a fix creates")
     board.add_argument("--tips", choices=("on", "off"),
                        help="a how-to under each Need and one Claude Code tip a day on the card; kept on this machine, sends nothing")
+    board.add_argument("--autoupdate", choices=("on", "off"),
+                       help="whether Claude Code installs new cclevel versions by itself (the /plugin auto-update switch for"
+                            " this marketplace; the first card in Default mode turns it on); sends nothing")
     board.add_argument("--panel", choices=("on", "off"),
                        help="macOS: your creature in the menu bar, with a small panel (on asks first; builds it on this Mac and "
                             "starts it at login); sends nothing")
@@ -4720,6 +5055,14 @@ def main():
             print(busy_text(e))
         except OSError as e:
             print("cclevel: could not save the tips setting (%s)." % (e.strerror or type(e).__name__))
+        sys.exit(1)
+    if args.autoupdate:
+        try:
+            sys.exit(autoupdate_command(args, cdir))
+        except Busy as e:
+            print(busy_text(e))
+        except OSError as e:
+            print("cclevel: could not save the auto-update setting (%s)." % (e.strerror or type(e).__name__))
         sys.exit(1)
     if args.panel:
         try:
@@ -4778,6 +5121,13 @@ def main():
         except OSError as e:
             print("cclevel: could not save this machine's board settings (%s)." % (e.strerror or type(e).__name__))
             sys.exit(1)
+        finally:
+            # However Privacy mode began (--privacy on, --leave, --auto off before joining), and even if the board could
+            # not be reached: auto-update goes off again if the card turned it on by itself.
+            with contextlib.suppress(Exception):
+                line = autoupdate_privacy(cdir) if privacy_state(cdir) else None
+                if line:
+                    print(line)
     if args.json:
         # The numbers behind the card, and what the menu bar panel shows: the creature's art, the top Needs with how to fix
         # them, the training path and the tip of the day. The ticked lesson ids themselves are --learn's to show.
@@ -4795,6 +5145,15 @@ def main():
         print(render(result, board=board, how=how, tip=tip, creature=token and creature_name(token), leak=leak))
         if result["hatch_due"] and not args.no_save:
             record_hatch(cdir)
+        # Only the plain card, on Claude Code's own folder, in Default mode, from a marketplace install: it turns Claude
+        # Code's auto-update on once (see autoupdate_card). Never --json (the band and the panel), --no-save or the hook.
+        if real and not args.no_save and board not in ("privacy", "leaving"):
+            try:
+                lines = autoupdate_card(cdir)
+            except Exception as e:   # the card above is already out; the switch never ends it with a traceback
+                lines = [howto_line(type(e).__name__, installed_marketplace(cdir) or "cclevel")]
+            for line in lines:
+                print("  " + line + "\n")
 
 
 if __name__ == "__main__":
