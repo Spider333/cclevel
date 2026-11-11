@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 import urllib.parse
+from unittest import mock
 import zlib
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -34,6 +35,10 @@ for key in ("https_proxy", "HTTPS_PROXY"):
     os.environ[key] = "http://127.0.0.1:9"
 for key in ("no_proxy", "NO_PROXY"):
     os.environ[key] = ""
+# Nor may a test read the developer's own home folder (their ~/.claude.json, Cowork's logs): HOME is an empty folder
+# unless a test sets its own. Subprocesses inherit it.
+HOME_GUARD = tempfile.TemporaryDirectory(prefix="cclevel-home-")
+os.environ["HOME"] = HOME_GUARD.name
 
 spec = importlib.util.spec_from_file_location("cclevel", SCRIPT)
 cclevel = importlib.util.module_from_spec(spec)
@@ -4501,7 +4506,9 @@ class Hatch(unittest.TestCase):
             self.assertEqual(json.loads(self.card("--json", "--no-save"))["hatched"], utc_day(days))
 
     def test_both_modes_stay_on_the_first_card_and_nothing_is_sent(self):
-        real = {"CLAUDE_CONFIG_DIR": self.dir}   # the folder Claude Code uses, so the card has its two-modes lines
+        home = tempfile.TemporaryDirectory()   # its own home folder, so no Cowork logs of this machine are read
+        self.addCleanup(home.cleanup)
+        real = {"CLAUDE_CONFIG_DIR": self.dir, "HOME": home.name}   # the folder Claude Code uses: the two-modes lines
         out, count = run_counted("--claude-dir", self.dir, "--no-save", env=real)
         self.assertEqual(count, 0)
         self.assertIn("An egg appeared!", out.stdout)
@@ -5119,3 +5126,295 @@ class Timesheet(unittest.TestCase):
             text = run("--claude-dir", self.dir, *flags, env={"HOME": self.home}).stdout
             self.assertNotIn("zzq-alpha", text)
             self.assertNotIn("zzq-bravo", text)
+
+
+COWORK = ("Library", "Application Support", "Claude", "local-agent-mode-sessions")
+# Runs the scanner with an audit hook that writes down every file it opens.
+LOG_OPENS = (
+    "import atexit, os, runpy, sys\n"
+    "seen = []\n"
+    "def hook(event, args):\n"
+    "    if event == 'open' and isinstance(args[0], str):\n"
+    "        seen.append(os.path.realpath(args[0]))\n"
+    "sys.addaudithook(hook)\n"
+    "def report():\n"
+    "    text = '\\n'.join(seen)\n"
+    "    with open(os.environ['CCLEVEL_OPEN_LOG'], 'w') as f:\n"
+    "        f.write(text)\n"
+    "atexit.register(report)\n"
+    "sys.argv = sys.argv[1:]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+)
+
+
+class Cowork(unittest.TestCase):
+    """Cowork's session logs on this Mac count like Claude Code's own, as one project, only for the machine's own Claude
+    Code folder, from the day the card first saved with them (cowork_from) and inside the 30-day window."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = os.path.join(self.tmp.name, "claude")
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.home)
+        # One Claude Code day eight days ago, so the folder is a real one.
+        write(self.dir, "projects/proj/s1.jsonl", log_line(day_stamp(8), "own1", tools=[("Read", {})]) + "\n")
+        env = mock.patch.dict(os.environ, {"HOME": self.home})
+        env.start()
+        self.addCleanup(env.stop)
+        self.store = os.path.join(self.home, *COWORK)
+
+    def score(self, real=True, save=False):
+        return cclevel.score(self.dir, machine_jobs=real, save=save)
+
+    def task(self, rel, *lines):
+        write(self.store, rel, "\n".join(lines) + "\n")
+        return os.path.join(self.store, rel)
+
+    def ledger(self):
+        with open(os.path.join(self.dir, "cclevel", "ledger.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def today(self, session, message_id, entrypoint="local-agent", tools=()):
+        return log_line(day_stamp(0), message_id, session=session, entrypoint=entrypoint, tools=tools)
+
+    def card(self, *flags, folder=None):
+        out = subprocess.run([sys.executable, SCRIPT, "--claude-dir", folder or self.dir, *flags], capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL, timeout=60,
+                             env=dict(os.environ, CLAUDE_CONFIG_DIR=self.dir, HOME=self.home))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_todays_cowork_counts_as_one_project_and_never_as_unattended(self):
+        before = self.score()
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl",
+                  prompt_line(day_stamp(0), "do it", session="c1", entrypoint="local-agent"),
+                  self.today("c1", "cw1", tools=[("Edit", {"file_path": "/sessions/a/x.txt"}),
+                                                 ("Bash", {"command": "git commit -m x"}),
+                                                 ("Skill", {"skill": "docx"}), ("mcp__drive__read", {})]))
+        self.task("dev/org/local_t2/.claude/projects/-sessions-b/c2.jsonl", self.today("c2", "cw2"))
+        self.task("dev/org/agent/local_ditto_x/.claude/projects/-sessions-c/c3.jsonl", self.today("c3", "cw3"))
+        after = self.score()
+        b, a = before["raw"], after["raw"]
+        self.assertEqual(a["sessions_30d"] - b["sessions_30d"], 3)
+        self.assertEqual(a["projects_30d"] - b["projects_30d"], 1)          # three tasks, one project
+        self.assertEqual(a["auto_sessions_30d"], b["auto_sessions_30d"])    # Cowork is a person at work
+        self.assertEqual((a["edits_30d"] - b["edits_30d"], a["commits_30d"] - b["commits_30d"]), (1, 1))
+        self.assertEqual((a["connectors_used"] - b["connectors_used"], a["skills_used"] - b["skills_used"]), (1, 1))
+        self.assertEqual(before["xp_today_pending"], 0)
+        self.assertGreater(after["xp_today_pending"], 0)
+
+    def test_an_unattended_run_in_cowork_still_counts_as_unattended(self):
+        before = self.score()["raw"]["auto_sessions_30d"]
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1", entrypoint="sdk-cli"))
+        self.assertEqual(self.score()["raw"]["auto_sessions_30d"], before + 1)
+
+    def test_only_the_machines_own_folder_counts_cowork(self):
+        own, other = self.score(), self.score(real=False)
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1"))
+        self.assertEqual(self.score()["raw"]["sessions_30d"], own["raw"]["sessions_30d"] + 1)   # control: own folder
+        self.assertEqual(self.score(real=False)["raw"], other["raw"])
+        elsewhere = os.path.join(self.tmp.name, "elsewhere")
+        shutil.copytree(self.dir, elsewhere)
+        with_store = self.card("--json", "--no-save", folder=elsewhere)
+        own_cli = json.loads(self.card("--json", "--no-save"))["raw"]["sessions_30d"]
+        os.rename(self.store, self.store + ".away")
+        self.assertEqual(self.card("--json", "--no-save", folder=elsewhere), with_store)
+        # Control: the same command on the machine's own folder did count it.
+        self.assertEqual(json.loads(self.card("--json", "--no-save"))["raw"]["sessions_30d"], own_cli - 1)
+
+    def test_cowork_from_before_it_counted_is_never_banked(self):
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "first_seen": utc_day(20), "days": {utc_day(10): 100}})
+        for ago in range(1, 6):
+            self.task("dev/org/local_t%d/.claude/projects/-sessions-%d/c%d.jsonl" % (ago, ago, ago),
+                      log_line(day_stamp(ago), "cw%d" % ago, session="c%d" % ago, entrypoint="local-agent"))
+        first = self.score(save=True)
+        ledger = self.ledger()
+        self.assertEqual(ledger["cowork_from"], utc_day(0))
+        self.assertEqual(set(ledger["days"]), {utc_day(10), utc_day(8)})
+        self.assertEqual(first["raw"]["xp_days"], 2)
+        again = self.score(save=True)
+        self.assertEqual((self.ledger()["days"], self.ledger()["cowork_from"]), (ledger["days"], utc_day(0)))
+        self.assertEqual(again["xp"], first["xp"])
+        # Control: the same days do count once Cowork counted from before them, all at once in one run.
+        write(self.dir, "cclevel/ledger.json", dict(ledger, cowork_from=utc_day(6)))
+        later = self.score(save=True)
+        self.assertEqual(set(self.ledger()["days"]), {utc_day(10), utc_day(8)} | {utc_day(d) for d in range(1, 6)})
+        self.assertEqual(later["raw"]["xp_days"], 7)
+        self.assertEqual(self.ledger()["cowork_from"], utc_day(6))
+
+    def test_cowork_lines_from_before_it_counted_add_nothing(self):
+        # A Cowork session that ran over midnight: its log is written today, but a prompt (a skill) and a compaction in
+        # it are from yesterday, a day with Claude Code work of its own that is not banked yet.
+        write(self.dir, "projects/proj/s2.jsonl", log_line(day_stamp(1), "own2", session="s2") + "\n")
+        before = self.score()
+        stamp = day_stamp(1, hour=23)
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl",
+                  prompt_line(stamp, "<command-name>/plug:thing</command-name>", session="c1", entrypoint="local-agent"),
+                  system_line("compact_boundary", timestamp=stamp.isoformat(), compactMetadata={"trigger": "auto"}),
+                  self.today("c1", "cw1"))
+        extra = {}
+        after = cclevel.score(self.dir, machine_jobs=True, save=False, extra=extra)
+        self.assertEqual((after["xp"], after["raw"]["skills_used"]), (before["xp"], before["raw"]["skills_used"]))
+        self.assertEqual(extra.get("compactions", []), [])
+        self.assertEqual(after["raw"]["sessions_30d"], before["raw"]["sessions_30d"] + 1)   # today's part counts
+        # Control: counted from two days ago, the same lines do count for yesterday.
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "first_seen": utc_day(20), "cowork_from": utc_day(2)})
+        extra = {}
+        control = cclevel.score(self.dir, machine_jobs=True, save=False, extra=extra)
+        self.assertGreater(control["xp"], before["xp"])
+        self.assertEqual(control["raw"]["skills_used"], before["raw"]["skills_used"] + 1)
+        self.assertEqual(len(extra["compactions"]), 1)
+
+    def test_coworks_own_memory_and_hooks_are_not_brains(self):
+        before = self.score()
+        lines = (self.today("c1", "cw1", tools=[("Write", {"file_path": "/sessions/a/mnt/memory/notes.md"})]),
+                 system_line("stop_hook_summary", timestamp=day_stamp(0).isoformat(), hookCount=1))
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", *lines)
+        after = self.score()
+        self.assertEqual(after["raw"]["edits_30d"], before["raw"]["edits_30d"] + 1)   # the log was read
+        self.assertEqual(after["stats"]["brains"], before["stats"]["brains"])
+        # Control: the same lines in a Claude Code log are a memory and a hook this user set up.
+        write(self.dir, "projects/proj/s3.jsonl", "\n".join(lines).replace("cw1", "own3") + "\n")
+        self.assertGreater(self.score()["stats"]["brains"], before["stats"]["brains"])
+
+    def test_cowork_is_not_charged_for_this_folders_start_up_context(self):
+        write(self.dir, "CLAUDE.md", "x" * 4000)
+
+        def report():
+            r = json.loads(self.card("--leaks", "--json"))
+            return r["requests"], next(f for f in r["leaks"] if f["code"] == "startup")["per_week"]
+        requests, per_week = report()
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl",
+                  *[reply(day_stamp(0) + timedelta(minutes=i), "cw%d" % i) for i in range(20)])
+        # The Cowork replies are in the report (control), and none of them is charged for this folder's start-up context.
+        self.assertEqual(report(), (requests + 20, per_week))
+        # Control: the same replies in a Claude Code log do read this folder's start-up context.
+        write(self.dir, "projects/proj/s4.jsonl",
+              "\n".join(reply(day_stamp(0) + timedelta(minutes=i), "own%d" % i) for i in range(20)) + "\n")
+        self.assertGreater(report()[1], per_week)
+
+    def test_a_linked_log_in_the_claude_folder_still_counts(self):
+        before = self.score()["raw"]["sessions_30d"]
+        write(self.tmp.name, "kept/s9.jsonl", log_line(day_stamp(0), "own9", session="s9") + "\n")
+        os.symlink(os.path.join(self.tmp.name, "kept/s9.jsonl"), os.path.join(self.dir, "projects/proj/s9.jsonl"))
+        self.assertEqual(self.score()["raw"]["sessions_30d"], before + 1)
+
+    def test_cowork_counts_only_inside_the_30_day_window(self):
+        write(self.dir, "cclevel/ledger.json", {"version": 4, "first_seen": utc_day(60), "cowork_from": utc_day(45)})
+        before = self.score()["raw"]
+        run = [log_line(day_stamp(40, hour=10), "old%d" % i, session="old", entrypoint="local-agent") for i in range(6)]
+        self.task("dev/org/local_old/.claude/projects/-sessions-old/old.jsonl", *run)
+        self.assertEqual(self.score()["raw"], before)
+        # Control: the same run today counts, and is the longest run.
+        self.task("dev/org/local_new/.claude/projects/-sessions-new/new.jsonl",
+                  *[self.today("new", "new%d" % i) for i in range(6)])
+        self.assertEqual(self.score()["raw"]["longest_run"], 6)
+
+    def test_a_cowork_log_last_written_before_it_counts_is_not_read(self):
+        before = self.score()["raw"]["sessions_30d"]
+        path = self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1"))
+        old = day_stamp(3).timestamp()
+        os.utime(path, (old, old))
+        self.assertEqual(self.score()["raw"]["sessions_30d"], before)
+        os.utime(path, None)   # control: written now, it counts
+        self.assertEqual(self.score()["raw"]["sessions_30d"], before + 1)
+
+    def test_the_third_party_desktop_build_is_not_read(self):
+        before = self.score()["raw"]
+        write(os.path.join(self.home, "Library", "Application Support", "Claude-3p", "local-agent-mode-sessions"),
+              "dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1") + "\n")
+        self.assertEqual(self.score()["raw"], before)
+        # Control: the same log in Claude's own Cowork folder counts.
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1"))
+        self.assertEqual(self.score()["raw"]["sessions_30d"], before["sessions_30d"] + 1)
+
+    def test_only_cowork_session_logs_are_opened(self):
+        logs = [self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1")),
+                self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1/subagents/agent-a1.jsonl",
+                          self.today("c1", "cw1a")),
+                self.task("dev/org/agent/local_ditto_x/.claude/projects/-sessions-c/c3.jsonl", self.today("c3", "cw3"))]
+        beside = ["dev/org/local_t1/.claude/.credentials.json", "dev/org/local_t1/.claude/.claude.json",
+                  "dev/org/local_t1/.claude/settings.json", "dev/org/local_t1/audit.jsonl", "dev/org/local_t1.json",
+                  "dev/org/agent/memory/notes.md", "dev/org/local_t1/outputs/report.md", "dev/org/local_t1/uploads/in.txt",
+                  "dev/org/local_t1/outputs/local_y/.claude/projects/p/s.jsonl",
+                  "dev/org/local_t1/uploads/local_y/.claude/projects/p/s.jsonl",
+                  # Inside a task's projects folder, but not where session logs sit.
+                  "dev/org/local_t1/.claude/projects/x.jsonl", "dev/org/local_t1/.claude/projects/-sessions-a/c1/other.jsonl",
+                  "dev/org/local_t1/.claude/projects/-sessions-a/c1/tool-results/t.jsonl",
+                  "dev/org/local_t1/.claude/projects/-sessions-a/memory/m.jsonl"]
+        for rel in beside:
+            self.task(rel, self.today("zz", "zz1"))
+        fd, path = tempfile.mkstemp(suffix=".opens")
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        out = subprocess.run([sys.executable, "-c", LOG_OPENS, SCRIPT, "--claude-dir", self.dir, "--json", "--no-save"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60,
+                             env=dict(os.environ, CLAUDE_CONFIG_DIR=self.dir, HOME=self.home, CCLEVEL_OPEN_LOG=path))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        with open(path, encoding="utf-8") as f:
+            opened = set(f.read().split("\n"))
+        store = os.path.realpath(self.store)
+        in_store = {p for p in opened if p.startswith(store + os.sep)}
+        self.assertEqual(in_store, {os.path.realpath(p) for p in logs})
+        # The setup's own session, c1 (its subagent's log is part of c1) and c3: none of the files beside them.
+        self.assertEqual(json.loads(out.stdout)["raw"]["sessions_30d"], 3)
+
+    def test_planted_files_cannot_stall_or_change_the_count(self):
+        empty = json.loads(self.card("--json", "--no-save"))["raw"]
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl", self.today("c1", "cw1"))
+        self.task("dev/org/local_t2/.claude/projects/-sessions-b/c2.jsonl", self.today("c2", "cw2"))
+        before = json.loads(self.card("--json", "--no-save"))["raw"]
+        self.assertEqual(before["sessions_30d"], empty["sessions_30d"] + 2)   # control: both tasks count
+        projects = os.path.join(self.store, "dev/org/local_t1/.claude/projects")
+        os.mkfifo(os.path.join(projects, "-sessions-a/pipe.jsonl"))
+        os.mkfifo(os.path.join(self.dir, "projects/proj/pipe.jsonl"))
+        # Links, each to a log that would count if it were followed: to a file outside the store, to a file in the
+        # store but outside the logs, a subagents folder linked to the task's outputs, and a whole task linked from
+        # outside. Then a loop of two links.
+        write(self.tmp.name, "outside.jsonl", self.today("linked", "ln1") + "\n")
+        os.symlink(os.path.join(self.tmp.name, "outside.jsonl"), os.path.join(projects, "-sessions-a/linked.jsonl"))
+        hidden = self.task("dev/org/local_t1/outputs/local_y/hidden.jsonl", self.today("hidden", "hd1"))
+        os.symlink(hidden, os.path.join(projects, "-sessions-a/inside.jsonl"))
+        os.makedirs(os.path.join(projects, "-sessions-a/c1"))
+        os.symlink(os.path.join(self.store, "dev/org/local_t1/outputs"), os.path.join(projects, "-sessions-a/c1/subagents"))
+        write(self.tmp.name, "task/.claude/projects/-sessions-z/z.jsonl", self.today("z", "z1") + "\n")
+        os.symlink(os.path.join(self.tmp.name, "task"), os.path.join(self.store, "dev/org/local_t4"))
+        loop = os.path.join(self.store, "dev/org/local_t2/.claude/projects/-sessions-b/c2/subagents")
+        os.makedirs(loop)
+        os.symlink(".", os.path.join(loop, "again"))
+        os.symlink("..", os.path.join(loop, "up"))
+        locked = os.path.join(self.store, "dev/org/local_t3")
+        os.makedirs(os.path.join(locked, ".claude", "projects", "-sessions-x"))
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o700)
+        self.assertEqual(json.loads(self.card("--json", "--no-save"))["raw"], before)
+
+    def test_the_timesheet_stays_claude_code_only(self):
+        when = datetime.now(timezone.utc) - timedelta(minutes=40)
+        week = "%d-W%02d" % when.isocalendar()[:2]
+        for name in ("zzq-alpha", "zzq-cowork"):
+            os.makedirs(os.path.join(self.tmp.name, name, ".git"))
+
+        def lines(session, cwd):
+            return [json.dumps({"type": "user", "timestamp": when.isoformat(), "cwd": cwd, "sessionId": session,
+                                "message": {"role": "user", "content": "zzq prompt text"}}),
+                    json.dumps({"type": "assistant", "timestamp": (when + timedelta(minutes=20)).isoformat(), "cwd": cwd,
+                                "sessionId": session, "message": {"id": "m" + session, "role": "assistant",
+                                                                  "content": [{"type": "text", "text": "ok"}]}}),
+                    self.today(session, "r" + session)]
+        write(self.dir, "projects/-zzq-alpha/t1.jsonl", "\n".join(lines("t1", os.path.join(self.tmp.name, "zzq-alpha"))))
+        before = self.score()["raw"]["sessions_30d"]
+        self.task("dev/org/local_t1/.claude/projects/-sessions-a/c1.jsonl",
+                  *lines("c1", os.path.join(self.tmp.name, "zzq-cowork")))
+        self.assertEqual(self.score()["raw"]["sessions_30d"], before + 1)   # the Cowork task does count on the card
+
+        def sheet():
+            out = self.card("--timesheet", week, "--tz", "UTC", "--names")
+            with open(os.path.join(self.dir, "cclevel", "timesheet.csv"), encoding="utf-8") as f:
+                return out, f.read()
+        with_store = sheet()
+        self.assertIn("zzq-alpha", with_store[1])        # control: Claude Code's own work is on the timesheet
+        self.assertNotIn("zzq-cowork", with_store[1])
+        os.rename(self.store, self.store + ".away")
+        self.assertEqual(sheet(), with_store)

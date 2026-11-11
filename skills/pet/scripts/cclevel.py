@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """cclevel: score a Claude Code setup and show it as a creature that grows.
 
-Reads the local Claude Code folder. Writes nothing except its own files in
+Reads the local Claude Code folder (and, on a Mac, Cowork's session logs).
+Writes nothing except its own files in
 <claude dir>/cclevel/. A score covers one machine and is self-reported.
 
 The card is fully offline, and so are --card, which only prints a link, and
@@ -282,6 +283,12 @@ TIPS = {
     ],
 }
 WORKTREE_MARK = "-claude-worktrees-"   # a session started in <repo>/.claude/worktrees/<name> logs under a folder with this
+# Claude's Cowork (the desktop app's agent mode, on a Mac) runs Claude Code with a Claude Code folder of its own for each
+# task, inside the desktop app's folder. Only the session logs of these two shapes are read, never the files beside them
+# (sign-in, settings, memory, the task's uploads and outputs): <device>/<org>/local_<task> and <device>/<org>/agent/local_<id>.
+COWORK_STORE = ("Library", "Application Support", "Claude", "local-agent-mode-sessions")   # under the home folder
+COWORK_SHAPES = (("*", "*", "local_*"), ("*", "*", "agent", "local_*"))
+COWORK_PROJECT = "cowork"   # all Cowork work counts as one project: each task has a folder of its own with a random name
 
 ART = {
     "Egg": [r"   ___   ", r"  /   \  ", r" |  .  | ", r"  \___/  "],
@@ -530,10 +537,51 @@ def failed_ids(line):
             and b.get("is_error") is True] if isinstance(content, list) else []
 
 
-def scan_logs(cdir, skill_names, extra=None):
+def log_files(root):
+    """Every session log under a projects folder, with its subagents' logs. Only plain files: a pipe or a device named
+    like a log would block the scan, and the daily auto check-in runs it unattended."""
+    return [path for path in glob.glob(os.path.join(root, "*", "*.jsonl")) +
+            glob.glob(os.path.join(root, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
+            if os.path.isfile(path)]
+
+
+def cowork_logs(since):
+    """Cowork's session logs on this Mac last written on or after the UTC day `since`: the same places as log_files(),
+    under each task's projects folder. Only plain files inside Cowork's own folder: no link is followed, to a file or a
+    folder, since what a link points to is not Cowork's log and two of them can make a loop. Empty where Cowork is not
+    used."""
+    store = os.path.realpath(os.path.join(os.path.expanduser("~"), *COWORK_STORE))
+    if not os.path.isdir(store):
+        return []
+    start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc).timestamp()
+    found = []
+    for shape in COWORK_SHAPES:
+        for task in glob.glob(os.path.join(store, *shape)):
+            root = os.path.join(task, ".claude", "projects")
+            if os.path.realpath(root) != root:   # a linked task, .claude or projects folder
+                continue
+            for top, dirs, names in os.walk(root):   # never enters a linked folder
+                parts = [] if top == root else os.path.relpath(top, root).split(os.sep)
+                if len(parts) == 2:
+                    dirs[:] = [d for d in dirs if d == "subagents"]   # below a session, only <session>/subagents/**
+                if len(parts) in (0, 2):
+                    continue                                          # logs sit in <project>/ or under subagents/
+                for name in names:
+                    path = os.path.join(top, name)
+                    try:
+                        st = os.lstat(path)
+                    except OSError:
+                        continue
+                    if name.endswith(".jsonl") and stat.S_ISREG(st.st_mode) and st.st_mtime >= start:
+                        found.append(path)
+    return found
+
+
+def scan_logs(cdir, skill_names, extra=None, cowork_since=None):
     """Per-day activity from session logs. Returns (days, longest unattended run). Given a dict, `extra` also gets what
     the leak finder needs, from the same pass: each reply's usage with its time and log file, every compaction and
-    Claude Code's own cost figure per log. The card's numbers do not depend on it."""
+    Claude Code's own cost figure per log. The card's numbers do not depend on it. Given a UTC day, `cowork_since` adds
+    Cowork's logs on this Mac, from that day on only, as one project."""
     days = defaultdict(new_day)
     best = {}            # (message id, request id) -> (output tokens, day, usage)
     when = {}            # the same key -> (time, log file), for the leak finder only
@@ -542,11 +590,11 @@ def scan_logs(cdir, skill_names, extra=None):
     failed = set()       # ids of the tool calls whose result is marked as an error
     longest = 0
     root = os.path.join(cdir, "projects")
-    files = glob.glob(os.path.join(root, "*", "*.jsonl")) + \
-        glob.glob(os.path.join(root, "*", "*", "subagents", "**", "*.jsonl"), recursive=True)
-    for path in files:
+    files = [(path, os.path.relpath(path, root).split(os.sep)[0], False) for path in log_files(root)]
+    if cowork_since:
+        files += [(path, COWORK_PROJECT, True) for path in cowork_logs(cowork_since)]
+    for path, project, cowork in files:
         sub = os.sep + "subagents" + os.sep in path
-        project = os.path.relpath(path, root).split(os.sep)[0]
         day, run = None, set()
         try:
             fh = open(path, encoding="utf-8", errors="ignore")
@@ -563,6 +611,8 @@ def scan_logs(cdir, skill_names, extra=None):
                     if not isinstance(m, dict) or o.get("type") != "assistant":
                         continue
                     day = day_of(o.get("timestamp")) or day
+                    if cowork and day and day < cowork_since:
+                        day = None   # Cowork work from before it counted on this machine never counts (see score)
                     if not day:
                         continue
                     d = days[day]
@@ -575,7 +625,7 @@ def scan_logs(cdir, skill_names, extra=None):
                         if key not in best or out > best[key][0]:
                             best[key] = (out, day, u, m.get("model"))
                             if extra is not None:
-                                when[key] = (str(o.get("timestamp") or ""), path)
+                                when[key] = (str(o.get("timestamp") or ""), path, cowork)
                     session = str(o.get("sessionId"))
                     if not sub:
                         run.add(str(m.get("id")))
@@ -595,6 +645,8 @@ def scan_logs(cdir, skill_names, extra=None):
                         if name.startswith("mcp__"):
                             d["servers_called"].add(name.split("__")[1])   # for the leak finder: called, worked or not
                         what = earns(name, b.get("input") if isinstance(b.get("input"), dict) else {})
+                        if cowork:   # Cowork's own memory is its app's, not a memory this user set up (Brains)
+                            what = tuple(p for p in what if p[0] != "memory_writes")
                         if what:
                             pending[str(b.get("id"))] = (day, what)
                 elif '"type":"user"' in line:
@@ -613,6 +665,8 @@ def scan_logs(cdir, skill_names, extra=None):
                     if not isinstance(o, dict) or o.get("type") != "user" or o.get("isMeta") or o.get("isSidechain"):
                         continue
                     day = day_of(o.get("timestamp")) or day
+                    if cowork and day and day < cowork_since:
+                        day = None
                     if not day:
                         continue
                     c = as_dict(o.get("message")).get("content")
@@ -631,14 +685,15 @@ def scan_logs(cdir, skill_names, extra=None):
                     run = set()
                 elif day and '"type":"permission-mode"' in line and '"permissionMode":"plan"' in line:
                     days[day]["plan"] += 1
-                elif day and '"subtype":"stop_hook_summary"' in line:
+                elif day and not cowork and '"subtype":"stop_hook_summary"' in line:   # Cowork's hooks are its app's
                     ran = HOOK_COUNT_RE.search(line)
                     days[day]["hooks_ran"] += bool(ran and int(ran.group(1)) > 0)
                 elif day and '"subtype":"local_command"' in line:
                     days[day]["commands"].update(COMMAND_RE.findall(line))   # some commands are logged only here
                 elif day and '"subtype":"compact_boundary"' in line:
                     days[day]["compacts"] += '"trigger":"manual"' in line   # /compact typed, not the automatic one
-                if extra is not None and ('"subtype":"compact_boundary"' in line or '"type":"cost-state"' in line):
+                if extra is not None and (day or not cowork) and \
+                        ('"subtype":"compact_boundary"' in line or '"type":"cost-state"' in line):
                     leak_line(extra, line, path)
         longest = max(longest, len(run))
     # A tool call earns its part only once it has worked: a result marked as an error means it earns nothing. A call
@@ -652,8 +707,8 @@ def scan_logs(cdir, skill_names, extra=None):
                 else:
                     d[field_name] += value
     if extra is not None:
-        extra["requests"] = [{"day": day, "time": when[k][0], "file": when[k][1], "model": str(model), "usage": u}
-                             for k, (_, day, u, model) in best.items()]
+        extra["requests"] = [{"day": day, "time": when[k][0], "file": when[k][1], "cowork": when[k][2],
+                              "model": str(model), "usage": u} for k, (_, day, u, model) in best.items()]
     for _, day, u, model in best.values():
         days[day]["models"][str(model)] += 1
         for k in TOKEN_WEIGHT:
@@ -924,9 +979,18 @@ def score(cdir, machine_jobs, save, extra=None):
     for key in ("hooks", "permissions"):       # count both files together
         settings[key] = merged_lists(settings.get(key), local.get(key))
 
+    recent_since = (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
+    used_since = (today - timedelta(days=USED_WINDOW_DAYS - 1)).isoformat()
+    # Cowork counts on the machine's own Claude Code folder only, from the day the card first saved with it (kept in the
+    # ledger) and inside the 30-day window. Older Cowork days are never banked: the board would take them as new days
+    # after joining and credit them at the full daily cap for weeks.
+    cowork_from = read_ledger(cdir, today)[0].get("cowork_from")
+    cowork_from = cowork_from if is_day(cowork_from) and len(cowork_from) == 10 and cowork_from <= today_s else today_s
+
     setup = scan_setup(cdir, cfg, settings, extra)
     prompts = scan_history(cdir)
-    days, longest_run = scan_logs(cdir, set(setup["skills"]), extra)
+    days, longest_run = scan_logs(cdir, set(setup["skills"]), extra,
+                                  cowork_since=max(cowork_from, recent_since) if machine_jobs else None)
     if extra is not None:
         extra["days"] = days
     # A day counts only when Claude really answered (synthetic error replies are not in "models") or a prompt was typed:
@@ -934,8 +998,6 @@ def score(cdir, machine_jobs, save, extra=None):
     days = {day: d for day, d in days.items() if d["models"] or prompts.get(day)}
     jobs = scheduled_jobs() if machine_jobs else 0
 
-    recent_since = (today - timedelta(days=RECENT_WINDOW_DAYS - 1)).isoformat()
-    used_since = (today - timedelta(days=USED_WINDOW_DAYS - 1)).isoformat()
     w30 = merge(days, recent_since, today_s)
 
     # Skills used: Claude Code's own counters reach back further than the logs.
@@ -1087,6 +1149,8 @@ def score(cdir, machine_jobs, save, extra=None):
     seen = ledger.get("first_seen")
     hatched = seen if is_day(seen) and len(seen) == 10 and seen <= today_s else today_s if active or badges else None
     kept = {"days": banked, "estimated": sorted(estimated), "badges": badges, "weeks": weeks}
+    if machine_jobs or is_day(ledger.get("cowork_from")):
+        kept["cowork_from"] = cowork_from   # the day Cowork started to count on this machine (see above)
     # The day the card first showed the hatch, kept so it shows once (see hatch_due).
     hatch_seen = ledger.get("hatch_seen") if is_day(ledger.get("hatch_seen")) else None
     if save and (banked or badges) and any(kept[k] != ledger.get(k) for k in kept):
@@ -2021,11 +2085,13 @@ def leaks(extra, result, today):
                 cost += write_dollars(r["model"], r["usage"], w5, w1) or 0
     found.append({"code": "pauses", "times": times, "tokens": tokens, "per_week": cost / n_weeks})
 
-    # The start-up context, read by every request: a lower bound, priced as cache reads.
+    # The start-up context, read by every request: a lower bound, priced as cache reads. Not Cowork's: each Cowork task
+    # starts from a Claude folder of its own, without this one's instructions, memory or skills.
     ctx = dict(extra.get("context") or {})
     ctx_tokens = sum(ctx.values())
-    cost = sum((price_of(r["model"], r["usage"]) or (0, 0, 0))[2] for r in reqs) * ctx_tokens / 1e6
-    found.append({"code": "startup", "tokens": ctx_tokens, "parts": ctx, "requests_per_week": round(len(reqs) / n_weeks),
+    own = [r for r in reqs if not r.get("cowork")]
+    cost = sum((price_of(r["model"], r["usage"]) or (0, 0, 0))[2] for r in own) * ctx_tokens / 1e6
+    found.append({"code": "startup", "tokens": ctx_tokens, "parts": ctx, "requests_per_week": round(len(own) / n_weeks),
                   "per_week": cost / n_weeks})
 
     # Auto-compaction, and the cache the next reply in that log writes again.
