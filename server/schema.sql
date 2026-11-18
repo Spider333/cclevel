@@ -55,9 +55,10 @@ CREATE TABLE IF NOT EXISTS days (
 	joins INTEGER NOT NULL
 );
 
--- GitHub verification codes that stopped being used (badge removed, creature left, or replaced by a new start),
--- kept for two days with no link to any creature, so a code copied from a public gist cannot be used again.
--- After two days a gist is older than any new start, and that rule takes over.
+-- GitHub verification codes that stopped being used (badge removed, creature left, replaced by a new start,
+-- or expired unused), kept for two days with no link to any creature, so a code copied from a public gist cannot
+-- be used again. After two days a gist made before the code was let go is older than any new start, and that rule
+-- takes over; a gist for an expired code published later than that is not covered.
 CREATE TABLE IF NOT EXISTS spent (
 	hash TEXT PRIMARY KEY, -- SHA-256 of the code
 	day  TEXT NOT NULL     -- UTC date it stopped being used
