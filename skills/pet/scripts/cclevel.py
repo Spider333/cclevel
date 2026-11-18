@@ -3861,6 +3861,9 @@ def github_command(args, cdir, server, ident):
         # Second run: the board looks for the code in the account's public gists.
         status, reply = call(server, "POST", "/api/github", token)
         if status != 200 or type(reply.get("verified")) is not bool:
+            if reply.get("reason") in ("expired", "not_started"):
+                # The board has let this code go: forget it, so the next run starts again with a new one.
+                keep_local(cdir, token, lambda now: now.pop("github", None))
             print("cclevel: the board could not check: %s." % group_refusal(status, reply, GITHUB_REFUSALS))
             return 1
         if not reply["verified"]:

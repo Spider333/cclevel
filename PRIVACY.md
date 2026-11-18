@@ -124,7 +124,7 @@ Besides that the board keeps:
 
 - one counter per day of how many creatures joined (table `days`: `day`, a UTC date, and `joins`, a number), with nothing that identifies them;
 - its stored files (table `snapshot`: `id`, the file's name, and `body`, its content): the two public files below, the row ids of listed creatures in list order (so one can be cut out at once), and the day's totals;
-- GitHub verification codes that stopped being used, because a badge was removed, a creature left or a new start replaced an unfinished one (table `spent`: `hash`, the code's SHA-256, and `day`, a UTC date). They are kept for two days with no link to any creature, so a code copied from a public gist cannot be used again, and then deleted.
+- GitHub verification codes that stopped being used, because a badge was removed, a creature left, a new start replaced an unfinished one or the code expired unused (table `spent`: `hash`, the code's SHA-256, and `day`, a UTC date). They are kept for two days with no link to any creature, so a code copied from a public gist cannot be used again, and then deleted.
 
 It does not store IP addresses or user agents, and the service writes no request logs. The code is in `server/`.
 

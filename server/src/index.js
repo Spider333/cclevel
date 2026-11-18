@@ -708,6 +708,12 @@ async function rebuild(env) {
 		env.DB.prepare("DELETE FROM days WHERE day < ?").bind(daysBefore(day, ONE_DAY_ROWS_KEPT)),
 		env.DB.prepare("DELETE FROM spent WHERE day <= ?").bind(daysBefore(day, GH_CODE_DAYS)),
 		// An unfinished GitHub verification, and the login it named, is kept only while its code is good.
+		// Its code is spent first, so a gist the owner publishes late cannot be claimed by another creature for two days.
+		// After that a copy works only from a gist made later still; the scanner stops showing an expired code.
+		env.DB.prepare(
+			`INSERT OR IGNORE INTO spent (hash, day) SELECT gh_code, ?1 FROM entries
+			WHERE gh_code IS NOT NULL AND gh_id IS NULL AND gh_code_day <= ?2`,
+		).bind(day, daysBefore(day, GH_CODE_DAYS)),
 		env.DB.prepare(
 			`UPDATE entries SET gh_login = NULL, gh_code = NULL, gh_code_day = NULL
 			WHERE gh_code IS NOT NULL AND gh_id IS NULL AND gh_code_day <= ?`,

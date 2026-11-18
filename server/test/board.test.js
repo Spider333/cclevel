@@ -1203,6 +1203,10 @@ describe("GitHub badge", () => {
 		expect(spent).toHaveLength(3);
 		goTo("2026-10-16");
 		await rebuild();
+		// The three are gone; carol's unfinished second code has expired, so it is spent now and goes two days later.
+		expect((await env.DB.prepare("SELECT hash FROM spent").all()).results).toEqual([{ hash: await sha256("4".repeat(32)) }]);
+		goTo("2026-10-18");
+		await rebuild();
 		expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM spent").first()).n).toBe(0);
 	});
 
@@ -1311,6 +1315,27 @@ describe("GitHub badge", () => {
 		goTo("2026-10-16");
 		await rebuild();
 		expect(await row(TOKEN)).toMatchObject({ gh_login: null, gh_code: null, gh_code_day: null });
+	});
+
+	it("cannot be taken with an expired code whose owner publishes the gist late", async () => {
+		await twoDays(token(1));
+		await twoDays(token(2));
+		// The owner starts on the 14th and does not publish the gist in time.
+		await start(token(1), "alice", "5".repeat(32));
+		goTo("2026-10-16");
+		await rebuild(); // the code has expired: the board forgets it
+		expect(await row(token(1))).toMatchObject({ gh_login: null, gh_code: null });
+		// The owner publishes the gist on the 16th anyway; someone reads it and starts with the same code that day.
+		const copied = await start(token(2), "alice", "5".repeat(32));
+		expect(copied.status).toBe(409);
+		expect((await copied.json()).reason).toBe("code_taken");
+		expect((await row(token(2))).gh_login).toBeNull();
+		// The hash is kept with no link to any creature, and goes like every other spent code.
+		const spent = (await env.DB.prepare("SELECT * FROM spent").all()).results;
+		expect(spent).toEqual([{ hash: await sha256("5".repeat(32)), day: "2026-10-16" }]);
+		goTo("2026-10-18");
+		await rebuild();
+		expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM spent").first()).n).toBe(0);
 	});
 });
 
